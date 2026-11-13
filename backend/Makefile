@@ -1,4 +1,3 @@
-
 CC := gcc
 AR := ar
 
@@ -11,7 +10,7 @@ TS_SOURCE := $(TS_ROOT)/src/lib.c
 BUILD := .build
 CFLAGS := -std=c11 -Wall -Wextra -pedantic \
           -fsanitize=undefined -fno-sanitize-recover=all \
-          -Iinclude -I$(TS_INCLUDE)
+          -Iinclude -Isrc -I$(TS_INCLUDE)
 
 LDFLAGS := -fsanitize=undefined
 
@@ -66,7 +65,10 @@ test: all
 	@set -e; \
 	for bin in $(TEST_BINS); do \
 	  echo "Running $$bin"; \
-	  "./$$bin"; \
+	  case "$$bin" in \
+	    "$(BUILD)/test_revision_index") sh tests/run_revision_index_test.sh "$$bin" ;; \
+	    *) "./$$bin" ;; \
+	  esac; \
 	done
 
 clean:

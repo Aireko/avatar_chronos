@@ -1,11 +1,4 @@
-/*
- * Standalone C tests for backend/src (no git needed). From the repo root:
- *
- *   cl /nologo /std:c11 /W4 /Ibackend\include backend\src\*.c backend\tests\test_avatar.c /Fe:build\test_avatar.exe /Fo:build\
- *   gcc -std=c11 -Wall -Wextra -Ibackend/include backend/src/avatar.c backend/src/parser.c backend/src/mapper.c backend/tests/test_avatar.c -o build/test_avatar
- *
- * Git-backed behaviour is covered by `npm test` (src-tauri/src/ffi.rs).
- */
+/* Run with sh backend/tests/test_index_revision.sh. */
 #include "avatar.h"
 #include "mapper.h"
 

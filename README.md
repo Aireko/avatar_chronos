@@ -36,7 +36,7 @@ React (src/)  --invoke()-->  Tauri commands (src-tauri/src/lib.rs)
 ## Develop
 
 ```bash
-npm install
+npm ci --ignore-scripts
 npm run tauri:dev
 ```
 
@@ -58,17 +58,33 @@ npm test
 
 `npm test` runs `cargo test`, which calls the C backend through the same Rust bindings the app uses.
 
-The C tests need only a C compiler. Run them from the repository root:
+The index compiles the Tree-sitter C runtime and grammars from the installed npm
+packages. The Node bindings are unused. Run the C tests from the repository root
+with Git and a C compiler on PATH:
 
 ```bash
-cc -std=c11 -Wall -Wextra -Ibackend/include backend/src/*.c backend/tests/test_avatar.c -o test_avatar && ./test_avatar
+npm ci --ignore-scripts
+sh backend/tests/test_index_revision.sh
 ```
 
-On Windows, use an "x64 Native Tools Command Prompt for VS":
+On Windows, run the C test script in WSL with a Linux C compiler.
 
-```bat
-cl /W4 /Ibackend\include backend\src\*.c backend\tests\test_avatar.c /Fe:test_avatar.exe && test_avatar.exe
-```
+## Repository index
+
+`index_build_revision` reads a pinned Git revision. The tree contains the project
+root, tracked source directories, supported files, and parsed symbols with their
+lexical parents. Supported extensions cover C, Rust, JavaScript, TypeScript, and
+TSX. Working-tree edits are outside the selected commit.
+
+`index_map_calls` projects direct callsites between any two scopes. Resolution
+uses unique syntactic names in the indexed language. Imports, dynamic dispatch,
+and function pointers require additional semantic analysis. Partial parse coverage
+is reported alongside the relationships that could be extracted.
+
+`index_compare_revisions` matches symbols by exact path and qualified name and
+compares their pinned bytes. `index_collect_context` supplies phase two with
+the target source, direct call evidence, and available snippets. Keep the index
+alive while consuming that evidence.
 
 ## Adding a C function
 

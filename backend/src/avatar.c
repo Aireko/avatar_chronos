@@ -20,6 +20,7 @@
 #endif
 
 #include "avatar.h"
+#include "git_process.h"
 #include "avatar_util.h"
 #include "parser_internal.h"
 
@@ -588,6 +589,20 @@ static int resolve_repo(const char* repo, char** toplevel)
     set_error("not a git repository: %s (%s)", repo, sb_cstr(&pr.err));
     proc_free(&pr);
     return CHRONOS_ERR_GIT;
+}
+
+int chronos_git_capture(const char *repo, const char *const *args, size_t count,
+                        char **bytes, size_t *length, int *exit_code)
+{
+    proc_t result;
+    int status = git_run(repo, args, count, &result);
+    if (status != AVATAR_OK) return status;
+    *bytes = result.out.data;
+    *length = result.out.len;
+    *exit_code = result.exit_code;
+    result.out.data = NULL;
+    proc_free(&result);
+    return AVATAR_OK;
 }
 
 static int resolve_commit(const char* repo, const char* ref, char** oid)

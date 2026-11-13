@@ -1,0 +1,42 @@
+name: Run C tests
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  c-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build and run standalone C tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tests=(backend/tests/test_*.c)
+          if (( ${#tests[@]} == 0 )); then
+            echo "No standalone C tests found" >&2
+            exit 1
+          fi
+
+          build_dir=$(mktemp -d)
+          trap 'rm -rf -- "$build_dir"' EXIT
+          failed=0
+          for source in "${tests[@]}"; do
+            name=$(basename "$source" .c)
+            echo "::group::$name"
+            if ! gcc -std=c11 -Wall -Wextra -pedantic \
+              -fsanitize=undefined -fno-sanitize-recover=all \
+              -Ibackend/include backend/src/*.c "$source" -o "$build_dir/$name" ||
+              ! "$build_dir/$name"; then
+              echo "::error file=$source::$name failed"
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$failed"

@@ -1,4 +1,5 @@
 #include "index.h"
+#include "context_compiler.h"
 #include "mapper_internal.h"
 
 #include <stdint.h>
@@ -996,16 +997,8 @@ static int collect_candidate(const RepositoryIndex *index, const IndexCallLink *
                              ContextCallDirection direction, ContextCandidate *item)
 {
     const GraphCall *call = link->call;
-    const char *caller = call->caller.id;
-    const char *callee = call->callee ? call->callee->id : call->callee_text;
-    SourceRange range = call->call_site.range;
-    int n = snprintf(NULL, 0, "%zu:%s%zu:%s:%zu:%zu", strlen(caller), caller,
-                     strlen(callee), callee, range.start_byte, range.end_byte);
-    if (n < 0) return CHRONOS_TOO_LARGE;
-    char *id = malloc((size_t)n + 1);
-    if (!id) return CHRONOS_OUT_OF_MEMORY;
-    (void)snprintf(id, (size_t)n + 1, "%zu:%s%zu:%s:%zu:%zu", strlen(caller), caller,
-                   strlen(callee), callee, range.start_byte, range.end_byte);
+    char *id = context_call_evidence_id_alloc(call);
+    if (id == NULL) return CHRONOS_OUT_OF_MEMORY;
     size_t neighbor = direction == CONTEXT_INCOMING_CALL ? link->caller : link->callee;
     ContextSource source = {.status = CONTEXT_SOURCE_UNAVAILABLE};
     if (neighbor != INDEX_NO_SCOPE) source = symbol_source(index, neighbor);

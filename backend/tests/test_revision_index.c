@@ -57,6 +57,7 @@ int main(int argc, char **argv)
     assert(context.candidates.count == 1);
     const ContextCandidate *candidate = &context.candidates.items[0];
     assert(candidate->direction == CONTEXT_OUTGOING_CALL);
+    assert(strncmp(candidate->id, "call:v1:", 8) == 0);
     assert(candidate->call->resolution == CALL_RESOLVED);
     assert(candidate->snippet.status == CONTEXT_SOURCE_PRESENT);
     const char source[] = "int helper(void) { return 2; }";

@@ -86,6 +86,36 @@ compares their pinned bytes. `index_collect_context` supplies phase two with
 the target source, direct call evidence, and available snippets. Keep the index
 alive while consuming that evidence.
 
+## Context compiler contract
+
+`backend/include/context_compiler.h` defines the phase-two request and output
+contracts. A request pins the repository and head commit, optionally pins a
+base commit, and selects `onboarding`, `task`, or `review` mode. Scope, symbol,
+and evidence IDs are derived from data rather than array positions, so the
+graph and the agent brief can refer to the same pinned source.
+
+`context-graph.json` (schema version 1) keeps the project root as a container
+and starts the visible UI graph at module scope, expanding to files and
+symbols. It contains no source text: every edge carries an evidence ID, and a
+client opens source through that ID. `context-brief.json` (schema version 1) is
+the budgeted brief built from the same evidence catalog. Relation states keep
+budget omissions (`omitted`), unresolved calls (`unresolved`), and missing
+discovery (`unavailable`) distinct. Review mode reuses `ReviewContext` and
+`review-context.json` v1 from `context_package.h` for the selected symbol.
+
+The UI mock contract is a separate schema. The compiler graph declares an
+explicit `minikv-ui` adapter and schema versions instead of silently treating
+the indexer graph shape as the UI shape.
+
+The agreed request, graph, and brief fixture lives in
+`backend/tests/fixtures/context_compiler/`, and `test_context_contract` checks
+it byte-for-byte. Regenerate it only after an intentional contract change:
+
+```bash
+make -C backend .build/test_context_contract
+cd backend && .build/test_context_contract --write-fixtures
+```
+
 ## Adding a C function
 
 1. Declare it in `backend/include/avatar.h` and implement it in `backend/src/`. New `.c` files are picked up automatically.

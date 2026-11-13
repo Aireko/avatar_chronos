@@ -1,0 +1,27 @@
+Context brief: example/payments
+Head: 2222222222222222222222222222222222222222
+Base: 1111111111111111111111111111111111111111
+Mode: review
+Budget: maxItems=8 maxSourceBytes=4096 usedSourceBytes=65
+Coverage: complete
+
+[entry-points] Entry points
+- Start at pay in payments/payment.c. (selected) evidence: source:v1:57:["payments/payment.c","pay","function","definition",0,35]
+
+[flows] Top flows
+- pay calls validate across module boundaries. (selected) evidence: call:v1:57:["payments/payment.c","pay","function","definition",0,35]70:["shared/checks/validation.c","validate","function","definition",0,30]:16:26 source:v1:70:["shared/checks/validation.c","validate","function","definition",0,30]
+
+[edit-locations] Likely edit locations
+- Edit pay in payments/payment.c. (selected) evidence: source:v1:57:["payments/payment.c","pay","function","definition",0,35]
+
+[test-locations] Likely test locations
+- No directly affected tests were indexed. (selected) evidence: none
+
+[unresolved] Unresolved relationships
+- missing has no unique indexed target. (unresolved) evidence: call:v1:57:["payments/payment.c","pay","function","definition",0,35]7:missing:27:34
+
+[unavailable] Unavailable evidence
+- Discovery is unavailable for shared/checks/generated.c. (unavailable) evidence: contains:v1:26:["module","shared/checks"]37:unavailable:shared/checks/generated.c
+
+Omitted by budget:
+- call:v1:70:["shared/checks/validation.c","validate","function","definition",0,30]57:["payments/payment.c","pay","function","definition",0,35]:0:9

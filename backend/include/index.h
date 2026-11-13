@@ -61,7 +61,9 @@ const ChronosDiagnostic *index_diagnostics(const RepositoryIndex *index, size_t 
 int index_symbol_source(const RepositoryIndex *index, const SymbolVersionRef *ref, ContextSource *out);
 
 /* Supply phase two with direct callers/callees and pinned source. The index
- * must outlive the context, ranking, and selection. */
+ * must outlive the context, ranking, and selection. Candidates with
+ * overlapping snippets in the same direction collapse to the first candidate
+ * in collection order, so the same source bytes are not repeated. */
 typedef struct {
     ContextSource target_source;
     ContextCandidates candidates;

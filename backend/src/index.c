@@ -1006,6 +1006,44 @@ static int collect_candidate(const RepositoryIndex *index, const IndexCallLink *
     return CHRONOS_OK;
 }
 
+static int snippets_overlap(const ContextSource *left, const ContextSource *right)
+{
+    if (left->status != CONTEXT_SOURCE_PRESENT || right->status != CONTEXT_SOURCE_PRESENT)
+        return 0;
+    const SourceLocation *a = left->location;
+    const SourceLocation *b = right->location;
+    if (!same_revision(&a->revision, &b->revision) ||
+        !same_text(a->file_path, b->file_path)) return 0;
+    size_t a_start = a->range.start_byte, a_end = a->range.end_byte;
+    size_t b_start = b->range.start_byte, b_end = b->range.end_byte;
+    if (a_start == a_end || b_start == b_end) return a_start == b_start;
+    return a_start < b_end && b_start < a_end;
+}
+
+/* Keep one representative for overlapping, same-direction snippets. The
+ * candidate order is the deterministic callsite order from the index. */
+static void deduplicate_candidates(ContextCandidate *items, size_t *count)
+{
+    size_t kept = 0;
+    for (size_t i = 0; i < *count; ++i) {
+        int duplicate = 0;
+        for (size_t j = 0; j < kept; ++j) {
+            if (items[i].direction == items[j].direction &&
+                snippets_overlap(&items[i].snippet, &items[j].snippet)) {
+                duplicate = 1;
+                break;
+            }
+        }
+        if (duplicate) {
+            free((void *)items[i].id);
+            continue;
+        }
+        if (kept != i) items[kept] = items[i];
+        ++kept;
+    }
+    *count = kept;
+}
+
 int index_collect_context(const RepositoryIndex *index, const SymbolVersionRef *target,
                          IndexContext *out)
 {
@@ -1035,6 +1073,7 @@ int index_collect_context(const RepositoryIndex *index, const SymbolVersionRef *
     }
     if (status < 0) index_context_free(&result);
     else {
+        deduplicate_candidates(items, &result.candidates.count);
         *out = result;
         if (result.candidates.coverage != CHRONOS_COMPLETE) status = CHRONOS_PARTIAL;
     }

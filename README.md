@@ -116,6 +116,31 @@ make -C backend .build/test_context_contract
 cd backend && .build/test_context_contract --write-fixtures
 ```
 
+### Compile one symbol
+
+`chronos_context` is the end-to-end slice: it resolves one changed symbol,
+builds the base/head indexes, collects direct callers and callees, ranks and
+budgets the evidence, and writes `review-context.json` v1.
+
+```bash
+make -C backend .build/chronos_context
+backend/.build/chronos_context <repo> <base> <head> <path> <qualifiedName> \
+  [maxItems] [maxSourceBytes] [output.json]
+```
+
+For example:
+
+```bash
+backend/.build/chronos_context . HEAD^ HEAD src/kv.c kv_resize 8 4096
+```
+
+Without an output path it writes to stdout. Added targets have an unavailable
+`previous` source, deleted targets have an unavailable `current` source, and
+modified targets include both. Direct call evidence keeps ambiguous and
+unresolved calls as evidence with unavailable snippets instead of dropping
+them. `make -C backend test` runs the CLI twice against the same commit pair
+and requires byte-identical output.
+
 ## Adding a C function
 
 1. Declare it in `backend/include/avatar.h` and implement it in `backend/src/`. New `.c` files are picked up automatically.

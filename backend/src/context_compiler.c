@@ -314,7 +314,9 @@ static int valid_text(const char *text)
 
 static int valid_commit_sha(const char *sha)
 {
-    if (sha == NULL || strlen(sha) != 40) return 0;
+    if (sha == NULL) return 0;
+    size_t length = strlen(sha);
+    if (length != 40 && length != 64) return 0;
     for (const char *p = sha; *p; ++p) {
         if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f'))) return 0;
     }

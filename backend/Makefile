@@ -17,6 +17,7 @@ LDFLAGS := -fsanitize=undefined
 SOURCES := $(wildcard src/*.c)
 TESTS := $(wildcard tests/test_*.c)
 TEST_BINS := $(patsubst tests/%.c,$(BUILD)/%,$(TESTS))
+CLI := $(BUILD)/chronos_context
 
 GRAMMAR_DIRS := \
   $(NODE_MODULES)/tree-sitter-c/src \
@@ -29,7 +30,7 @@ TS_LIB := $(BUILD)/libtree-sitter-bundle.a
 
 .PHONY: all test clean
 
-all: $(TEST_BINS)
+all: $(TEST_BINS) $(CLI)
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -61,6 +62,10 @@ $(BUILD)/test_%: tests/test_%.c $(SOURCES) $(TS_LIB)
 	$(CC) $(CFLAGS) $(SOURCES) $< \
 	  $(TS_LIB) $(LDFLAGS) -o $@
 
+$(CLI): tests/chronos_context_cli.c $(SOURCES) $(TS_LIB)
+	$(CC) $(CFLAGS) $(SOURCES) $< \
+	  $(TS_LIB) $(LDFLAGS) -o $@
+
 test: all
 	@set -e; \
 	for bin in $(TEST_BINS); do \
@@ -69,7 +74,8 @@ test: all
 	    "$(BUILD)/test_revision_index") sh tests/run_revision_index_test.sh "$$bin" ;; \
 	    *) "./$$bin" ;; \
 	  esac; \
-	done
+	done; \
+	sh tests/run_context_compile_test.sh "$(CLI)"
 
 clean:
 	rm -rf $(BUILD)

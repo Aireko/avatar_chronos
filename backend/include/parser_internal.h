@@ -73,4 +73,24 @@ typedef struct {
 
 int chronos_parse_commit_header(const char* line, commit_t* commit);
 
+/* The line-based definition detector used for diffs (parser.c), exposed for
+ * languages the tree-sitter parser doesn't cover. */
+int chronos_detect_def(const char* line, char* name, size_t cap, const char** kind);
+
+/* A function, method or class definition with its 1-based, inclusive lines. */
+typedef struct {
+    char*       name;
+    const char* kind; /* "function" | "method" | "class" (static) */
+    long        start;
+    long        end;
+} chronos_def_t;
+
+/* Definitions in `source` found by the tree-sitter parser, sorted by position
+ * (definitions.c). Returns 1 on success (possibly with none), 0 when the
+ * language isn't supported or the source can't be parsed, -1 when out of
+ * memory. Free with chronos_free_definitions(). */
+int chronos_parse_definitions(const char* path, const char* commit_sha, const char* source, size_t length,
+                              chronos_def_t** defs, size_t* count);
+void chronos_free_definitions(chronos_def_t* defs, size_t count);
+
 #endif

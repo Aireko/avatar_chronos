@@ -342,6 +342,11 @@ static int detect_def(const char* line, char* name, size_t cap, const char** kin
     }
 }
 
+int chronos_detect_def(const char* line, char* name, size_t cap, const char** kind)
+{
+    return detect_def(line, name, cap, kind);
+}
+
 /* ========================================================================== */
 /* Diff model + parser                                                        */
 /* ========================================================================== */

@@ -1,16 +1,16 @@
 /*
- * Standalone tests for the C backend; they need nothing but a C compiler.
- * From the repository root:
+ * Standalone C tests for backend/src (no git needed). From the repo root:
  *
- *   cc -std=c11 -Wall -Wextra -Ibackend/include backend/src/*.c backend/tests/test_avatar.c -o test_avatar && ./test_avatar
- *   cl /W4 /Ibackend\include backend\src\*.c backend\tests\test_avatar.c /Fe:test_avatar.exe && test_avatar.exe
+ *   cl /nologo /std:c11 /W4 /Ibackend\include backend\src\*.c backend\tests\test_avatar.c /Fe:build\test_avatar.exe /Fo:build\
+ *   gcc -std=c11 -Wall -Wextra -Ibackend/include backend/src/avatar.c backend/src/graph.c backend/tests/test_avatar.c -o build/test_avatar
  *
- * The same functions are also exercised through the Rust bindings by
- * `cargo test` in src-tauri.
+ * Git-backed behaviour is covered by `npm test` (src-tauri/src/ffi.rs).
  */
 #include "avatar.h"
+#include "graph.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int failures = 0;
@@ -23,95 +23,94 @@ static int failures = 0;
         }                                                                            \
     } while (0)
 
-static void test_version(void)
+static void test_chronos_version(void)
 {
-    CHECK(strcmp(avatar_version(), AVATAR_VERSION) == 0);
+    CHECK(chronos_version() != NULL);
+    CHECK(strncmp(chronos_version(), "chronos-backend", 15) == 0);
 }
 
-static void test_status_message(void)
+static void test_chronos_argument_validation(void)
 {
-    CHECK(strcmp(avatar_status_message(AVATAR_OK), "ok") == 0);
-    CHECK(strcmp(avatar_status_message(AVATAR_ERR_EMPTY_NAME), "name must not be empty") == 0);
-    CHECK(strcmp(avatar_status_message(12345), "unknown status code") == 0);
+    char* result;
+
+    CHECK(chronos_export_graph("some/repo", NULL, 0) == AVATAR_ERR_ARGS);
+    CHECK(chronos_export_graph("some/repo", "", 0) == AVATAR_ERR_ARGS);
+    CHECK(chronos_export_graph("", "out.json", 0) == AVATAR_ERR_ARGS);
+    CHECK(strlen(chronos_last_error()) > 0);
+
+    CHECK(chronos_analyze_merge(".", "-evil", "main", "out.json") == AVATAR_ERR_ARGS);
+    CHECK(chronos_analyze_merge(".", "feature", "a..b", "out.json") == AVATAR_ERR_ARGS);
+    CHECK(chronos_analyze_merge(".", "feature", "main", NULL) == AVATAR_ERR_ARGS);
+
+    result = chronos_run_git_cmd("", "status", NULL);
+    CHECK(result != NULL);
+    if (result != NULL) {
+        CHECK(strstr(result, "\"ok\":false") != NULL);
+        CHECK(strstr(result, "\"error\":\"repo_path is empty\"") != NULL);
+        chronos_free_string(result);
+    }
 }
 
-static void test_greet(void)
+static void test_graph_write_json(void)
 {
-    static const char expected[] = "Hello, Ada! You've been greeted from C.";
-    char buf[64];
-    char small[8];
+    RevisionRef rev;
+    GraphSymbol node;
+    RepositoryGraph graph;
+    char* buf;
     int needed;
 
-    needed = avatar_greet("Ada", 3, NULL, 0);
-    CHECK(needed == (int)strlen(expected));
+    rev.repository_id = "repo-1";
+    rev.commit_sha = "0123456789abcdef0123456789abcdef01234567";
 
-    memset(buf, 'x', sizeof buf);
-    CHECK(avatar_greet("Ada", 3, buf, sizeof buf) == needed);
-    CHECK(strcmp(buf, expected) == 0);
+    memset(&node, 0, sizeof node);
+    node.ref.revision = rev;
+    node.ref.id = "[\"math.c\",\"alpha\",\"function\",\"definition\",0,40]";
+    node.logical_id = "[\"math.c\",\"alpha\"]";
+    node.name = "alpha";
+    node.qualified_name = "alpha";
+    node.language = "c";
+    node.kind = PARSER_FUNCTION;
+    node.form = PARSER_DEFINITION;
+    node.location.revision = rev;
+    node.location.file_path = "math.c";
+    node.location.range.start_byte = 0;
+    node.location.range.end_byte = 40;
+    node.location.range.start_line = 1;
+    node.location.range.end_line = 5;
 
-    /* Too-small buffers are truncated, stay NUL-terminated and still report the full length. */
-    CHECK(avatar_greet("Ada", 3, small, sizeof small) == needed);
-    CHECK(strcmp(small, "Hello, ") == 0);
-    CHECK(avatar_greet("Ada", 3, small, 1) == needed);
-    CHECK(small[0] == '\0');
+    memset(&graph, 0, sizeof graph);
+    graph.revision = rev;
+    graph.nodes = &node;
+    graph.node_count = 1;
+    graph.node_coverage = CHRONOS_COMPLETE;
+    graph.edge_coverage = CHRONOS_UNAVAILABLE;
 
-    /* Names are (pointer, length) pairs, so no NUL terminator is needed. */
-    CHECK(avatar_greet("Ada Lovelace", 3, buf, sizeof buf) == needed);
-    CHECK(strcmp(buf, expected) == 0);
+    needed = graph_write_json(&graph, NULL, 0);
+    CHECK(needed > 0);
+    if (needed <= 0) return;
 
-    CHECK(avatar_greet("", 0, buf, sizeof buf) == AVATAR_ERR_EMPTY_NAME);
-    CHECK(avatar_greet(NULL, 0, buf, sizeof buf) == AVATAR_ERR_EMPTY_NAME);
-    CHECK(avatar_greet(NULL, 3, buf, sizeof buf) == AVATAR_ERR_NULL_ARG);
-    CHECK(avatar_greet("Ada", 3, NULL, sizeof buf) == AVATAR_ERR_NULL_ARG);
-}
+    buf = (char*)malloc((size_t)needed + 1);
+    if (buf == NULL) { failures++; return; }
+    CHECK(graph_write_json(&graph, buf, (size_t)needed + 1) == needed);
+    CHECK(strlen(buf) == (size_t)needed);
+    CHECK(strstr(buf, "\"schemaVersion\":1") != NULL);
+    CHECK(strstr(buf, "\"repositoryId\":\"repo-1\"") != NULL);
+    CHECK(strstr(buf, "\"kind\":\"function\"") != NULL);
+    CHECK(strstr(buf, "\"form\":\"definition\"") != NULL);
+    CHECK(strstr(buf, "\"change\":null") != NULL);
+    CHECK(strstr(buf, "\"edges\":{\"status\":\"unavailable\",\"items\":null}") != NULL);
+    CHECK(strstr(buf, "\\\"math.c\\\"") != NULL); /* quotes inside ids are escaped */
+    free(buf);
 
-static int identicons_equal(const avatar_identicon *a, const avatar_identicon *b)
-{
-    return memcmp(a->cells, b->cells, sizeof a->cells) == 0 && a->hue == b->hue;
-}
-
-static void test_identicon(void)
-{
-    /* Known answer for "Ada". It pins the algorithm; src-tauri/src/ffi.rs checks the same values. */
-    static const uint8_t ada_cells[AVATAR_GRID_CELLS] = {
-        0, 0, 1, 0, 0,
-        0, 0, 0, 0, 0,
-        0, 1, 0, 1, 0,
-        0, 1, 1, 1, 0,
-        1, 1, 0, 1, 1,
-    };
-    avatar_identicon a, b;
-    int row, col;
-
-    CHECK(avatar_identicon_generate("Ada", 3, &a) == AVATAR_OK);
-    CHECK(memcmp(a.cells, ada_cells, sizeof ada_cells) == 0);
-    CHECK(a.hue == 53);
-
-    CHECK(avatar_identicon_generate("Ada", 3, &b) == AVATAR_OK);
-    CHECK(identicons_equal(&a, &b));
-
-    CHECK(avatar_identicon_generate("Grace", 5, &b) == AVATAR_OK);
-    CHECK(!identicons_equal(&a, &b));
-    CHECK(b.hue < 360);
-    for (row = 0; row < AVATAR_GRID_SIZE; row++) {
-        for (col = 0; col < AVATAR_GRID_SIZE; col++) {
-            uint8_t cell = b.cells[row * AVATAR_GRID_SIZE + col];
-            CHECK(cell == 0 || cell == 1);
-            CHECK(cell == b.cells[row * AVATAR_GRID_SIZE + (AVATAR_GRID_SIZE - 1 - col)]);
-        }
-    }
-
-    CHECK(avatar_identicon_generate(NULL, 0, &b) == AVATAR_OK); /* empty seed is valid */
-    CHECK(avatar_identicon_generate(NULL, 1, &b) == AVATAR_ERR_NULL_ARG);
-    CHECK(avatar_identicon_generate("Ada", 3, NULL) == AVATAR_ERR_NULL_ARG);
+    graph.nodes = NULL; /* count 1 with no array is invalid */
+    CHECK(graph_write_json(&graph, NULL, 0) == CHRONOS_INVALID_ARGUMENT);
 }
 
 int main(void)
 {
-    test_version();
-    test_status_message();
-    test_greet();
-    test_identicon();
+    test_chronos_version();
+    test_chronos_argument_validation();
+    test_graph_write_json();
 
     if (failures != 0) {
         fprintf(stderr, "%d check(s) failed\n", failures);

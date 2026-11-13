@@ -6,7 +6,7 @@ fn main() {
 }
 
 /// Compiles every `.c` file in `../backend/src` into a static library and links
-/// it into this crate. The Rust bindings for it live in `src/ffi.rs`.
+/// it into this crate. Headers come from `backend/include`.
 fn build_c_backend() {
     let manifest_dir = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"),
@@ -18,7 +18,6 @@ fn build_c_backend() {
     let include_dir = backend_dir.join("include");
     let src_dir = backend_dir.join("src");
 
-    // Rebuild whenever anything in the C backend changes (directories are scanned recursively).
     println!("cargo::rerun-if-changed={}", include_dir.display());
     println!("cargo::rerun-if-changed={}", src_dir.display());
 
@@ -27,11 +26,15 @@ fn build_c_backend() {
         .map(|entry| entry.expect("cannot read directory entry").path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "c"))
         .collect();
-    sources.sort(); // deterministic build order
+    sources.sort();
     assert!(!sources.is_empty(), "no .c files in {}", src_dir.display());
 
-    cc::Build::new()
-        .files(&sources)
-        .include(&include_dir)
-        .compile("avatar_backend");
+    let mut build = cc::Build::new();
+    build.files(&sources).include(&include_dir);
+    if build.get_compiler().is_like_msvc() {
+        build.flag_if_supported("/std:c11");
+    } else {
+        build.flag_if_supported("-std=c11");
+    }
+    build.compile("avatar_backend");
 }

@@ -87,10 +87,6 @@ typedef struct {
  * lowercase strings ("function", "declaration", "resolved", "modified", etc.).
  * Rust/Tauri passes UTF-8 JSON to the frontend through the existing boundary. */
 
-/* CHRONOS_TOO_LARGE is a graph serialization error for lengths above
- * INT_MAX or source coordinates outside JSON's safe-integer range. */
-#define CHRONOS_TOO_LARGE (-6)
-
 /* Serialize a graph in its supplied order. The graph must satisfy the
  * reference rules above and contain valid UTF-8 strings. It is borrowed
  * for the call, must remain unchanged, and cannot overlap out.

@@ -1,3 +1,6 @@
+Declare language discovery for the revision walker.
+
+```c
 #ifndef CHRONOS_PARSER_H
 #define CHRONOS_PARSER_H
 
@@ -209,6 +212,9 @@ typedef struct {
 int parser_parse(const char *file_path, const RevisionRef *revision,
                  const char *source, size_t source_length, ParsedFile *out);
 void parser_free(ParsedFile *file);
+
+/* Static language name, or NULL for an unsupported path. */
+const char *parser_language_for_path(const char *file_path);
 
 #ifdef __cplusplus
 }

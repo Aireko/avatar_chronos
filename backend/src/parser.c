@@ -1,7 +1,9 @@
+#include "parser.h"
 #include "parser_internal.h"
 #include "avatar_util.h"
 
 #include <ctype.h>
+#include <tree_sitter/api.h>
 
 #define MAX_SYMBOLS_PER_FILE   512
 #define MAX_HUNKS_PER_FILE     4096
@@ -727,4 +729,339 @@ int chronos_parse_commit_header(const char* line, commit_t* c)
         }
     }
     return 1;
+}
+
+/* Tree-sitter source parsing for the repository index. */
+
+const TSLanguage *tree_sitter_c(void);
+const TSLanguage *tree_sitter_rust(void);
+const TSLanguage *tree_sitter_typescript(void);
+const TSLanguage *tree_sitter_tsx(void);
+const TSLanguage *tree_sitter_javascript(void);
+
+typedef struct {
+    const char *suffix;
+    const char *name;
+    const TSLanguage *(*grammar)(void);
+} Language;
+
+static const Language *find_language(const char *path)
+{
+    static const Language languages[] = {
+        {".c", "c", tree_sitter_c}, {".h", "c", tree_sitter_c},
+        {".rs", "rust", tree_sitter_rust}, {".ts", "typescript", tree_sitter_typescript},
+        {".tsx", "typescript", tree_sitter_tsx}, {".js", "javascript", tree_sitter_javascript},
+        {".jsx", "javascript", tree_sitter_javascript}, {".mjs", "javascript", tree_sitter_javascript},
+        {".cjs", "javascript", tree_sitter_javascript}
+    };
+    const char *suffix = strrchr(path, '.');
+    if (suffix) {
+        for (size_t i = 0; i < sizeof languages / sizeof *languages; ++i)
+            if (strcmp(suffix, languages[i].suffix) == 0) return &languages[i];
+    }
+    return NULL;
+}
+
+const char *parser_language_for_path(const char *path)
+{
+    const Language *language = path ? find_language(path) : NULL;
+    return language ? language->name : NULL;
+}
+
+typedef struct {
+    ParsedFile *file;
+    const char *source;
+    size_t symbol_capacity;
+    size_t call_capacity;
+    int is_c;
+} ParseState;
+
+static char *copy_bytes(const char *bytes, size_t length)
+{
+    if (length == SIZE_MAX) return NULL;
+    char *out = malloc(length + 1);
+    if (out) {
+        if (length) memcpy(out, bytes, length);
+        out[length] = '\0';
+    }
+    return out;
+}
+
+static int utf8_source(const unsigned char *bytes, size_t length)
+{
+    for (size_t i = 0; i < length;) {
+        unsigned c = bytes[i++];
+        if (c == 0) return 0;
+        if (c < 0x80) continue;
+        size_t extra;
+        unsigned value;
+        if (c >= 0xc2 && c <= 0xdf) { extra = 1; value = c & 31; }
+        else if (c >= 0xe0 && c <= 0xef) { extra = 2; value = c & 15; }
+        else if (c >= 0xf0 && c <= 0xf4) { extra = 3; value = c & 7; }
+        else return 0;
+        if (extra > length - i) return 0;
+        for (size_t j = 0; j < extra; ++j) {
+            c = bytes[i++];
+            if ((c & 0xc0) != 0x80) return 0;
+            value = (value << 6) | (c & 63);
+        }
+        if ((extra == 2 && value < 0x800) || (extra == 3 && value < 0x10000) ||
+            (value >= 0xd800 && value <= 0xdfff) || value > 0x10ffff) return 0;
+    }
+    return 1;
+}
+
+static int is_type(TSNode node, const char *type)
+{
+    return !ts_node_is_null(node) && strcmp(ts_node_type(node), type) == 0;
+}
+
+static TSNode field(TSNode node, const char *name)
+{
+    return ts_node_child_by_field_name(node, name, (uint32_t)strlen(name));
+}
+
+static SourceRange node_range(TSNode node)
+{
+    uint32_t start = ts_node_start_byte(node);
+    uint32_t end = ts_node_end_byte(node);
+    TSPoint finish = ts_node_end_point(node);
+    return (SourceRange){start, end, (size_t)ts_node_start_point(node).row + 1,
+                          (size_t)finish.row + (start == end || finish.column != 0)};
+}
+
+static char *node_text(ParseState *state, TSNode node)
+{
+    uint32_t start = ts_node_start_byte(node);
+    return copy_bytes(state->source + start, ts_node_end_byte(node) - start);
+}
+
+static void *reserve_items(void *items, size_t count, size_t *capacity, size_t size)
+{
+    if (count < *capacity) return items;
+    size_t next = *capacity ? *capacity * 2 : 32;
+    if (next < *capacity || next > SIZE_MAX / size) return NULL;
+    void *result = realloc(items, next * size);
+    if (result) *capacity = next;
+    return result;
+}
+
+static int add_symbol(ParseState *state, TSNode node, TSNode name_node, size_t parent,
+                      ParserSymbolKind kind, ParserSymbolForm form, size_t *id)
+{
+    ParsedFile *file = state->file;
+    ParsedSymbol *items = reserve_items((void *)file->symbols, file->symbol_count,
+                                        &state->symbol_capacity, sizeof *items);
+    if (!items) return CHRONOS_OUT_OF_MEMORY;
+    file->symbols = items;
+    *id = ++file->symbol_count;
+    ParsedSymbol *symbol = &items[*id - 1];
+    *symbol = (ParsedSymbol){*id, parent, kind, form, NULL, NULL, NULL, node_range(node)};
+    symbol->name = node_text(state, name_node);
+    if (!symbol->name) return CHRONOS_OUT_OF_MEMORY;
+    TSNode body = field(node, "body");
+    size_t end = ts_node_is_null(body) ? symbol->range.end_byte : ts_node_start_byte(body);
+    if (end >= symbol->range.start_byte) {
+        symbol->signature = copy_bytes(state->source + symbol->range.start_byte,
+                                       end - symbol->range.start_byte);
+        if (!symbol->signature) return CHRONOS_OUT_OF_MEMORY;
+    }
+    const char *prefix = parent ? items[parent - 1].qualified_name : "";
+    size_t prefix_len = strlen(prefix);
+    size_t name_len = strlen(symbol->name);
+    if (name_len > SIZE_MAX - 3 || prefix_len > SIZE_MAX - name_len - 3)
+        return CHRONOS_TOO_LARGE;
+    char *name = malloc(prefix_len + name_len + (parent ? 3 : 1));
+    if (!name) return CHRONOS_OUT_OF_MEMORY;
+    memcpy(name, prefix, prefix_len);
+    if (parent) { memcpy(name + prefix_len, "::", 2); prefix_len += 2; }
+    memcpy(name + prefix_len, symbol->name, name_len + 1);
+    symbol->qualified_name = name;
+    return CHRONOS_OK;
+}
+
+/* Return the declared C name only when its nearest declarator operator is
+ * a function. This excludes pointer-to-function variables and typedefs. */
+static TSNode c_function_name(TSNode declarator)
+{
+    TSNode previous = {0};
+    while (!ts_node_is_null(declarator)) {
+        if (is_type(declarator, "identifier") || is_type(declarator, "field_identifier"))
+            return is_type(previous, "function_declarator") ? declarator : (TSNode){0};
+        if (!is_type(declarator, "parenthesized_declarator") &&
+            !is_type(declarator, "attributed_declarator")) previous = declarator;
+        TSNode next = field(declarator, "declarator");
+        if (ts_node_is_null(next) &&
+            (is_type(declarator, "parenthesized_declarator") ||
+             is_type(declarator, "attributed_declarator")))
+            next = ts_node_named_child(declarator, 0);
+        declarator = next;
+    }
+    return (TSNode){0};
+}
+
+static int add_call(ParseState *state, TSNode node, TSNode callee, size_t caller)
+{
+    if (ts_node_is_null(callee)) return CHRONOS_OK;
+    ParsedFile *file = state->file;
+    ParsedCall *items = reserve_items((void *)file->calls, file->call_count,
+                                      &state->call_capacity, sizeof *items);
+    if (!items) return CHRONOS_OUT_OF_MEMORY;
+    file->calls = items;
+    char *text = node_text(state, callee);
+    if (!text) return CHRONOS_OUT_OF_MEMORY;
+    items[file->call_count++] = (ParsedCall){caller, text, node_range(node)};
+    return CHRONOS_OK;
+}
+
+static int observe_node(ParseState *state, TSNode node, size_t *parent)
+{
+    TSNode name = {0};
+    ParserSymbolKind kind = PARSER_FUNCTION;
+    ParserSymbolForm form = PARSER_DEFINITION;
+    const char *type = ts_node_type(node);
+    if (state->is_c && strcmp(type, "function_definition") == 0) {
+        name = c_function_name(field(node, "declarator"));
+    } else if (state->is_c && strcmp(type, "declaration") == 0) {
+        for (uint32_t i = 0; i < ts_node_child_count(node); ++i) {
+            const char *field_name = ts_node_field_name_for_child(node, i);
+            if (field_name && strcmp(field_name, "declarator") == 0) {
+                name = c_function_name(ts_node_child(node, i));
+                if (!ts_node_is_null(name)) {
+                    size_t ignored;
+                    int status = add_symbol(state, node, name, *parent, kind, PARSER_DECLARATION, &ignored);
+                    if (status < 0) return status;
+                }
+            }
+        }
+    } else if (strcmp(type, "class_declaration") == 0 ||
+               strcmp(type, "abstract_class_declaration") == 0 ||
+               strcmp(type, "struct_item") == 0 || strcmp(type, "enum_item") == 0 ||
+               strcmp(type, "trait_item") == 0 || strcmp(type, "impl_item") == 0 ||
+               strcmp(type, "mod_item") == 0) {
+        kind = PARSER_CLASS;
+        name = field(node, "name");
+        if (ts_node_is_null(name) && strcmp(type, "impl_item") == 0) name = field(node, "type");
+    } else if (strcmp(type, "function_declaration") == 0 ||
+               strcmp(type, "generator_function_declaration") == 0 ||
+               strcmp(type, "function_item") == 0 || strcmp(type, "function_signature_item") == 0 ||
+               strcmp(type, "function_signature") == 0 || strcmp(type, "method_definition") == 0 ||
+               strcmp(type, "method_signature") == 0) {
+        name = field(node, "name");
+        if (strncmp(type, "method_", 7) == 0 ||
+            (*parent && state->file->symbols[*parent - 1].kind == PARSER_CLASS &&
+             strcmp(type, "function_item") == 0 &&
+             !is_type(ts_node_parent(ts_node_parent(node)), "mod_item"))) kind = PARSER_METHOD;
+        if (ts_node_is_null(field(node, "body"))) form = PARSER_DECLARATION;
+    } else if (strcmp(type, "variable_declarator") == 0) {
+        TSNode value = field(node, "value");
+        if (is_type(value, "arrow_function") || is_type(value, "function_expression") ||
+            is_type(value, "generator_function")) {
+            name = field(node, "name");
+            if (!is_type(name, "identifier")) name = (TSNode){0};
+        }
+    } else if (strcmp(type, "call_expression") == 0) {
+        return add_call(state, node, field(node, "function"), *parent);
+    }
+    if (!ts_node_is_null(name) && !ts_node_is_missing(name))
+        return add_symbol(state, node, name, *parent, kind, form, parent);
+    return CHRONOS_OK;
+}
+
+typedef struct {
+    TSNode node;
+    uint32_t next_child;
+    size_t parent;
+} ParseFrame;
+
+static int walk_tree(ParseState *state, TSNode root)
+{
+    size_t capacity = 0, count = 0;
+    ParseFrame *frames = reserve_items(NULL, count, &capacity, sizeof *frames);
+    if (!frames) return CHRONOS_OUT_OF_MEMORY;
+    frames[count++] = (ParseFrame){root, 0, 0};
+    int status = CHRONOS_OK;
+    while (count) {
+        ParseFrame *frame = &frames[count - 1];
+        if (frame->next_child == 0) {
+            status = observe_node(state, frame->node, &frame->parent);
+            if (status < 0) break;
+        }
+        if (frame->next_child == ts_node_named_child_count(frame->node)) {
+            --count;
+            continue;
+        }
+        ParseFrame child = {ts_node_named_child(frame->node, frame->next_child++), 0, frame->parent};
+        ParseFrame *grown = reserve_items(frames, count, &capacity, sizeof *frames);
+        if (!grown) { status = CHRONOS_OUT_OF_MEMORY; break; }
+        frames = grown;
+        frames[count++] = child;
+    }
+    free(frames);
+    return status;
+}
+
+void parser_free(ParsedFile *file)
+{
+    if (!file) return;
+    for (size_t i = 0; i < file->symbol_count; ++i) {
+        free((void *)file->symbols[i].name);
+        free((void *)file->symbols[i].qualified_name);
+        free((void *)file->symbols[i].signature);
+    }
+    for (size_t i = 0; i < file->call_count; ++i) free((void *)file->calls[i].callee_text);
+    free((void *)file->symbols);
+    free((void *)file->calls);
+    free((void *)file->diagnostics);
+    free((void *)file->file_path);
+    free((void *)file->revision.repository_id);
+    free((void *)file->revision.commit_sha);
+    *file = (ParsedFile){0};
+}
+
+int parser_parse(const char *path, const RevisionRef *revision,
+                 const char *source, size_t length, ParsedFile *out)
+{
+    if (!out || !path || !*path || !revision || !revision->repository_id ||
+        !revision->commit_sha || (!source && length)) return CHRONOS_INVALID_ARGUMENT;
+    const Language *language = find_language(path);
+    if (!language) return CHRONOS_NOT_FOUND;
+    if (length > UINT32_MAX) return CHRONOS_TOO_LARGE;
+    if (!utf8_source((const unsigned char *)source, length)) return CHRONOS_INVALID_ARGUMENT;
+    out->revision.repository_id = copy_bytes(revision->repository_id, strlen(revision->repository_id));
+    out->revision.commit_sha = copy_bytes(revision->commit_sha, strlen(revision->commit_sha));
+    out->file_path = copy_bytes(path, strlen(path));
+    out->language = language->name;
+    out->source_length = length;
+    int status = CHRONOS_OUT_OF_MEMORY;
+    if (!out->revision.repository_id || !out->revision.commit_sha || !out->file_path) goto fail;
+    TSParser *parser = ts_parser_new();
+    if (!parser) goto fail;
+    if (!ts_parser_set_language(parser, language->grammar())) {
+        ts_parser_delete(parser);
+        status = CHRONOS_IO_ERROR;
+        goto fail;
+    }
+    TSTree *tree = ts_parser_parse_string(parser, NULL, source ? source : "", (uint32_t)length);
+    ts_parser_delete(parser);
+    if (!tree) goto fail;
+    TSNode root = ts_tree_root_node(tree);
+    ParseState state = {out, source ? source : "", 0, 0, language->grammar == tree_sitter_c};
+    status = walk_tree(&state, root);
+    if (status == CHRONOS_OK && ts_node_has_error(root)) {
+        ChronosDiagnostic *diagnostic = malloc(sizeof *diagnostic);
+        if (diagnostic) {
+            *diagnostic = (ChronosDiagnostic){"syntax-error", DIAGNOSTIC_WARNING,
+                                             "Tree-sitter recovered from a syntax error", NULL};
+            out->diagnostics = diagnostic;
+            out->diagnostic_count = 1;
+            out->coverage = CHRONOS_INCOMPLETE;
+            status = CHRONOS_PARTIAL;
+        } else status = CHRONOS_OUT_OF_MEMORY;
+    }
+    ts_tree_delete(tree);
+    if (status >= 0) return status;
+fail:
+    parser_free(out);
+    return status;
 }

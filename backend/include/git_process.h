@@ -8,4 +8,3 @@
 int chronos_git_capture(const char *repo, const char *const *args, size_t count,
                         char **bytes, size_t *length, int *exit_code);
 #endif
-```

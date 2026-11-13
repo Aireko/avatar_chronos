@@ -3,12 +3,73 @@
 
 #include "git_history.h"
 #include "mapper.h"
+#include "context_select.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef struct RepositoryIndex RepositoryIndex;
+
+typedef enum {
+    INDEX_PROJECT,
+    INDEX_MODULE,
+    INDEX_FILE,
+    INDEX_SYMBOL
+} IndexScopeKind;
+
+#define INDEX_NO_SCOPE ((size_t)-1)
+
+/* IDs are array positions in index_scopes(). Root is 0. Modules correspond
+ * to Git directories. Empty source files still have a scope. */
+typedef struct {
+    IndexScopeKind kind;
+    size_t parent;
+    const char *path;
+    const GraphSymbol *symbol;
+    ChronosCoverage coverage;
+} IndexScope;
+
+const IndexScope *index_scopes(const RepositoryIndex *index, size_t *count);
+size_t index_find_symbol(const RepositoryIndex *index, const SymbolVersionRef *ref);
+
+/* Each result borrows its call and scope IDs from the index. Unresolved and
+ * ambiguous calls have INDEX_NO_SCOPE as the target. */
+typedef struct {
+    const GraphCall *call;
+    size_t caller;
+    size_t callee;
+} IndexCallLink;
+
+typedef struct {
+    const IndexCallLink *links;
+    size_t count;
+    ChronosCoverage coverage;
+} IndexCallMap;
+
+/* Select calls between any two subtrees. INDEX_NO_SCOPE on either side is
+ * unrestricted. An explicitly selected target requires a resolved edge.
+ * The map owns its array and borrows calls from the index. */
+int index_map_calls(const RepositoryIndex *index, size_t from, size_t to, IndexCallMap *out);
+void index_call_map_free(IndexCallMap *map);
+
+/* Open a pinned revision and parse its tracked source files. The scope,
+ * revision, diagnostic and source accessors borrow from the index. */
+int index_build_revision(const GitRepository *repo, const char *selector, RepositoryIndex **out);
+const RevisionRef *index_revision(const RepositoryIndex *index);
+const ChronosDiagnostic *index_diagnostics(const RepositoryIndex *index, size_t *count);
+int index_symbol_source(const RepositoryIndex *index, const SymbolVersionRef *ref, ContextSource *out);
+
+/* Supply phase two with direct callers/callees and pinned source. The index
+ * must outlive the context, ranking, and selection. */
+typedef struct {
+    ContextSource target_source;
+    ContextCandidates candidates;
+} IndexContext;
+
+int index_collect_context(const RepositoryIndex *index, const SymbolVersionRef *target,
+                          IndexContext *out);
+void index_context_free(IndexContext *context);
 
 typedef struct {
     const ParsedFile *parsed;

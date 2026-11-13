@@ -1,0 +1,569 @@
+/* ============ Chronos: transit-map theme ============ */
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body { overflow: hidden; background: #e8ecf1; }
+
+.app {
+  --paper: #e8ecf1;
+  --sheet: #fcfdfe;
+  --ink: #16203a;
+  --quiet: #5b6680;
+  --rule: #c6ceda;
+  --amber: #f2a900;
+  --good: #1f9d6b;
+  --bad: #e5484d;
+  --focus: #2f5de3;
+  --display: "Barlow Semi Condensed", "Barlow", "Segoe UI", system-ui, sans-serif;
+
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "Barlow", "Segoe UI", system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ============ top bar ============ */
+.bar {
+  position: relative;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  padding: 13px 22px;
+  background: var(--sheet);
+  border-bottom: 3px solid var(--ink);
+}
+.wordmark {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--display);
+  font-size: 27px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1;
+}
+.path-form { flex: 1; display: flex; gap: 10px; max-width: 780px; }
+.path-input {
+  flex: 1;
+  height: 42px;
+  padding: 0 14px;
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--ink);
+  font: inherit;
+  outline: none;
+}
+.path-input::placeholder { color: #8a94aa; }
+.path-input:focus-visible { box-shadow: 0 0 0 3px rgba(47, 93, 227, 0.35); }
+.link-state { margin-left: auto; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--ink); background: var(--rule); flex: none; }
+.link-state.on { background: var(--good); }
+.link-state.off { background: var(--bad); }
+.progress {
+  position: absolute;
+  left: 0;
+  bottom: -3px;
+  height: 3px;
+  width: 22%;
+  background: var(--amber);
+  animation: progress 1.1s ease-in-out infinite;
+}
+@keyframes progress { from { left: -22%; } to { left: 100%; } }
+
+/* ============ buttons: flat keys that press down ============ */
+.key {
+  position: relative;
+  top: 0;
+  height: 42px;
+  padding: 0 18px;
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 0 var(--ink);
+  transition: top 0.08s, box-shadow 0.08s;
+}
+.key.amber { background: var(--amber); }
+.key.plain { background: #ffffff; }
+.key:hover:not(:disabled) { filter: brightness(1.04); }
+.key:active:not(:disabled) { top: 4px; box-shadow: 0 0 0 var(--ink); }
+.key:disabled { opacity: 0.45; cursor: default; }
+.key:focus-visible,
+.ticket-close:focus-visible,
+.link:focus-visible,
+.stop-link:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.key.tall {
+  height: auto;
+  padding: 10px 14px 11px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  text-align: left;
+}
+.key.tall strong { font-family: var(--display); font-size: 21px; font-weight: 700; line-height: 1.1; }
+.key.tall span { font-size: 12.5px; font-weight: 500; opacity: 0.8; line-height: 1.25; }
+
+/* ============ error toast ============ */
+.toast {
+  position: fixed;
+  left: 50%;
+  top: 84px;
+  transform: translateX(-50%);
+  z-index: 40;
+  max-width: min(720px, 80vw);
+  padding: 11px 16px 11px 18px;
+  border: 2px solid var(--ink);
+  border-left: 10px solid var(--bad);
+  border-radius: 8px;
+  background: var(--sheet);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 6px 6px 0 rgba(22, 32, 58, 0.16);
+}
+
+/* ============ stage and empty state ============ */
+.stage { position: relative; flex: 1; min-height: 0; }
+.empty { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 22px; text-align: center; }
+.empty p { margin: 0; max-width: 34ch; font-size: 17px; color: var(--quiet); }
+
+/* ============ the map ============ */
+.map {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  cursor: grab;
+  user-select: none;
+  scrollbar-width: thin;
+  scrollbar-color: #a9b3c4 transparent;
+}
+.map.dragging { cursor: grabbing; }
+.map-sheet {
+  position: relative;
+  min-width: 100%;
+  min-height: 100%;
+  background-image:
+    linear-gradient(to right, rgba(22, 32, 58, 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(22, 32, 58, 0.05) 1px, transparent 1px);
+  background-size: 160px 124px;
+  background-position: 40px 34px;
+}
+.map-svg { position: absolute; left: 0; top: 0; overflow: visible; }
+
+/* line name badges pinned to the left edge */
+.line-names { position: sticky; left: 0; z-index: 2; width: 0; height: 0; }
+.line-name {
+  position: absolute;
+  left: 18px;
+  transform: translateY(-50%);
+  max-width: 164px;
+  padding: 5px 11px 6px;
+  border-radius: 6px;
+  background: var(--line);
+  color: var(--on);
+  box-shadow: 0 0 0 4px var(--paper);
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.line-name.current { box-shadow: 0 0 0 2px var(--paper), 0 0 0 4.5px var(--ink); }
+
+/* lines */
+.line {
+  fill: none;
+  stroke-width: 9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  animation: line-draw 0.5s ease-out backwards;
+}
+@keyframes line-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+.line.ghost { stroke-width: 5; stroke-dasharray: 0.001 0.16; opacity: 0.6; animation: none; }
+
+/* stations */
+.node { cursor: pointer; outline: none; }
+.node-hit { fill: transparent; }
+.station { transition: transform 0.16s cubic-bezier(0.3, 1.5, 0.5, 1); animation: station-in 0.32s cubic-bezier(0.3, 1.5, 0.5, 1) backwards; }
+@keyframes station-in { from { transform: scale(0); } }
+.node:hover .station { transform: scale(1.18); }
+.station-shape { fill: var(--sheet); stroke: var(--ink); stroke-width: 4; transition: fill 0.15s; }
+.station-core { fill: var(--ink); }
+.node.selected .station-shape { fill: var(--line); }
+.node.selected .station-core { fill: var(--sheet); }
+.node-ring { fill: none; stroke: var(--ink); stroke-width: 2.5; stroke-dasharray: 5 5; opacity: 0; transition: opacity 0.15s; }
+.node.selected .node-ring,
+.node:focus-visible .node-ring { opacity: 1; }
+.node:focus-visible .node-ring { stroke: var(--focus); stroke-dasharray: none; }
+
+/* the train marks the commit you are on */
+.train-body { fill: var(--ink); }
+.train-window { fill: var(--sheet); }
+.train-light { fill: var(--amber); animation: train-light 2.4s ease-in-out infinite; }
+@keyframes train-light { 50% { opacity: 0.25; } }
+
+/* commit messages */
+.map-label {
+  fill: var(--ink);
+  font-family: var(--display);
+  font-size: 14px;
+  font-weight: 500;
+  text-anchor: middle;
+  opacity: 0.86;
+}
+.node:hover .map-label,
+.node.selected .map-label { opacity: 1; font-weight: 700; }
+
+/* branch names at the end of their line */
+.tip { pointer-events: none; }
+.tip text { font-family: var(--display); font-size: 14px; font-weight: 600; text-anchor: middle; }
+.tip-current { fill: none; stroke: var(--ink); stroke-width: 2.5; }
+
+/* ============ the ticket (details panel) ============ */
+.ticket {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  bottom: 18px;
+  z-index: 10;
+  width: 414px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--sheet);
+  border: 2px solid var(--ink);
+  border-radius: 14px;
+  box-shadow: 8px 8px 0 rgba(22, 32, 58, 0.16);
+  animation: ticket-in 0.26s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+@keyframes ticket-in { from { opacity: 0; transform: translateX(28px); } }
+.ticket-band {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 10px 9px 20px;
+  background: var(--line);
+  color: var(--on);
+  border-bottom: 2px solid var(--ink);
+}
+.ticket-line { font-family: var(--display); font-size: 18px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ticket-close {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border: 2px solid currentColor;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font-size: 19px;
+  line-height: 1;
+  cursor: pointer;
+}
+.ticket-close:hover { background: rgba(255, 255, 255, 0.22); }
+.ticket-scroll { flex: 1; overflow: auto; scrollbar-width: thin; scrollbar-color: #a9b3c4 transparent; }
+.ticket-head { padding: 18px 20px 2px; }
+.ticket-title {
+  margin: 0 0 12px;
+  font-family: var(--display);
+  font-size: 29px;
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+.marks { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+.mark { padding: 2px 9px 3px; border: 2px solid var(--ink); border-radius: 6px; font-size: 13px; font-weight: 600; }
+.mark.solid { background: var(--ink); color: #ffffff; }
+.mark.dashed { border-style: dashed; }
+
+.facts { display: grid; grid-template-columns: 96px 1fr; gap: 9px 14px; margin: 0; padding: 14px 20px 16px; }
+.facts dt { color: var(--quiet); }
+.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.stops { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
+.quiet { color: var(--quiet); }
+.link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.stop-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+.stop-link:hover { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 3px; }
+.stop-dot { width: 13px; height: 13px; flex: none; border-radius: 50%; background: var(--sheet); border: 3.5px solid var(--line); }
+
+/* punched perforation between the facts and the actions */
+.perforation { position: relative; margin: 0; border-top: 2px dashed var(--rule); }
+.perforation::before,
+.perforation::after {
+  content: "";
+  position: absolute;
+  top: -12px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--paper);
+  border: 2px solid var(--ink);
+}
+.perforation::before { left: -13px; }
+.perforation::after { right: -13px; }
+
+.actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 20px 20px 12px; }
+.confirm { grid-column: 1 / -1; }
+.confirm p { margin: 0 0 14px; }
+.confirm-keys { display: flex; justify-content: flex-end; gap: 10px; padding-bottom: 4px; }
+
+.ticket-body { padding: 4px 20px 24px; }
+.section-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 20px 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 2px solid var(--ink);
+  font-family: var(--display);
+  font-size: 18px;
+  font-weight: 700;
+}
+.counts { font-family: "Barlow", sans-serif; font-size: 13px; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.add { color: #147a52; }
+.del { color: #c22f34; }
+
+.working { display: flex; align-items: center; gap: 10px; margin: 14px 0 0; color: var(--quiet); }
+.working-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--amber); border: 2px solid var(--ink); animation: train-light 0.9s ease-in-out infinite; }
+
+.notice { margin: 14px 0 0; padding: 12px 14px; border: 2px solid var(--ink); border-left-width: 10px; border-radius: 8px; background: #ffffff; }
+.notice.good { border-left-color: var(--good); }
+.notice.bad { border-left-color: var(--bad); }
+.notice h3 { margin: 0 0 4px; font-family: var(--display); font-size: 18px; font-weight: 700; }
+.notice p { margin: 4px 0; }
+.notice pre {
+  max-height: 170px;
+  overflow: auto;
+  margin: 8px 0 10px;
+  padding: 9px 10px;
+  border-radius: 6px;
+  background: #eef1f5;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.files { list-style: none; margin: 0; padding: 0; }
+.files li { display: flex; align-items: flex-start; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--rule); }
+.file-main { flex: 1; min-width: 0; }
+.file-path { overflow-wrap: anywhere; font-weight: 500; }
+.status {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 5px;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+}
+.status-A { background: var(--good); }
+.status-M { background: var(--amber); color: var(--ink); }
+.status-D { background: var(--bad); }
+.status-R, .status-C { background: #2f5de3; }
+.symbols { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.symbol { padding: 1px 7px 2px; border: 1.5px solid var(--ink); border-radius: 5px; font-size: 12.5px; font-weight: 500; }
+.symbol-added { background: #dcf3e7; }
+.symbol-modified { background: #fdf0cc; }
+.symbol-deleted { background: #fbe1e2; text-decoration: line-through; }
+
+/* ============ diff ============ */
+.diff-file { margin: 10px 0; overflow: hidden; border: 2px solid var(--ink); border-radius: 8px; background: #ffffff; }
+.diff-file summary { display: flex; align-items: baseline; gap: 10px; padding: 8px 12px; cursor: pointer; font-weight: 600; }
+.diff-name { flex: 1; overflow-wrap: anywhere; }
+.diff-code {
+  max-height: 340px;
+  overflow: auto;
+  margin: 0;
+  border-top: 2px solid var(--ink);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.diff-code div { padding: 0 12px; white-space: pre; }
+.d-add { background: #dcf3e7; color: #0f5137; }
+.d-del { background: #fbe1e2; color: #7d1a1e; }
+.d-hunk { background: #eef1f5; color: var(--quiet); }
+
+/* ============ scrollbars (WebView2) ============ */
+.map::-webkit-scrollbar,
+.ticket-scroll::-webkit-scrollbar,
+.diff-code::-webkit-scrollbar { width: 12px; height: 12px; }
+.map::-webkit-scrollbar-thumb,
+.ticket-scroll::-webkit-scrollbar-thumb,
+.diff-code::-webkit-scrollbar-thumb { background: #a9b3c4; border-radius: 12px; border: 3px solid transparent; background-clip: padding-box; }
+.map::-webkit-scrollbar-track,
+.ticket-scroll::-webkit-scrollbar-track,
+.diff-code::-webkit-scrollbar-track { background: transparent; }
+
+/* ============ calmer for people who ask for less motion ============ */
+@media (prefers-reduced-motion: reduce) {
+  .line, .station, .ticket, .train-light, .working-dot, .progress { animation: none; }
+  .station, .key { transition: none; }
+}
+
+/* ============ 3D cartoon layer: balls, tubes and action bubbles ============ */
+.map-sheet { background-position: 40px 62px; }
+
+/* branch tubes: ink outline, colour, highlight */
+.tube-outline,
+.tube,
+.tube-shine {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  animation: line-draw 0.5s ease-out backwards;
+}
+.tube-outline { stroke: var(--ink); stroke-width: 15; }
+.tube { stroke-width: 9; }
+.tube-shine { stroke: #ffffff; stroke-width: 2.4; opacity: 0.4; transform: translateY(-2.4px); }
+.tube-ghost { fill: none; stroke-width: 6; stroke-linecap: round; stroke-dasharray: 0.001 0.16; opacity: 0.6; }
+
+/* commit balls */
+.ball-shadow { fill: var(--ink); opacity: 0.17; }
+.ball { fill: var(--line); stroke: var(--ink); stroke-width: 3; }
+.ball-gloss { pointer-events: none; }
+.ball-core { fill: #ffffff; stroke: var(--ink); stroke-width: 2.5; }
+.node:hover .station { transform: scale(1.14); }
+.node:active .station { transform: scale(0.94); }
+
+/* the chosen commit */
+.pick-edge { fill: none; stroke: var(--ink); stroke-width: 9; opacity: 0; transition: opacity 0.15s; }
+.pick { fill: none; stroke: var(--amber); stroke-width: 4.5; opacity: 0; transition: opacity 0.15s; }
+.node.selected .pick-edge,
+.node.selected .pick,
+.node:focus-visible .pick-edge,
+.node:focus-visible .pick { opacity: 1; }
+.node:focus-visible .pick { stroke: #ffffff; }
+
+/* "head" marker for the commit you are on */
+.head-pin { pointer-events: none; }
+.head-pin text { fill: var(--ink); font-family: var(--display); font-size: 15px; font-weight: 700; text-anchor: middle; }
+.head-pin path { fill: none; stroke: var(--ink); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.head-bob { animation: head-bob 1.6s ease-in-out infinite; }
+@keyframes head-bob { 50% { transform: translateY(-4px); } }
+
+/* branch name badges get an outline and some depth */
+.tip-depth { fill: var(--ink); }
+.tip-face { stroke: var(--ink); stroke-width: 2.5; }
+.line-name {
+  border: 2.5px solid var(--ink);
+  border-radius: 9px;
+  padding: 4px 11px 5px;
+  box-shadow: 0 4px 0 var(--ink);
+}
+.line-name.current { box-shadow: 0 4px 0 var(--ink), 0 0 0 3px var(--paper), 0 0 0 6px var(--amber); }
+
+/* action bubbles that pop out of the clicked commit */
+.menu { position: absolute; z-index: 5; width: 0; height: 0; }
+.bubble {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 40px;
+  padding: 0 17px 1px;
+  transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy)));
+  border: 2.5px solid var(--ink);
+  border-radius: 20px;
+  background: #ffffff;
+  color: var(--ink);
+  font-family: var(--display);
+  font-size: 18px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 5px 0 var(--ink);
+  animation: bubble-out 0.3s cubic-bezier(0.3, 1.6, 0.5, 1) backwards;
+}
+.bubble:nth-child(2) { animation-delay: 45ms; }
+.bubble:nth-child(3) { animation-delay: 90ms; }
+@keyframes bubble-out { from { opacity: 0; transform: translate(-50%, -50%) scale(0.2); } }
+.bubble.rebase { background: var(--amber); }
+.bubble.details { background: #dfe8ff; }
+.bubble:hover:not(:disabled) { filter: brightness(1.05); }
+.bubble:active:not(:disabled) {
+  transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy) + 5px));
+  box-shadow: 0 0 0 var(--ink);
+}
+.bubble:disabled { background: #d5dbe5; color: var(--quiet); cursor: default; }
+.bubble:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tube-outline, .tube, .tube-shine, .bubble, .head-bob { animation: none; }
+}
+
+/* ============ layout update: rounded right-angle lines, shared rows, smooth changes ============ */
+.map-sheet { background-size: 190px 132px; background-position: 25px 64px; }
+
+/* balls glide and lines bend when the history changes (for example after a rebase) */
+.node { transition: transform 0.85s cubic-bezier(0.45, 0, 0.2, 1); }
+.tube-outline,
+.tube { transition: d 0.85s cubic-bezier(0.45, 0, 0.2, 1); }
+
+/* commit messages keep one weight, so their measured width never changes */
+.node:hover .map-label,
+.node.selected .map-label { font-weight: 500; opacity: 1; }
+
+/* branch name flags above a commit */
+.flag { pointer-events: none; }
+.flag-face { stroke: var(--ink); stroke-width: 2.5; }
+.flag text { font-family: var(--display); font-size: 14px; font-weight: 600; text-anchor: middle; }
+.flag-current { fill: none; stroke: var(--amber); stroke-width: 3; }
+
+/* ============ flat: no lighting, no shadows ============ */
+.key,
+.bubble,
+.ticket,
+.toast { box-shadow: none; }
+.key { transition: transform 0.08s; }
+.key:active:not(:disabled) { top: 0; box-shadow: none; transform: scale(0.97); }
+.bubble:active:not(:disabled) {
+  transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) scale(0.95);
+  box-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .node, .tube-outline, .tube, .key { transition: none; }
+}

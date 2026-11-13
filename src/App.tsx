@@ -1,215 +1,196 @@
-import { useEffect, useState } from "react";
-import {
-  analyzeMerge,
-  backendVersion,
-  errorMessage,
-  exportGraph,
-  runGitCommand,
-  type ChronosGraph,
-  type GitCommandResult,
-  type LineRange,
-} from "./backend";
-import "./App.css";
-
-const fmtRange = (r: LineRange | null) => (r ? `${r[0]}-${r[1]}` : "-");
-const preStyle = { maxHeight: 240, overflow: "auto", textAlign: "left" as const, whiteSpace: "pre-wrap" as const };
+import { useEffect, useMemo, useRef, useState } from "react";
+import "@fontsource/barlow/400.css";
+import "@fontsource/barlow/500.css";
+import "@fontsource/barlow/600.css";
+import "@fontsource/barlow-semi-condensed/500.css";
+import "@fontsource/barlow-semi-condensed/600.css";
+import "@fontsource/barlow-semi-condensed/700.css";
+import { backendVersion, errorMessage, exportGraph, type ChronosGraph } from "./backend";
+import { CommitDetails } from "./graph/CommitDetails";
+import { CommitGraph, type PanelMode } from "./graph/CommitGraph";
+import { carryIds, layoutGraph } from "./graph/layout";
+import "./graph/graph.css";
 
 function App() {
-  const [version, setVersion] = useState<string>();
+  const [online, setOnline] = useState<boolean | null>(null);
+  const [version, setVersion] = useState("");
   const [repoPath, setRepoPath] = useState("");
-  const [gitArgs, setGitArgs] = useState("status --short --branch");
-  const [source, setSource] = useState("feature");
-  const [target, setTarget] = useState("main");
   const [graph, setGraph] = useState<ChronosGraph>();
-  const [graphPath, setGraphPath] = useState("");
-  const [command, setCommand] = useState<GitCommandResult>();
-  const [busy, setBusy] = useState(false);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [panel, setPanel] = useState<{ mode: PanelMode; id: number } | null>(null);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const ids = useRef(new Map<string, string>());
+
+  const layout = useMemo(
+    () => (graph ? layoutGraph(graph.commits, graph.branches, graph.head, ids.current) : null),
+    [graph],
+  );
+  const selectedNode = selected && layout ? layout.byHash.get(selected) : undefined;
 
   useEffect(() => {
-    backendVersion().then(setVersion, (e: unknown) => setError(errorMessage(e)));
+    backendVersion().then(
+      (v) => {
+        setVersion(v);
+        setOnline(true);
+      },
+      (e: unknown) => {
+        setOnline(false);
+        setError(errorMessage(e));
+      },
+    );
   }, []);
 
-  async function run(action: () => Promise<void>) {
-    setBusy(true);
+  async function open() {
+    const path = repoPath.trim();
+    if (!path) return;
+    setLoading(true);
     setError("");
     try {
-      await action();
+      const { graph: next } = await exportGraph(path);
+      ids.current = new Map();
+      setGraph(next);
+      setSelected(null);
+      setPanel(null);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
-      setBusy(false);
+      setLoading(false);
     }
   }
 
-  const onExport = () =>
-    run(async () => {
-      const r = await exportGraph(repoPath);
-      setGraph(r.graph);
-      setGraphPath(r.graphPath);
-    });
+  /** Clicking a commit shows its bubbles; the ticket only opens from a bubble. */
+  function pick(hash: string | null) {
+    setSelected(hash);
+    setPanel(null);
+  }
 
-  const onMerge = () =>
-    run(async () => {
-      const r = await analyzeMerge(repoPath, source, target);
-      setGraph(r.graph);
-      setGraphPath(r.graphPath);
-    });
+  const openPanel = (mode: PanelMode) => setPanel({ mode, id: Date.now() });
 
-  const onCommand = () =>
-    run(async () => {
-      const r = await runGitCommand(repoPath, gitArgs);
-      setCommand(r.result);
-      if (r.graph) setGraph(r.graph);
-      setGraphPath(r.graphPath);
-    });
+  // Esc closes the ticket first, then the bubbles. Arrow keys travel along the branch.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement) return;
+      if (e.key === "Escape") {
+        if (panel) setPanel(null);
+        else setSelected(null);
+        return;
+      }
+      if (!layout || !selected) return;
+      const node = layout.byHash.get(selected);
+      if (!node) return;
+      let next: string | undefined;
+      if (e.key === "ArrowLeft") {
+        const parent = node.commit.parents[0];
+        if (parent && layout.byHash.has(parent)) next = parent;
+      }
+      if (e.key === "ArrowRight") {
+        const kids = layout.childrenOf.get(selected) ?? [];
+        next = kids.find((h) => layout.byHash.get(h)?.lane === node.lane) ?? kids[0];
+      }
+      if (next) {
+        setSelected(next);
+        if (panel) setPanel({ mode: "details", id: Date.now() });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [layout, selected, panel]);
 
-  const disabled = busy || repoPath.trim() === "";
-  const merge = graph?.mergeAnalysis;
+  /** Swap in a refreshed map (after a rebase), keeping the selection if that commit survived. */
+  function applyGraph(next: ChronosGraph) {
+    ids.current = carryIds(graph?.commits ?? [], ids.current, next.commits);
+    setGraph(next);
+    setSelected((current) => (current && next.commits.some((c) => c.hash === current) ? current : null));
+  }
 
   return (
-    <main className="container">
-      <h1>Chronos</h1>
-      <p className="subtitle">{version ? `C backend: ${version}` : "C backend not connected"}</p>
-
-      <div className="row">
-        <input
-          value={repoPath}
-          onChange={(e) => setRepoPath(e.currentTarget.value)}
-          placeholder="C:\path\to\repo"
-          style={{ flex: 1 }}
+    <div className="app">
+      <header className="bar">
+        <div className="wordmark">
+          <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true">
+            <circle cx="15" cy="15" r="12" fill="#fcfdfe" stroke="#16203a" strokeWidth="4" />
+            <path d="M15 8.5 V15 L20 18" fill="none" stroke="#e5484d" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          Chronos
+        </div>
+        <form
+          className="path-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void open();
+          }}
+        >
+          <input
+            className="path-input"
+            value={repoPath}
+            onChange={(e) => setRepoPath(e.currentTarget.value)}
+            placeholder="Folder path of a Git repository"
+            aria-label="Repository folder path"
+            spellCheck={false}
+          />
+          <button className="key amber" type="submit" disabled={loading || !repoPath.trim()}>
+            {loading ? "Opening" : graph ? "Reload" : "Open"}
+          </button>
+        </form>
+        <span
+          className={`link-state${online === true ? " on" : online === false ? " off" : ""}`}
+          title={online ? `Connected to ${version}` : "The C backend is not connected"}
         />
-        <button onClick={onExport} disabled={disabled}>
-          Export graph
-        </button>
-      </div>
+        {loading && <div className="progress" />}
+      </header>
 
-      <div className="row">
-        <input value={source} onChange={(e) => setSource(e.currentTarget.value)} placeholder="source branch" />
-        <span>into</span>
-        <input value={target} onChange={(e) => setTarget(e.currentTarget.value)} placeholder="target branch" />
-        <button onClick={onMerge} disabled={disabled}>
-          Analyze merge
-        </button>
-      </div>
-
-      <div className="row">
-        <span>git</span>
-        <input value={gitArgs} onChange={(e) => setGitArgs(e.currentTarget.value)} style={{ flex: 1 }} />
-        <button onClick={onCommand} disabled={disabled}>
-          Run
-        </button>
-      </div>
-
-      {busy && <p>Working...</p>}
       {error && (
-        <p className="error" role="alert">
+        <button className="toast" onClick={() => setError("")} title="Dismiss">
           {error}
-        </p>
+        </button>
       )}
 
-      {command && (
-        <section>
-          <h2>
-            {command.command}: {command.ok ? "ok" : `failed (exit ${command.exitCode})`}
-          </h2>
-          {command.error && <p className="error">{command.error}</p>}
-          {command.graphError && <p className="error">graph: {command.graphError}</p>}
-          {command.stdout && <pre style={preStyle}>{command.stdout}</pre>}
-          {command.stderr && <pre style={preStyle}>{command.stderr}</pre>}
-        </section>
-      )}
+      <main className="stage">
+        {graph && layout ? (
+          <CommitGraph
+            graph={graph}
+            layout={layout}
+            selected={selected}
+            panelOpen={panel !== null}
+            onSelect={pick}
+            onAction={openPanel}
+          />
+        ) : (
+          <div className="empty">
+            <svg width="300" height="96" viewBox="0 0 300 96" aria-hidden="true">
+              <path d="M24 30 H276" stroke="#16203a" strokeWidth="15" strokeLinecap="round" fill="none" />
+              <path d="M96 30 H112 L148 66 H212" stroke="#16203a" strokeWidth="15" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+              <path d="M24 30 H276" stroke="#e5484d" strokeWidth="9" strokeLinecap="round" fill="none" />
+              <path d="M96 30 H112 L148 66 H212" stroke="#2f5de3" strokeWidth="9" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+              <circle cx="24" cy="30" r="14" fill="#e5484d" stroke="#16203a" strokeWidth="3" />
+              <circle cx="96" cy="30" r="14" fill="#e5484d" stroke="#16203a" strokeWidth="3" />
+              <circle cx="212" cy="66" r="14" fill="#2f5de3" stroke="#16203a" strokeWidth="3" />
+              <circle cx="276" cy="30" r="14" fill="#e5484d" stroke="#16203a" strokeWidth="3" />
+            </svg>
+            <p>Paste the folder path of a Git repository above, then press Open to see its history as a map.</p>
+          </div>
+        )}
 
-      {graph && (
-        <section>
-          <h2>Graph</h2>
-          <p>
-            {graph.commits.length} commits, {graph.branches.length} branches, HEAD {graph.head?.slice(0, 7) ?? "none"}
-            <br />
-            <small>{graphPath}</small>
-          </p>
-          <p>
-            {graph.branches.map((b) => (
-              <span key={b.name} style={{ marginRight: 12, fontWeight: b.isHead ? 700 : 400 }}>
-                {b.name} @ {b.commitHash.slice(0, 7)}
-              </span>
-            ))}
-          </p>
-          <table>
-            <thead>
-              <tr>
-                <th>commit</th>
-                <th>message</th>
-                <th>parents</th>
-                <th>refs</th>
-                <th>files / symbols</th>
-              </tr>
-            </thead>
-            <tbody>
-              {graph.commits.slice(0, 50).map((c) => (
-                <tr key={c.hash}>
-                  <td>{c.shortHash}</td>
-                  <td>{c.message}</td>
-                  <td>{c.parents.length}</td>
-                  <td>{c.refs.join(", ")}</td>
-                  <td>
-                    {c.filesChanged
-                      .map((f) => `${f.status} ${f.path} [${f.symbolsTouched.map((s) => s.name).join(", ")}]`)
-                      .join("; ")}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      )}
-
-      {merge?.active && (
-        <section>
-          <h2>
-            Merge {merge.sourceBranch} into {merge.targetBranch}:{" "}
-            {merge.canAutoMerge ? "can auto-merge" : "has true collisions"}
-          </h2>
-          <table>
-            <thead>
-              <tr>
-                <th>file</th>
-                <th>symbol</th>
-                <th>status</th>
-                <th>ours</th>
-                <th>theirs</th>
-              </tr>
-            </thead>
-            <tbody>
-              {merge.conflicts.map((c, i) => (
-                <tr key={i}>
-                  <td>{c.filePath}</td>
-                  <td>{c.symbolName ?? "(file)"}</td>
-                  <td>{c.resolutionStatus}</td>
-                  <td>{fmtRange(c.oursRange)}</td>
-                  <td>{fmtRange(c.theirsRange)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {merge.conflicts
-            .filter((c) => c.resolutionStatus === "TRUE_COLLISION")
-            .map((c, i) => (
-              <details key={i}>
-                <summary>
-                  {c.filePath} / {c.symbolName ?? "(file)"}
-                </summary>
-                <p>base</p>
-                <pre style={preStyle}>{c.baseSnippet}</pre>
-                <p>ours ({merge.targetBranch})</p>
-                <pre style={preStyle}>{c.oursSnippet}</pre>
-                <p>theirs ({merge.sourceBranch})</p>
-                <pre style={preStyle}>{c.theirsSnippet}</pre>
-              </details>
-            ))}
-        </section>
-      )}
-    </main>
+        {graph && layout && selectedNode && panel && (
+          <CommitDetails
+            key={`${selectedNode.commit.hash}:${panel.id}`}
+            start={panel.mode}
+            repoPath={repoPath.trim()}
+            graph={graph}
+            layout={layout}
+            commit={selectedNode.commit}
+            lane={layout.lanes[selectedNode.lane]}
+            onGraphChange={applyGraph}
+            onSelect={(hash) => {
+              setSelected(hash);
+              setPanel({ mode: "details", id: Date.now() });
+            }}
+            onClose={() => setPanel(null)}
+          />
+        )}
+      </main>
+    </div>
   );
 }
 

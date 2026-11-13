@@ -1,36 +1,32 @@
-//! Bindings to the C backend in `backend/`, which `build.rs` compiles and links
-//! into this crate.
-//!
-//! The `extern "C"` block mirrors `backend/include/avatar.h` by hand, so keep the
-//! two in sync. The rest of the app only calls the safe wrappers below, which
-//! contain all of the `unsafe` code.
+//! Bindings to the Chronos C backend (`backend/include/avatar.h`), compiled by
+//! `build.rs`. The rest of the app only calls the safe wrappers below.
 
-use std::ffi::{CStr, c_char, c_int};
+use std::ffi::{CStr, CString, c_char, c_int};
 use std::fmt;
-use std::ptr;
+use std::sync::{Mutex, MutexGuard};
 
 use serde::Serialize;
 
-/// Mirrors `AVATAR_GRID_SIZE`.
-pub const GRID_SIZE: usize = 5;
-const GRID_CELLS: usize = GRID_SIZE * GRID_SIZE;
-
-/// Mirrors `avatar_identicon`.
-#[repr(C)]
-struct RawIdenticon {
-    cells: [u8; GRID_CELLS],
-    hue: u16,
-}
+/// Serializes calls into C: it spawns git processes and keeps the last error
+/// in thread-local storage, so one call at a time keeps behaviour predictable.
+static BACKEND_LOCK: Mutex<()> = Mutex::new(());
 
 unsafe extern "C" {
-    fn avatar_version() -> *const c_char;
-    fn avatar_status_message(status: c_int) -> *const c_char;
-    fn avatar_greet(name: *const c_char, name_len: usize, out: *mut c_char, out_size: usize) -> c_int;
-    fn avatar_identicon_generate(seed: *const c_char, seed_len: usize, out: *mut RawIdenticon) -> c_int;
+    fn chronos_export_graph(repo_path: *const c_char, output_json_path: *const c_char, max_commits: c_int) -> c_int;
+    fn chronos_run_git_cmd(repo_path: *const c_char, git_args: *const c_char, output_json_path: *const c_char) -> *mut c_char;
+    fn chronos_analyze_merge(
+        repo_path: *const c_char,
+        source_branch: *const c_char,
+        target_branch: *const c_char,
+        output_json_path: *const c_char,
+    ) -> c_int;
+    fn chronos_last_error() -> *const c_char;
+    fn chronos_free_string(s: *mut c_char);
+    fn chronos_version() -> *const c_char;
 }
 
-/// An error status reported by the C backend. Commands reject with it, so the
-/// frontend receives `{ code, message }`.
+/// An error from the C backend (or the bridge). Commands reject with it, so
+/// the frontend receives `{ code, message }`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BackendError {
     pub code: i32,
@@ -38,10 +34,18 @@ pub struct BackendError {
 }
 
 impl BackendError {
-    fn from_status(status: c_int) -> Self {
-        // SAFETY: avatar_status_message returns a static, NUL-terminated string for any status.
-        let message = unsafe { string_from_c(avatar_status_message(status)) };
-        Self { code: status, message }
+    pub fn new(code: i32, message: impl Into<String>) -> Self {
+        Self { code, message: message.into() }
+    }
+
+    /// Must be called on the same thread, under the lock, right after the C call.
+    fn from_status(code: c_int) -> Self {
+        let message = last_error();
+        if message.is_empty() {
+            Self::new(code, format!("C backend error {code}"))
+        } else {
+            Self::new(code, message)
+        }
     }
 }
 
@@ -53,119 +57,346 @@ impl fmt::Display for BackendError {
 
 impl std::error::Error for BackendError {}
 
-/// A deterministic avatar derived from a seed string.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Identicon {
-    /// Width and height of the grid, in cells.
-    pub size: usize,
-    /// Row-major cells; `true` means filled.
-    pub cells: Vec<bool>,
-    /// Foreground hue in degrees, `0..360`.
-    pub hue: u16,
+fn lock() -> MutexGuard<'static, ()> {
+    BACKEND_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Version of the C backend (`AVATAR_VERSION`).
-pub fn version() -> String {
-    // SAFETY: avatar_version returns a static, NUL-terminated string.
-    unsafe { string_from_c(avatar_version()) }
+fn c_string(value: &str, what: &str) -> Result<CString, BackendError> {
+    CString::new(value).map_err(|_| BackendError::new(-1, format!("{what} contains a NUL byte")))
 }
 
-/// Builds a greeting for `name` in C.
-pub fn greet(name: &str) -> Result<String, BackendError> {
-    let name_ptr = name.as_ptr().cast::<c_char>();
-
-    // Ask for the length first (snprintf-style), then let C fill an exactly sized buffer.
-    // SAFETY: name_ptr is valid for name.len() bytes, and a NULL buffer of size 0 is never written.
-    let len = check(unsafe { avatar_greet(name_ptr, name.len(), ptr::null_mut(), 0) })?;
-    let mut buf = vec![0u8; len + 1]; // + NUL terminator
-    // SAFETY: buf is writable for buf.len() bytes, and C writes at most that many.
-    check(unsafe { avatar_greet(name_ptr, name.len(), buf.as_mut_ptr().cast(), buf.len()) })?;
-    buf.truncate(len); // drop the NUL terminator
-
-    // C wraps the UTF-8 name in ASCII text, so the lossy fallback is never taken in practice.
-    Ok(String::from_utf8(buf).unwrap_or_else(|err| String::from_utf8_lossy(err.as_bytes()).into_owned()))
-}
-
-/// Builds the identicon for `seed` in C.
-pub fn identicon(seed: &str) -> Result<Identicon, BackendError> {
-    let mut raw = RawIdenticon { cells: [0; GRID_CELLS], hue: 0 };
-    // SAFETY: seed is valid for seed.len() bytes, and raw is a writable avatar_identicon.
-    check(unsafe { avatar_identicon_generate(seed.as_ptr().cast(), seed.len(), &mut raw) })?;
-    Ok(Identicon {
-        size: GRID_SIZE,
-        cells: raw.cells.iter().map(|&cell| cell != 0).collect(),
-        hue: raw.hue,
-    })
-}
-
-/// Maps a C status to `Ok(value)` if it is non-negative, else to a `BackendError`.
-fn check(status: c_int) -> Result<usize, BackendError> {
-    usize::try_from(status).map_err(|_| BackendError::from_status(status))
-}
-
-/// Copies a NUL-terminated C string into an owned `String`.
-///
 /// # Safety
-/// `ptr` must be non-null and point to a NUL-terminated string that stays valid
-/// for the duration of the call.
+/// `ptr` must be NULL or point to a NUL-terminated string valid for the call.
 unsafe fn string_from_c(ptr: *const c_char) -> String {
+    if ptr.is_null() {
+        return String::new();
+    }
     // SAFETY: guaranteed by the caller.
     unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned()
 }
 
+fn last_error() -> String {
+    // SAFETY: chronos_last_error returns a thread-local NUL-terminated buffer.
+    unsafe { string_from_c(chronos_last_error()) }
+}
+
+fn check(status: c_int) -> Result<(), BackendError> {
+    if status >= 0 { Ok(()) } else { Err(BackendError::from_status(status)) }
+}
+
+/// Version of the C backend.
+pub fn version() -> String {
+    // SAFETY: chronos_version returns a static NUL-terminated string.
+    unsafe { string_from_c(chronos_version()) }
+}
+
+/// Writes chronos_graph.json for `repo_path` to `output_path`.
+pub fn export_graph(repo_path: &str, output_path: &str, max_commits: i32) -> Result<(), BackendError> {
+    let repo = c_string(repo_path, "repo path")?;
+    let out = c_string(output_path, "output path")?;
+    let _guard = lock();
+    // SAFETY: both pointers are valid NUL-terminated strings for the call.
+    check(unsafe { chronos_export_graph(repo.as_ptr(), out.as_ptr(), max_commits) })
+}
+
+/// Runs a whitelisted git command and returns the backend's JSON result string.
+pub fn run_git_cmd(repo_path: &str, git_args: &str, output_path: &str) -> Result<String, BackendError> {
+    let repo = c_string(repo_path, "repo path")?;
+    let args = c_string(git_args, "git arguments")?;
+    let out = c_string(output_path, "output path")?;
+    let _guard = lock();
+    // SAFETY: all pointers are valid NUL-terminated strings for the call.
+    let ptr = unsafe { chronos_run_git_cmd(repo.as_ptr(), args.as_ptr(), out.as_ptr()) };
+    if ptr.is_null() {
+        return Err(BackendError::from_status(-4));
+    }
+    // SAFETY: ptr is a NUL-terminated string allocated by the backend; we copy
+    // it and then release it with the matching free function exactly once.
+    let result = unsafe { string_from_c(ptr) };
+    unsafe { chronos_free_string(ptr) };
+    Ok(result)
+}
+
+/// Analyzes merging `source_branch` into `target_branch` and writes the graph.
+pub fn analyze_merge(
+    repo_path: &str,
+    source_branch: &str,
+    target_branch: &str,
+    output_path: &str,
+) -> Result<(), BackendError> {
+    let repo = c_string(repo_path, "repo path")?;
+    let src = c_string(source_branch, "source branch")?;
+    let tgt = c_string(target_branch, "target branch")?;
+    let out = c_string(output_path, "output path")?;
+    let _guard = lock();
+    // SAFETY: all pointers are valid NUL-terminated strings for the call.
+    check(unsafe { chronos_analyze_merge(repo.as_ptr(), src.as_ptr(), tgt.as_ptr(), out.as_ptr()) })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
+    //! Integration tests: build a throwaway repo with known answers, then run
+    //! every backend feature against it. Requires `git` (>= 2.38) on PATH.
 
-    // Known answer from backend/tests/test_avatar.c. If this fails while the C
-    // tests pass, RawIdenticon no longer matches avatar_identicon.
-    #[rustfmt::skip]
-    const ADA_CELLS: [u8; GRID_CELLS] = [
-        0, 0, 1, 0, 0,
-        0, 0, 0, 0, 0,
-        0, 1, 0, 1, 0,
-        0, 1, 1, 1, 0,
-        1, 1, 0, 1, 1,
-    ];
+    use super::*;
+    use serde_json::{Value, json};
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    fn git_output(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git").arg("-C").arg(dir).args(args).output().expect("git must be on PATH");
+        assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        git_output(dir, args);
+    }
+
+    fn write_math(dir: &Path, alpha: &str, beta: &str, gamma: &str, delta_a: &str, delta_ret: &str) {
+        let text = format!(
+            "int alpha(int x)\n{{\n    int r = {alpha};\n    return r;\n}}\n\n\
+             int beta(int x)\n{{\n    int r = {beta};\n    return r;\n}}\n\n\
+             int gamma(int x)\n{{\n    int r = {gamma};\n    return r;\n}}\n\n\
+             int delta(int x)\n{{\n    int a = {delta_a};\n    int b = a + 1;\n    int c = b + 1;\n    return {delta_ret};\n}}\n"
+        );
+        std::fs::write(dir.join("math.c"), text).unwrap();
+    }
+
+    /// Fixture repo:
+    ///   base     -> math.c with alpha/beta/gamma/delta
+    ///   feature  -> edits alpha (l.3), beta (l.9), delta return (l.24), adds feature.c
+    ///   main     -> edits beta (l.9), gamma (l.15), delta first line (l.21)
+    ///   rename-test -> renames math.c to calc.c
+    struct Fixture {
+        dir: PathBuf,
+        out: PathBuf,
+    }
+
+    impl Fixture {
+        fn new(name: &str) -> Self {
+            let base = std::env::temp_dir().join(format!("chronos-{name}-{}", std::process::id()));
+            let dir = base.join("repo");
+            let out = base.join("graph.json");
+            let _ = std::fs::remove_dir_all(&base);
+            std::fs::create_dir_all(&dir).unwrap();
+
+            git(&dir, &["init", "-q", "-b", "main"]);
+            git(&dir, &["config", "user.name", "Chronos Test"]);
+            git(&dir, &["config", "user.email", "chronos@example.com"]);
+            git(&dir, &["config", "core.autocrlf", "false"]);
+            git(&dir, &["config", "commit.gpgsign", "false"]);
+
+            write_math(&dir, "x + 1", "x * 2", "x - 3", "x", "a + b + c");
+            git(&dir, &["add", "-A"]);
+            git(&dir, &["commit", "-q", "-m", "base: four functions"]);
+
+            git(&dir, &["switch", "-q", "-c", "feature"]);
+            write_math(&dir, "x + 10", "x * 4", "x - 3", "x", "a + b + c + 1");
+            std::fs::write(dir.join("feature.c"), "int feature_fn(void)\n{\n    return 42;\n}\n").unwrap();
+            git(&dir, &["add", "-A"]);
+            git(&dir, &["commit", "-q", "-m", "feature: alpha, beta, delta return, new feature.c"]);
+            git(&dir, &["tag", "v0.1-feature"]);
+
+            git(&dir, &["switch", "-q", "main"]);
+            write_math(&dir, "x + 1", "x * 3", "x - 4", "x + 100", "a + b + c");
+            git(&dir, &["add", "-A"]);
+            git(&dir, &["commit", "-q", "-m", "main: beta, gamma, delta first line"]);
+
+            git(&dir, &["switch", "-q", "-c", "rename-test"]);
+            git(&dir, &["mv", "math.c", "calc.c"]);
+            git(&dir, &["commit", "-q", "-m", "rename math.c -> calc.c"]);
+            git(&dir, &["switch", "-q", "main"]);
+
+            Self { dir, out }
+        }
+
+        fn repo(&self) -> String {
+            self.dir.to_string_lossy().into_owned()
+        }
+
+        fn out(&self) -> String {
+            self.out.to_string_lossy().into_owned()
+        }
+
+        fn graph(&self) -> Value {
+            serde_json::from_str(&std::fs::read_to_string(&self.out).unwrap()).unwrap()
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            if let Some(base) = self.dir.parent() {
+                let _ = std::fs::remove_dir_all(base);
+            }
+        }
+    }
+
+    fn commit<'a>(graph: &'a Value, message: &str) -> &'a Value {
+        graph["commits"].as_array().unwrap().iter().find(|c| c["message"] == message)
+            .unwrap_or_else(|| panic!("no commit with message {message:?}"))
+    }
+
+    fn file<'a>(commit: &'a Value, path: &str) -> &'a Value {
+        commit["filesChanged"].as_array().unwrap().iter().find(|f| f["path"] == path)
+            .unwrap_or_else(|| panic!("no file {path:?} in commit {}", commit["message"]))
+    }
+
+    fn symbol<'a>(file: &'a Value, name: &str) -> &'a Value {
+        file["symbolsTouched"].as_array().unwrap().iter().find(|s| s["name"] == name)
+            .unwrap_or_else(|| panic!("no symbol {name:?} in {}", file["path"]))
+    }
+
+    fn conflict<'a>(graph: &'a Value, symbol: &str) -> &'a Value {
+        graph["mergeAnalysis"]["conflicts"].as_array().unwrap().iter().find(|c| c["symbolName"] == symbol)
+            .unwrap_or_else(|| panic!("no conflict entry for {symbol:?}"))
+    }
+
+    fn assert_symbol(file: &Value, name: &str, change: &str, start: u64, end: u64) {
+        let s = symbol(file, name);
+        assert_eq!(s["changeType"], change, "{name} changeType");
+        assert_eq!(s["startLine"], start, "{name} startLine");
+        assert_eq!(s["endLine"], end, "{name} endLine");
+    }
 
     #[test]
     fn version_is_reported() {
-        assert_eq!(version(), "0.1.0");
+        assert!(version().starts_with("chronos-backend"));
     }
 
     #[test]
-    fn greet_round_trips_utf8() {
-        assert_eq!(greet("Ada").unwrap(), "Hello, Ada! You've been greeted from C.");
-        assert_eq!(greet("Zoë 🙂").unwrap(), "Hello, Zoë 🙂! You've been greeted from C.");
+    fn export_graph_extracts_dag_files_and_symbols() {
+        let fx = Fixture::new("graph");
+        export_graph(&fx.repo(), &fx.out(), 0).unwrap();
+        let g = fx.graph();
+
+        assert_eq!(g["commits"].as_array().unwrap().len(), 4);
+        assert_eq!(g["head"], git_output(&fx.dir, &["rev-parse", "HEAD"]).trim());
+        assert_eq!(g["mergeAnalysis"]["active"], false);
+
+        let branches = g["branches"].as_array().unwrap();
+        assert_eq!(branches.len(), 3);
+        let main = branches.iter().find(|b| b["name"] == "main").unwrap();
+        assert_eq!(main["isHead"], true);
+
+        let base = commit(&g, "base: four functions");
+        assert_eq!(base["parents"].as_array().unwrap().len(), 0);
+
+        let feat = commit(&g, "feature: alpha, beta, delta return, new feature.c");
+        assert!(feat["refs"].as_array().unwrap().iter().any(|r| r == "tag: v0.1-feature"));
+        let new_file = file(feat, "feature.c");
+        assert_eq!(new_file["status"], "A");
+        assert_eq!(new_file["additions"], 4);
+        assert_symbol(new_file, "feature_fn", "ADDED", 1, 4);
+        let math = file(feat, "math.c");
+        assert_eq!(math["status"], "M");
+        assert_symbol(math, "alpha", "MODIFIED", 3, 3);
+        assert_symbol(math, "beta", "MODIFIED", 9, 9);
+        assert_symbol(math, "delta", "MODIFIED", 24, 24);
+
+        let main_commit = commit(&g, "main: beta, gamma, delta first line");
+        assert!(main_commit["refs"].as_array().unwrap().iter().any(|r| r == "HEAD -> main"));
+        let math = file(main_commit, "math.c");
+        assert_symbol(math, "beta", "MODIFIED", 9, 9);
+        assert_symbol(math, "gamma", "MODIFIED", 15, 15);
+        assert_symbol(math, "delta", "MODIFIED", 21, 21);
+
+        let rename = commit(&g, "rename math.c -> calc.c");
+        let calc = file(rename, "calc.c");
+        assert_eq!(calc["status"], "R");
+        assert_eq!(calc["oldPath"], "math.c");
+        assert_eq!(calc["additions"], 0);
+        assert_eq!(calc["deletions"], 0);
     }
 
     #[test]
-    fn greet_reports_c_errors() {
-        let err = greet("").unwrap_err();
-        assert_eq!(err.code, -2); // AVATAR_ERR_EMPTY_NAME
-        assert_eq!(err.message, "name must not be empty");
+    fn analyze_merge_classifies_every_symbol() {
+        let fx = Fixture::new("merge");
+        let head_before = git_output(&fx.dir, &["rev-parse", "HEAD"]);
+        analyze_merge(&fx.repo(), "feature", "main", &fx.out()).unwrap();
+        let g = fx.graph();
+        let m = &g["mergeAnalysis"];
+
+        assert_eq!(m["active"], true);
+        assert_eq!(m["sourceBranch"], "feature");
+        assert_eq!(m["targetBranch"], "main");
+        assert_eq!(m["canAutoMerge"], false);
+        assert_eq!(m["mergeBase"], git_output(&fx.dir, &["merge-base", "main", "feature"]).trim());
+
+        let beta = conflict(&g, "beta");
+        assert_eq!(beta["resolutionStatus"], "TRUE_COLLISION");
+        assert_eq!(beta["oursRange"], json!([9, 9]));
+        assert_eq!(beta["theirsRange"], json!([9, 9]));
+        assert!(beta["baseSnippet"].as_str().unwrap().contains("x * 2"));
+        assert!(beta["oursSnippet"].as_str().unwrap().contains("x * 3"));
+        assert!(beta["theirsSnippet"].as_str().unwrap().contains("x * 4"));
+
+        let delta = conflict(&g, "delta");
+        assert_eq!(delta["resolutionStatus"], "AUTO_RESOLVABLE");
+        assert_eq!(delta["oursRange"], json!([21, 21]));
+        assert_eq!(delta["theirsRange"], json!([24, 24]));
+
+        let gamma = conflict(&g, "gamma");
+        assert_eq!(gamma["resolutionStatus"], "CLEAN");
+        assert_eq!(gamma["oursRange"], json!([15, 15]));
+        assert_eq!(gamma["theirsRange"], Value::Null);
+
+        let alpha = conflict(&g, "alpha");
+        assert_eq!(alpha["resolutionStatus"], "CLEAN");
+        assert_eq!(alpha["oursRange"], Value::Null);
+        assert_eq!(alpha["theirsRange"], json!([3, 3]));
+
+        let feature_fn = conflict(&g, "feature_fn");
+        assert_eq!(feature_fn["resolutionStatus"], "CLEAN");
+        assert_eq!(feature_fn["filePath"], "feature.c");
+
+        // Non-destructive: working tree, index and HEAD untouched.
+        assert_eq!(git_output(&fx.dir, &["status", "--porcelain"]), "");
+        assert_eq!(git_output(&fx.dir, &["rev-parse", "HEAD"]), head_before);
     }
 
     #[test]
-    fn identicon_matches_c_known_answer() {
-        let icon = identicon("Ada").unwrap();
-        assert_eq!(icon.size, GRID_SIZE);
-        assert_eq!(icon.cells, ADA_CELLS.map(|cell| cell == 1).to_vec());
-        assert_eq!(icon.hue, 53);
+    fn run_git_cmd_executes_whitelisted_commands_and_refreshes_graph() {
+        let fx = Fixture::new("run");
+        let run = |args: &str| -> Value {
+            serde_json::from_str(&run_git_cmd(&fx.repo(), args, &fx.out()).unwrap()).unwrap()
+        };
+
+        let blocked = run("config user.name hacker");
+        assert_eq!(blocked["ok"], false);
+        assert!(blocked["error"].as_str().unwrap().contains("not allowed"));
+
+        let status = run("status --short --branch");
+        assert_eq!(status["ok"], true);
+        assert_eq!(status["graphStatus"], 0);
+        assert!(status["stdout"].as_str().unwrap().contains("## main"));
+
+        let commit_result = run("commit --allow-empty -m \"live test commit\"");
+        assert_eq!(commit_result["ok"], true, "{commit_result}");
+        commit(&fx.graph(), "live test commit");
+
+        let merge = run("merge feature");
+        assert_eq!(merge["ok"], false);
+        assert_eq!(merge["exitCode"], 1);
+        assert_eq!(merge["graphStatus"], 0);
+
+        let abort = run("merge --abort");
+        assert_eq!(abort["ok"], true, "{abort}");
+        assert_eq!(git_output(&fx.dir, &["status", "--porcelain"]), "");
     }
 
     #[test]
-    fn identicon_accepts_empty_seed() {
-        let icon = identicon("").unwrap();
-        assert_eq!(icon.cells.len(), GRID_CELLS);
-        assert!(icon.hue < 360);
-    }
+    fn errors_come_back_as_backend_errors() {
+        let fx = Fixture::new("errors");
+        let missing = fx.dir.join("does-not-exist").to_string_lossy().into_owned();
 
-    #[test]
-    fn raw_identicon_layout_matches_c() {
-        // sizeof(avatar_identicon) and offsetof(avatar_identicon, hue) on every
-        // mainstream ABI, where uint16_t is 2-byte aligned.
-        assert_eq!(std::mem::size_of::<RawIdenticon>(), 28);
-        assert_eq!(std::mem::offset_of!(RawIdenticon, hue), 26);
+        let err = export_graph(&missing, &fx.out(), 0).unwrap_err();
+        assert_eq!(err.code, -2, "{err}"); // AVATAR_ERR_GIT
+
+        let err = analyze_merge(&fx.repo(), "-evil", "main", &fx.out()).unwrap_err();
+        assert_eq!(err.code, -1, "{err}"); // AVATAR_ERR_ARGS
+
+        let err = analyze_merge(&fx.repo(), "no-such-branch", "main", &fx.out()).unwrap_err();
+        assert_eq!(err.code, -2, "{err}");
     }
 }

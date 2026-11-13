@@ -1,8 +1,8 @@
 /* From the repository root:
- * cc -std=c11 -Wall -Wextra -Werror -pedantic -Ibackend/include backend/src/graph.c backend/tests/test_graph_json.c -o test_graph_json
- * ./test_graph_json
+ * cc -std=c11 -Wall -Wextra -Werror -pedantic -Ibackend/include backend/src/mapper.c backend/tests/test_mapper_json.c -o test_mapper_json
+ * ./test_mapper_json
  */
-#include "graph.h"
+#include "mapper.h"
 
 #include <assert.h>
 #include <limits.h>

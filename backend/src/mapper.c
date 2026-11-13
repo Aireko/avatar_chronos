@@ -1,9 +1,151 @@
-#include "graph.h"
-
+#include "mapper.h"
+#include "mapper_internal.h"
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+typedef struct {
+    const char *name;
+    const GraphSymbol *symbol;
+} NameEntry;
+
+struct MapperLookup {
+    const RepositoryGraph *graph;
+    NameEntry *refs;
+    NameEntry *short_names;
+    NameEntry *qualified_names;
+    size_t callable_count;
+};
+
+static int compare_entries(const void *a, const void *b)
+{
+    const NameEntry *left = a;
+    const NameEntry *right = b;
+    int order = strcmp(left->name, right->name);
+    if (order != 0) return order;
+    return (left->symbol > right->symbol) - (left->symbol < right->symbol);
+}
+
+static size_t find_name(const NameEntry *entries, size_t count, const char *name)
+{
+    size_t first = 0;
+    while (first < count) {
+        size_t middle = first + (count - first) / 2;
+        if (strcmp(entries[middle].name, name) < 0) first = middle + 1;
+        else count = middle;
+    }
+    return first;
+}
+
+void mapper_lookup_free(MapperLookup *lookup)
+{
+    if (!lookup) return;
+    free(lookup->refs);
+    free(lookup->short_names);
+    free(lookup->qualified_names);
+    free(lookup);
+}
+
+int mapper_lookup_build(const RepositoryGraph *graph, MapperLookup **out)
+{
+    MapperLookup *lookup = calloc(1, sizeof *lookup);
+    if (!lookup) return CHRONOS_OUT_OF_MEMORY;
+    lookup->graph = graph;
+    size_t count = graph->node_count;
+    if (count) {
+        lookup->refs = calloc(count, sizeof *lookup->refs);
+        lookup->short_names = calloc(count, sizeof *lookup->short_names);
+        lookup->qualified_names = calloc(count, sizeof *lookup->qualified_names);
+        if (!lookup->refs || !lookup->short_names || !lookup->qualified_names) {
+            mapper_lookup_free(lookup);
+            return CHRONOS_OUT_OF_MEMORY;
+        }
+        for (size_t i = 0; i < count; ++i) {
+            const GraphSymbol *node = &graph->nodes[i];
+            lookup->refs[i] = (NameEntry){node->ref.id, node};
+            if (node->kind != PARSER_CLASS && node->form == PARSER_DEFINITION) {
+                size_t j = lookup->callable_count++;
+                lookup->short_names[j] = (NameEntry){node->name, node};
+                lookup->qualified_names[j] = (NameEntry){node->qualified_name, node};
+            }
+        }
+        qsort(lookup->refs, count, sizeof *lookup->refs, compare_entries);
+        qsort(lookup->short_names, lookup->callable_count, sizeof *lookup->short_names, compare_entries);
+        qsort(lookup->qualified_names, lookup->callable_count, sizeof *lookup->qualified_names, compare_entries);
+    }
+    *out = lookup;
+    return CHRONOS_OK;
+}
+
+const GraphSymbol *mapper_lookup_ref(const MapperLookup *lookup, const SymbolVersionRef *ref)
+{
+    if (!ref || !ref->id || !ref->revision.repository_id || !ref->revision.commit_sha ||
+        strcmp(lookup->graph->revision.repository_id, ref->revision.repository_id) != 0 ||
+        strcmp(lookup->graph->revision.commit_sha, ref->revision.commit_sha) != 0) return NULL;
+    size_t i = find_name(lookup->refs, lookup->graph->node_count, ref->id);
+    return i < lookup->graph->node_count && strcmp(lookup->refs[i].name, ref->id) == 0
+               ? lookup->refs[i].symbol : NULL;
+}
+
+static int identifier_byte(unsigned char byte, int first)
+{
+    return (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
+           byte == '_' || byte >= 0x80 || (!first && byte >= '0' && byte <= '9');
+}
+
+static int direct_name(const char *text)
+{
+    const unsigned char *p = (const unsigned char *)text;
+    if (p[0] == ':' && p[1] == ':') p += 2;
+    for (;;) {
+        if (!identifier_byte(*p++, 1)) return 0;
+        while (identifier_byte(*p, 0)) ++p;
+        if (*p == '\0') return 1;
+        if (p[0] != ':' || p[1] != ':') return 0;
+        p += 2;
+    }
+}
+
+int mapper_resolve_call(const MapperLookup *lookup, GraphCall *call, const GraphSymbol *caller)
+{
+    const char *name = call->callee_text;
+    if (!direct_name(name)) return CHRONOS_OK;
+    int absolute = name[0] == ':' && name[1] == ':';
+    if (absolute) name += 2;
+    const NameEntry *names = absolute || strstr(name, "::") ? lookup->qualified_names
+                                                           : lookup->short_names;
+    size_t first = find_name(names, lookup->callable_count, name);
+    size_t last = first;
+    size_t count = 0;
+    const GraphSymbol *target = NULL;
+    while (last < lookup->callable_count && strcmp(names[last].name, name) == 0) {
+        const GraphSymbol *node = names[last++].symbol;
+        if (strcmp(caller->language, node->language) == 0) {
+            ++count;
+            target = node;
+        }
+    }
+    /* A unique indexed candidate is usable even with partial inventory.
+     * The graph reports incomplete edge coverage in that case. */
+    if (count == 1) {
+        call->resolution = CALL_RESOLVED;
+        call->callee = &target->ref;
+    } else if (count > 1) {
+        SymbolVersionRef *candidates = calloc(count, sizeof *candidates);
+        if (!candidates) return CHRONOS_OUT_OF_MEMORY;
+        call->resolution = CALL_AMBIGUOUS;
+        call->candidates = candidates;
+        call->candidate_count = count;
+        size_t next = 0;
+        for (size_t i = first; i < last; ++i) {
+            if (strcmp(caller->language, names[i].symbol->language) == 0)
+                candidates[next++] = names[i].symbol->ref;
+        }
+    }
+    return CHRONOS_OK;
+}
 
 typedef struct {
     char *output;
@@ -42,14 +184,15 @@ static void write_string(JsonWriter *writer, const char *value)
     }
 
     write_text(writer, "\"");
-    while (*cursor != '\0' && writer->status >= 0) {
+    const unsigned char *end = cursor + strlen(value);
+    while (cursor < end && writer->status >= 0) {
         const unsigned char *start = cursor;
-        while (*cursor >= 0x20 && *cursor != '"' && *cursor != '\\') {
+        while (cursor < end && *cursor >= 0x20 && *cursor != '"' && *cursor != '\\') {
             ++cursor;
         }
         write_bytes(writer, (const char *)start, (size_t)(cursor - start));
+        if (cursor == end) break;
         switch (*cursor) {
-        case '\0': continue;
         case '"': write_text(writer, "\\\""); break;
         case '\\': write_text(writer, "\\\\"); break;
         case '\b': write_text(writer, "\\b"); break;
@@ -319,3 +462,4 @@ int graph_write_json(const RepositoryGraph *graph, char *out, size_t out_size)
     }
     return (int)writer.length;
 }
+```

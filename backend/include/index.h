@@ -2,7 +2,7 @@
 #define CHRONOS_INDEX_H
 
 #include "git_history.h"
-#include "graph.h"
+#include "mapper.h"
 
 #ifdef __cplusplus
 extern "C" {

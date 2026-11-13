@@ -1,5 +1,5 @@
 /* From the repository root:
- * cc -std=c11 -Wall -Wextra -Werror -pedantic -Ibackend/include backend/src/index.c backend/src/graph.c backend/tests/test_index.c -o test_index
+ * cc -std=c11 -Wall -Wextra -Werror -pedantic -Ibackend/include backend/src/index.c backend/src/mapper.c backend/tests/test_index.c -o test_index
  * ./test_index
  */
 #include "index.h"
@@ -65,3 +65,4 @@ int main(void)
     puts("single-revision index and graph smoke test passed");
     return 0;
 }
+```

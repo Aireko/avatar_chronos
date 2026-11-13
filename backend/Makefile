@@ -37,7 +37,7 @@ $(BUILD):
 
 $(TS_LIB): $(TS_SOURCE) | $(BUILD)
 	@set -eu; \
-	$(CC) -std=c11 -w \
+	$(CC) -std=c11 -D_DEFAULT_SOURCE -w \
 	  -I$(TS_INCLUDE) -I$(TS_ROOT)/src \
 	  -c $(TS_SOURCE) -o $(BUILD)/runtime.o; \
 	objects="$(BUILD)/runtime.o"; \

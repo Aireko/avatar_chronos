@@ -100,6 +100,28 @@ async fn analyze_merge(
     .map_err(join_error)?
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BlamePayload {
+    blame_json: String,
+}
+
+/// Who wrote each line of `file_path` (relative to the repository root) at
+/// `revision` (default HEAD), plus the functions found in the file.
+#[tauri::command]
+async fn blame_file(
+    repo_path: String,
+    file_path: String,
+    revision: Option<String>,
+) -> Result<BlamePayload, BackendError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let blame_json = ffi::blame(&repo_path, &file_path, revision.as_deref().unwrap_or(""))?;
+        Ok(BlamePayload { blame_json })
+    })
+    .await
+    .map_err(join_error)?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -113,6 +135,7 @@ pub fn run() {
             export_graph,
             run_git_command,
             analyze_merge,
+            blame_file,
             ai::commands::ai_status,
             ai::commands::ai_check_connection,
             ai::commands::ai_list_models,

@@ -87,6 +87,59 @@ export interface GitCommandResult {
   error: string | null;
 }
 
+/* ---------- blame contract (chronos_blame in backend/include/avatar.h) ---------- */
+
+export interface BlameAuthor {
+  name: string;
+  email: string;
+  lines: number;
+  commits: number;
+  /** Unix time in seconds of their newest commit that still owns a line. */
+  lastTime: number;
+  lastCommit: string;
+  lastSummary: string;
+}
+
+export interface BlameCommit {
+  hash: string;
+  author: string;
+  email: string;
+  /** Unix time in seconds. */
+  time: number;
+  summary: string;
+  /** Lines of the file this commit last changed. */
+  lines: number;
+}
+
+/** Consecutive lines (1-based, inclusive) last changed by one commit. */
+export interface BlameRange {
+  start: number;
+  end: number;
+  commit: string;
+}
+
+/** A function, method or class detected in the file, with its full extent. */
+export interface BlameSymbol {
+  name: string;
+  kind: SymbolKind;
+  startLine: number;
+  endLine: number;
+}
+
+export interface BlameReport {
+  repoPath: string;
+  path: string;
+  /** Full SHA of the blamed revision. */
+  revision: string;
+  totalLines: number;
+  /** Whole-file totals, most lines first. */
+  authors: BlameAuthor[];
+  /** Newest first. */
+  commits: BlameCommit[];
+  ranges: BlameRange[];
+  symbols: BlameSymbol[];
+}
+
 /** Mirrors `ffi::BackendError`: what a command rejects with. */
 export interface BackendError {
   code: number;
@@ -167,6 +220,16 @@ export async function analyzeMerge(
     outputPath: outputPath ?? null,
   });
   return { graphPath: raw.graphPath, graph: JSON.parse(raw.graphJson) as ChronosGraph };
+}
+
+/** Who wrote each line of `filePath` (relative to the repository root) at `revision` (default HEAD). */
+export async function blameFile(repoPath: string, filePath: string, revision?: string): Promise<BlameReport> {
+  const raw = await call<{ blameJson: string }>("blame_file", {
+    repoPath,
+    filePath,
+    revision: revision?.trim() || null,
+  });
+  return JSON.parse(raw.blameJson) as BlameReport;
 }
 
 /* ---------- errors ---------- */

@@ -24,6 +24,17 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Local AI (src/ai): talks to the Ollama server over plain HTTP. No TLS backend
+# is compiled in, so OLLAMA_BASE_URL must be http:// (see ai/config.rs).
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }
+tokio = { version = "1", features = ["macros", "sync", "time"] }
+tokio-util = "0.7"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+url = "2"
+
+[dev-dependencies]
+# The mocked Ollama server in src/ai/test_support.rs needs sockets and a runtime.
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

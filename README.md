@@ -23,6 +23,11 @@ React (src/)  --invoke()-->  Tauri commands (src-tauri/src/lib.rs)
 | `src-tauri/src/lib.rs` | Tauri commands exposed to the frontend |
 | `src/backend.ts` | Typed TypeScript wrappers around `invoke()` |
 | `src/App.tsx` | Demo UI: greets a name and draws an identicon, both computed in C |
+| `src-tauri/src/ai/` | Local AI service: Ollama client, Qwen 3.5 model rules, config, errors and the `ai_*` Tauri commands |
+| `src/ai/aiService.ts` | The single frontend entry point for local AI (typed wrappers around the `ai_*` commands) |
+| `src/ai/types.ts` | TypeScript mirrors of the AI request, response, event and error shapes |
+| `src/ai/AiPanel.tsx` | Minimal test panel for the AI integration: connection, model, download, streaming prompt |
+| `docs/ollama.md` | Setup and developer guide for Ollama + Qwen 3.5 |
 
 ## Prerequisites
 
@@ -69,6 +74,19 @@ On Windows, use an "x64 Native Tools Command Prompt for VS":
 ```bat
 cl /W4 /Ibackend\include backend\src\*.c backend\tests\test_avatar.c /Fe:test_avatar.exe && test_avatar.exe
 ```
+
+## Local AI (Ollama + Qwen 3.5)
+
+AI features run locally through [Ollama](https://ollama.com) with a Qwen 3.5 model, so by default (loopback only) prompts and code never leave the machine, and no API key is needed. Rust makes every Ollama request; the frontend calls it through `src/ai/aiService.ts`.
+
+Quick start: install Ollama, pull the default model, then start the app and use the test panel:
+
+```bash
+ollama pull qwen3.5:9b
+npm run tauri:dev
+```
+
+See [docs/ollama.md](docs/ollama.md) for installation per OS, choosing a model for your RAM/VRAM, configuration (`OLLAMA_BASE_URL`, `OLLAMA_MODEL`, ...), tests, usage from TypeScript and Rust, and troubleshooting.
 
 ## Adding a C function
 

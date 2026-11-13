@@ -16,7 +16,7 @@ extern "C" {
 /*
  * Status codes returned by the int-returning API functions.
  * Prefixed AVATAR_ so this header can share a translation unit with
- * backend/contracts/parser.h, whose ChronosStatus enum defines CHRONOS_OK.
+ * backend/include/parser.h, whose ChronosStatus enum defines CHRONOS_OK.
  */
 #define AVATAR_OK              0
 #define AVATAR_ERR_ARGS       -1

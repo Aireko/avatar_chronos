@@ -6,7 +6,7 @@ fn main() {
 }
 
 /// Compiles every `.c` file in `../backend/src` into a static library and links
-/// it into this crate. Headers come from `backend/include` and `backend/contracts`.
+/// it into this crate. Headers come from `backend/include`.
 fn build_c_backend() {
     let manifest_dir = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"),
@@ -16,11 +16,9 @@ fn build_c_backend() {
         .expect("src-tauri has a parent directory")
         .join("backend");
     let include_dir = backend_dir.join("include");
-    let contracts_dir = backend_dir.join("contracts");
     let src_dir = backend_dir.join("src");
 
     println!("cargo::rerun-if-changed={}", include_dir.display());
-    println!("cargo::rerun-if-changed={}", contracts_dir.display());
     println!("cargo::rerun-if-changed={}", src_dir.display());
 
     let mut sources: Vec<PathBuf> = std::fs::read_dir(&src_dir)
@@ -32,7 +30,7 @@ fn build_c_backend() {
     assert!(!sources.is_empty(), "no .c files in {}", src_dir.display());
 
     let mut build = cc::Build::new();
-    build.files(&sources).include(&include_dir).include(&contracts_dir);
+    build.files(&sources).include(&include_dir);
     if build.get_compiler().is_like_msvc() {
         build.flag_if_supported("/std:c11");
     } else {

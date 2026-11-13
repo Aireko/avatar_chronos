@@ -87,9 +87,12 @@ typedef struct {
  * lowercase strings ("function", "declaration", "resolved", "modified", etc.).
  * Rust/Tauri passes UTF-8 JSON to the frontend through the existing boundary. */
 
-/* Serializes graph.json v1 into out, snprintf-style: returns the full length
- * (excluding NUL), writes only when out_size > length, or a negative
- * ChronosStatus on invalid input. Pass out = NULL, out_size = 0 to measure. */
+/* Serialize a graph in its supplied order. The graph must satisfy the
+ * reference rules above and contain valid UTF-8 strings. It is borrowed
+ * for the call, must remain unchanged, and cannot overlap out.
+ * Returns byte length excluding NUL. Query with NULL, 0. A short buffer
+ * returns the required length and is untouched. A sufficient buffer is
+ * NUL-terminated. On error, return a negative code and leave out untouched. */
 int graph_write_json(const RepositoryGraph *graph, char *out, size_t out_size);
 
 #ifdef __cplusplus

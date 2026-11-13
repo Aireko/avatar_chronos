@@ -30,11 +30,39 @@ fn build_c_backend() {
     assert!(!sources.is_empty(), "no .c files in {}", src_dir.display());
 
     let mut build = cc::Build::new();
-    build.files(&sources).include(&include_dir);
+    let packages = backend_dir.parent().unwrap().join("node_modules");
+    let runtime = packages.join("tree-sitter/vendor/tree-sitter/lib");
+    let runtime_source = runtime.join("src/lib.c");
+    assert!(runtime_source.is_file(), "install npm dependencies before compiling the backend");
+    println!("cargo::rerun-if-changed={}", runtime.display());
+    build.files(&sources).include(&include_dir).include(runtime.join("include"));
     if build.get_compiler().is_like_msvc() {
         build.flag_if_supported("/std:c11");
     } else {
         build.flag_if_supported("-std=c11");
     }
     build.compile("avatar_backend");
+    let mut runtime_build = cc::Build::new();
+    runtime_build.file(runtime_source)
+        .include(runtime.join("include"))
+        .include(runtime.join("src"))
+        .warnings(false)
+        .compile("chronos_tree_sitter");
+    for (name, directory) in [
+        ("c", "tree-sitter-c/src"),
+        ("rust", "tree-sitter-rust/src"),
+        ("javascript", "tree-sitter-javascript/src"),
+        ("typescript", "tree-sitter-typescript/typescript/src"),
+        ("tsx", "tree-sitter-typescript/tsx/src"),
+    ] {
+        let source = packages.join(directory);
+        println!("cargo::rerun-if-changed={}", source.display());
+        let mut grammar = cc::Build::new();
+        grammar.file(source.join("parser.c")).include(&source).warnings(false);
+        let scanner = source.join("scanner.c");
+        if scanner.is_file() {
+            grammar.file(scanner);
+        }
+        grammar.compile(&format!("chronos_grammar_{name}"));
+    }
 }

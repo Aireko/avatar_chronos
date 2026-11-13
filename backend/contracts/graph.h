@@ -87,6 +87,11 @@ typedef struct {
  * lowercase strings ("function", "declaration", "resolved", "modified", etc.).
  * Rust/Tauri passes UTF-8 JSON to the frontend through the existing boundary. */
 
+/* Serializes graph.json v1 into out, snprintf-style: returns the full length
+ * (excluding NUL), writes only when out_size > length, or a negative
+ * ChronosStatus on invalid input. Pass out = NULL, out_size = 0 to measure. */
+int graph_write_json(const RepositoryGraph *graph, char *out, size_t out_size);
+
 #ifdef __cplusplus
 }
 #endif

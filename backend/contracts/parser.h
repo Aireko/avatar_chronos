@@ -15,7 +15,8 @@ typedef enum {
     CHRONOS_NOT_FOUND = -2,
     CHRONOS_IO_ERROR = -3,
     CHRONOS_OUT_OF_MEMORY = -4,
-    CHRONOS_NOT_IMPLEMENTED = -5
+    CHRONOS_NOT_IMPLEMENTED = -5,
+    CHRONOS_TOO_LARGE = -6
 } ChronosStatus;
 
 /* A complete empty collection proves absence. Partial items are a subset.

@@ -1,21 +1,120 @@
 // Typed wrappers for the Tauri commands in src-tauri/src/lib.rs, each of which
-// calls into the C backend in backend/.
+// calls the Chronos C backend in backend/.
 import { invoke, isTauri } from "@tauri-apps/api/core";
 
-/** Mirrors `ffi::Identicon` in src-tauri/src/ffi.rs. */
-export interface Identicon {
-  /** Width and height of the grid, in cells. */
-  size: number;
-  /** Row-major cells; `true` means filled. */
-  cells: boolean[];
-  /** Foreground hue in degrees, 0-359. */
-  hue: number;
+/* ---------- chronos_graph.json contract ---------- */
+
+export type FileStatus = "A" | "M" | "D" | "R" | "C";
+export type SymbolKind = "function" | "method" | "class";
+export type ChangeType = "ADDED" | "MODIFIED" | "DELETED";
+export type ResolutionStatus = "CLEAN" | "AUTO_RESOLVABLE" | "TRUE_COLLISION";
+export type LineRange = [number, number];
+
+export interface SymbolTouched {
+  name: string;
+  kind: SymbolKind;
+  changeType: ChangeType;
+  startLine: number;
+  endLine: number;
 }
 
-/** Mirrors `ffi::BackendError`: what a command rejects with when C reports an error. */
+export interface FileChange {
+  path: string;
+  oldPath: string | null;
+  status: FileStatus;
+  additions: number;
+  deletions: number;
+  symbolsTouched: SymbolTouched[];
+}
+
+export interface Commit {
+  hash: string;
+  shortHash: string;
+  parents: string[];
+  author: string;
+  /** Unix time in seconds. */
+  timestamp: number;
+  message: string;
+  refs: string[];
+  filesChanged: FileChange[];
+}
+
+export interface Branch {
+  name: string;
+  commitHash: string;
+  isHead: boolean;
+}
+
+export interface MergeConflict {
+  filePath: string;
+  symbolName: string | null;
+  resolutionStatus: ResolutionStatus;
+  oursRange: LineRange | null;
+  theirsRange: LineRange | null;
+  baseSnippet: string;
+  oursSnippet: string;
+  theirsSnippet: string;
+}
+
+export interface MergeAnalysis {
+  active: boolean;
+  sourceBranch: string | null;
+  targetBranch: string | null;
+  mergeBase: string | null;
+  canAutoMerge: boolean;
+  conflicts: MergeConflict[];
+}
+
+export interface ChronosGraph {
+  repoPath: string;
+  head: string | null;
+  generatedAt: number;
+  branches: Branch[];
+  commits: Commit[];
+  mergeAnalysis: MergeAnalysis;
+}
+
+export interface GitCommandResult {
+  ok: boolean;
+  exitCode: number;
+  command: string;
+  stdout: string;
+  stderr: string;
+  stdoutTruncated: boolean;
+  graphStatus: number;
+  graphPath: string | null;
+  graphError: string | null;
+  error: string | null;
+}
+
+/** Mirrors `ffi::BackendError`: what a command rejects with. */
 export interface BackendError {
   code: number;
   message: string;
+}
+
+export interface GraphLoad {
+  graphPath: string;
+  graph: ChronosGraph;
+}
+
+export interface CommandRun {
+  result: GitCommandResult;
+  graphPath: string;
+  graph: ChronosGraph | null;
+}
+
+/* ---------- commands ---------- */
+
+interface GraphPayloadRaw {
+  graphPath: string;
+  graphJson: string;
+}
+
+interface CommandPayloadRaw {
+  resultJson: string;
+  graphPath: string;
+  graphJson: string | null;
 }
 
 function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -28,8 +127,49 @@ function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
 }
 
 export const backendVersion = () => call<string>("backend_version");
-export const greet = (name: string) => call<string>("greet", { name });
-export const identicon = (seed: string) => call<Identicon>("identicon", { seed });
+
+export async function exportGraph(
+  repoPath: string,
+  options: { outputPath?: string; maxCommits?: number } = {},
+): Promise<GraphLoad> {
+  const raw = await call<GraphPayloadRaw>("export_graph", {
+    repoPath,
+    outputPath: options.outputPath ?? null,
+    maxCommits: options.maxCommits ?? null,
+  });
+  return { graphPath: raw.graphPath, graph: JSON.parse(raw.graphJson) as ChronosGraph };
+}
+
+/** gitArgs excludes the leading "git", e.g. `commit -m "fix parser"`. */
+export async function runGitCommand(repoPath: string, gitArgs: string, outputPath?: string): Promise<CommandRun> {
+  const raw = await call<CommandPayloadRaw>("run_git_command", {
+    repoPath,
+    gitArgs,
+    outputPath: outputPath ?? null,
+  });
+  return {
+    result: JSON.parse(raw.resultJson) as GitCommandResult,
+    graphPath: raw.graphPath,
+    graph: raw.graphJson ? (JSON.parse(raw.graphJson) as ChronosGraph) : null,
+  };
+}
+
+export async function analyzeMerge(
+  repoPath: string,
+  sourceBranch: string,
+  targetBranch: string,
+  outputPath?: string,
+): Promise<GraphLoad> {
+  const raw = await call<GraphPayloadRaw>("analyze_merge", {
+    repoPath,
+    sourceBranch,
+    targetBranch,
+    outputPath: outputPath ?? null,
+  });
+  return { graphPath: raw.graphPath, graph: JSON.parse(raw.graphJson) as ChronosGraph };
+}
+
+/* ---------- errors ---------- */
 
 function isBackendError(error: unknown): error is BackendError {
   return (

@@ -1,3 +1,4 @@
+pub mod ai;
 mod ffi;
 
 use ffi::BackendError;
@@ -103,11 +104,24 @@ async fn analyze_merge(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // Local Qwen 3.5 inference through Ollama (see ai/). Reads the OLLAMA_*
+        // variables and never panics: an invalid config is reported by ai_status
+        // and makes the other ai_* commands reject.
+        .manage(ai::AiService::from_env())
         .invoke_handler(tauri::generate_handler![
             backend_version,
             export_graph,
             run_git_command,
-            analyze_merge
+            analyze_merge,
+            ai::commands::ai_status,
+            ai::commands::ai_check_connection,
+            ai::commands::ai_list_models,
+            ai::commands::ai_get_model_info,
+            ai::commands::ai_select_model,
+            ai::commands::ai_pull_model,
+            ai::commands::ai_generate,
+            ai::commands::ai_generate_stream,
+            ai::commands::ai_cancel,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

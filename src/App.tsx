@@ -9,6 +9,7 @@ import {
   type GitCommandResult,
   type LineRange,
 } from "./backend";
+import AiPanel from "./ai/AiPanel";
 import "./App.css";
 
 const fmtRange = (r: LineRange | null) => (r ? `${r[0]}-${r[1]}` : "-");
@@ -209,6 +210,8 @@ function App() {
             ))}
         </section>
       )}
+
+      <AiPanel />
     </main>
   );
 }

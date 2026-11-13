@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   analyzeMerge,
   backendVersion,
@@ -9,6 +9,8 @@ import {
   type GitCommandResult,
   type LineRange,
 } from "./backend";
+import AiPanel from "./ai/AiPanel";
+import ContributorsPanel from "./blame/ContributorsPanel";
 import "./App.css";
 
 const fmtRange = (r: LineRange | null) => (r ? `${r[0]}-${r[1]}` : "-");
@@ -65,6 +67,11 @@ function App() {
     });
 
   const disabled = busy || repoPath.trim() === "";
+  // Every path seen in the exported history, offered as blame suggestions.
+  const filePaths = useMemo(
+    () => [...new Set(graph?.commits.flatMap((c) => c.filesChanged.map((f) => f.path)) ?? [])].sort(),
+    [graph],
+  );
   const merge = graph?.mergeAnalysis;
 
   return (
@@ -209,6 +216,10 @@ function App() {
             ))}
         </section>
       )}
+
+      <ContributorsPanel repoPath={repoPath} filePaths={filePaths} />
+
+      <AiPanel />
     </main>
   );
 }

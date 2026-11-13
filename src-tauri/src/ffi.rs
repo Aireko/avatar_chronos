@@ -20,6 +20,12 @@ unsafe extern "C" {
         target_branch: *const c_char,
         output_json_path: *const c_char,
     ) -> c_int;
+    fn chronos_blame(
+        repo_path: *const c_char,
+        file_path: *const c_char,
+        revision: *const c_char,
+        out_json: *mut *mut c_char,
+    ) -> c_int;
     fn chronos_last_error() -> *const c_char;
     fn chronos_free_string(s: *mut c_char);
     fn chronos_version() -> *const c_char;
@@ -133,6 +139,30 @@ pub fn analyze_merge(
     check(unsafe { chronos_analyze_merge(repo.as_ptr(), src.as_ptr(), tgt.as_ptr(), out.as_ptr()) })
 }
 
+/// Line-by-line authorship of `file_path` (relative to the repository root)
+/// at `revision` ("" means HEAD), as the backend's JSON string.
+pub fn blame(repo_path: &str, file_path: &str, revision: &str) -> Result<String, BackendError> {
+    let repo = c_string(repo_path, "repo path")?;
+    let file = c_string(file_path, "file path")?;
+    let rev = c_string(revision, "revision")?;
+    let _guard = lock();
+    let mut out: *mut c_char = std::ptr::null_mut();
+    // SAFETY: the input pointers are valid NUL-terminated strings for the call,
+    // and `out` is a valid place for the backend to store its result pointer.
+    let status = unsafe { chronos_blame(repo.as_ptr(), file.as_ptr(), rev.as_ptr(), &mut out) };
+    if status < 0 {
+        return Err(BackendError::from_status(status));
+    }
+    if out.is_null() {
+        return Err(BackendError::new(-4, "the C backend returned no blame data"));
+    }
+    // SAFETY: `out` is a NUL-terminated string allocated by the backend; we copy
+    // it and release it with the matching free function exactly once.
+    let json = unsafe { string_from_c(out) };
+    unsafe { chronos_free_string(out) };
+    Ok(json)
+}
+
 #[cfg(test)]
 mod tests {
     //! Integration tests: build a throwaway repo with known answers, then run
@@ -144,7 +174,19 @@ mod tests {
     use std::process::Command;
 
     fn git_output(dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git").arg("-C").arg(dir).args(args).output().expect("git must be on PATH");
+        // Ignore identity/date overrides from the environment so results are reproducible.
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env_remove("GIT_AUTHOR_NAME")
+            .env_remove("GIT_AUTHOR_EMAIL")
+            .env_remove("GIT_AUTHOR_DATE")
+            .env_remove("GIT_COMMITTER_NAME")
+            .env_remove("GIT_COMMITTER_EMAIL")
+            .env_remove("GIT_COMMITTER_DATE")
+            .output()
+            .expect("git must be on PATH");
         assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
@@ -398,5 +440,106 @@ mod tests {
 
         let err = analyze_merge(&fx.repo(), "no-such-branch", "main", &fx.out()).unwrap_err();
         assert_eq!(err.code, -2, "{err}");
+    }
+
+    #[test]
+    fn blame_groups_lines_by_author_and_finds_functions() {
+        let fx = Fixture::new("blame");
+        // Two more commits on main by a second author, with differently cased emails.
+        write_math(&fx.dir, "x + 2", "x * 3", "x - 4", "x + 100", "a + b + c");
+        git(&fx.dir, &["-c", "user.name=Ada Lovelace", "-c", "user.email=Ada@Example.com", "commit", "-q", "--date", "2020-01-01T00:00:00+00:00", "-am", "ada: alpha"]);
+        write_math(&fx.dir, "x + 2", "x * 5", "x - 4", "x + 100", "a + b + c");
+        git(&fx.dir, &["-c", "user.name=Ada Lovelace", "-c", "user.email=ada@example.com", "commit", "-q", "--date", "2021-01-01T00:00:00+00:00", "-am", "ada: beta"]);
+
+        let b: Value = serde_json::from_str(&blame(&fx.repo(), "math.c", "").unwrap()).unwrap();
+        assert_eq!(b["path"], "math.c");
+        assert_eq!(b["revision"], git_output(&fx.dir, &["rev-parse", "HEAD"]).trim());
+        assert_eq!(b["totalLines"], 25);
+
+        let authors = b["authors"].as_array().unwrap();
+        assert_eq!(authors.len(), 2, "{authors:?}");
+        assert_eq!(authors[0]["name"], "Chronos Test");
+        assert_eq!(authors[0]["lines"], 23);
+        assert_eq!(authors[0]["commits"], 2);
+        assert_eq!(authors[1]["name"], "Ada Lovelace");
+        assert_eq!(authors[1]["email"], "ada@example.com"); // from the newest commit
+        assert_eq!(authors[1]["lines"], 2);
+        assert_eq!(authors[1]["commits"], 2);
+        assert_eq!(authors[1]["lastSummary"], "ada: beta");
+
+        let commits = b["commits"].as_array().unwrap();
+        assert_eq!(commits.len(), 4);
+        let ranges = b["ranges"].as_array().unwrap();
+        let owner = |line: u64| -> String {
+            let r = ranges.iter().find(|r| r["start"].as_u64().unwrap() <= line && line <= r["end"].as_u64().unwrap()).unwrap();
+            let c = commits.iter().find(|c| c["hash"] == r["commit"]).unwrap();
+            c["summary"].as_str().unwrap().to_owned()
+        };
+        assert_eq!(owner(3), "ada: alpha");
+        assert_eq!(owner(9), "ada: beta");
+        assert_eq!(owner(15), "main: beta, gamma, delta first line");
+        assert_eq!(owner(1), "base: four functions");
+        let covered: u64 = ranges.iter().map(|r| r["end"].as_u64().unwrap() - r["start"].as_u64().unwrap() + 1).sum();
+        assert_eq!(covered, 25);
+
+        let symbols = b["symbols"].as_array().unwrap();
+        let extent = |name: &str| -> (u64, u64) {
+            let s = symbols.iter().find(|s| s["name"] == name).unwrap_or_else(|| panic!("no symbol {name}"));
+            (s["startLine"].as_u64().unwrap(), s["endLine"].as_u64().unwrap())
+        };
+        assert_eq!(extent("alpha"), (1, 5));
+        assert_eq!(extent("beta"), (7, 11));
+        assert_eq!(extent("delta"), (19, 25));
+
+        // An older revision and a file in a subdirectory-free repo path both work.
+        let old: Value = serde_json::from_str(&blame(&fx.repo(), "./math.c", "feature").unwrap()).unwrap();
+        assert_eq!(old["authors"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn blame_finds_functions_with_tree_sitter_and_by_indentation() {
+        let fx = Fixture::new("blame-langs");
+        // TypeScript goes through tree-sitter: braces inside strings don't matter.
+        std::fs::write(
+            fx.dir.join("fmt.ts"),
+            "function fmt(s: string) {\n  const open = 'x{';\n  return open + s;\n}\n\nfunction after() {\n  return 1;\n}\n",
+        )
+        .unwrap();
+        // Python falls back to indentation, including a multi-line signature.
+        std::fs::write(
+            fx.dir.join("build.py"),
+            "def build(\n    a,\n    b,\n):\n    total = a + b\n    return total\n\n\ndef other():\n    return 2\n",
+        )
+        .unwrap();
+        git(&fx.dir, &["add", "-A"]);
+        git(&fx.dir, &["commit", "-q", "-m", "add ts and py"]);
+
+        let extents = |file: &str| -> Vec<(String, u64, u64)> {
+            let b: Value = serde_json::from_str(&blame(&fx.repo(), file, "").unwrap()).unwrap();
+            b["symbols"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| (s["name"].as_str().unwrap().to_owned(), s["startLine"].as_u64().unwrap(), s["endLine"].as_u64().unwrap()))
+                .collect()
+        };
+        assert_eq!(extents("fmt.ts"), vec![("fmt".to_owned(), 1, 4), ("after".to_owned(), 6, 8)]);
+        assert_eq!(extents("build.py"), vec![("build".to_owned(), 1, 6), ("other".to_owned(), 9, 10)]);
+    }
+
+    #[test]
+    fn blame_rejects_bad_paths_and_revisions() {
+        let fx = Fixture::new("blame-errors");
+        assert_eq!(blame(&fx.repo(), "no-such-file.c", "").unwrap_err().code, -2);
+        assert_eq!(blame(&fx.repo(), "../outside.c", "").unwrap_err().code, -1);
+        assert_eq!(blame(&fx.repo(), "/etc/passwd", "").unwrap_err().code, -1);
+        assert_eq!(blame(&fx.repo(), "math.c", "-evil").unwrap_err().code, -1);
+        assert_eq!(blame(&fx.repo(), "math.c", "no-such-branch").unwrap_err().code, -2);
+        assert_eq!(blame(&fx.repo(), "math.c", "main..feature").unwrap_err().code, -1);
+        assert_eq!(blame(&fx.repo(), "sub/../math.c", "").unwrap_err().code, -1);
+        // Revision expressions and non-canonical paths are accepted.
+        let parent: Value = serde_json::from_str(&blame(&fx.repo(), ".//math.c", "main~1").unwrap()).unwrap();
+        assert_eq!(parent["path"], "math.c");
+        assert_eq!(parent["revision"], git_output(&fx.dir, &["rev-parse", "main~1"]).trim());
     }
 }

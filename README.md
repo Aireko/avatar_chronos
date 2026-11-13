@@ -23,6 +23,11 @@ React (src/)  --invoke()-->  Tauri commands (src-tauri/src/lib.rs)
 | `src-tauri/src/lib.rs` | Tauri commands exposed to the frontend |
 | `src/backend.ts` | Typed TypeScript wrappers around `invoke()` |
 | `src/App.tsx` | Demo UI: greets a name and draws an identicon, both computed in C |
+| `src-tauri/src/ai/` | Local AI service: Ollama client, Qwen 3.5 model rules, config, errors and the `ai_*` Tauri commands |
+| `src/ai/aiService.ts` | The single frontend entry point for local AI (typed wrappers around the `ai_*` commands) |
+| `src/ai/types.ts` | TypeScript mirrors of the AI request, response, event and error shapes |
+| `src/ai/AiPanel.tsx` | Minimal test panel for the AI integration: connection, model, download, streaming prompt |
+| `docs/ollama.md` | Setup and developer guide for Ollama + Qwen 3.5 |
 
 ## Prerequisites
 

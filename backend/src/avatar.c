@@ -1862,6 +1862,723 @@ done:
     return rc;
 }
 
+/* ========================================================================== */
+/* Blame: who wrote which lines of a file                                     */
+/* ========================================================================== */
+
+#define MAX_BLAME_SYMBOLS     4096
+#define MAX_SIGNATURE_LINES   64 /* a parameter list may span this many lines */
+#define SHORT_SIGNATURE_LINES 8  /* lines to look for a body after the parameter list closes */
+
+typedef struct {
+    char      hash[65];
+    char*     author;
+    char*     email;
+    long long time;
+    char*     summary;
+    long      lines;
+} blame_commit_t;
+
+typedef struct {
+    long   start; /* 1-based, inclusive, in the blamed revision */
+    long   end;
+    size_t commit;
+} blame_range_t;
+
+typedef struct {
+    char        name[NAME_MAX_LEN];
+    const char* kind;
+    long        start;
+    long        end;
+} blame_symbol_t;
+
+typedef struct {
+    blame_commit_t* commits;
+    size_t          ncommits, capcommits;
+    blame_range_t*  ranges;
+    size_t          nranges, capranges;
+    blame_symbol_t* symbols;
+    size_t          nsymbols, capsymbols;
+    long            total_lines;
+} blame_t;
+
+static void blame_free(blame_t* b)
+{
+    size_t i;
+    for (i = 0; i < b->ncommits; i++) {
+        free(b->commits[i].author);
+        free(b->commits[i].email);
+        free(b->commits[i].summary);
+    }
+    free(b->commits);
+    free(b->ranges);
+    free(b->symbols);
+    memset(b, 0, sizeof *b);
+}
+
+static int is_hex_char(char c)
+{
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+}
+
+/* Parses "<sha> <orig-line> <final-line>[ <count>]"; returns the SHA length (40 or 64) or 0. */
+static size_t blame_header(const char* l, long* final_line)
+{
+    size_t n = 0;
+    const char* p;
+    char* endp;
+    while (is_hex_char(l[n])) n++;
+    if ((n != 40 && n != 64) || l[n] != ' ') return 0;
+    p = l + n + 1;
+    (void)strtol(p, &endp, 10); /* original line number */
+    if (endp == p || *endp != ' ') return 0;
+    *final_line = strtol(endp + 1, &endp, 10);
+    return *final_line > 0 ? n : 0;
+}
+
+static size_t blame_find_commit(blame_t* b, const char* hash, size_t n, int* ok)
+{
+    size_t i;
+    blame_commit_t* c;
+    for (i = 0; i < b->ncommits; i++) {
+        if (strncmp(b->commits[i].hash, hash, n) == 0 && b->commits[i].hash[n] == '\0') return i;
+    }
+    ARR_GROW(b->commits, b->capcommits, b->ncommits + 1, *ok);
+    if (!*ok) return 0;
+    c = &b->commits[b->ncommits];
+    memset(c, 0, sizeof *c);
+    memcpy(c->hash, hash, n);
+    c->hash[n] = '\0';
+    return b->ncommits++;
+}
+
+static void blame_set(char** field, const char* value, int* ok)
+{
+    free(*field);
+    *field = xstrdup(value);
+    if (!*field) *ok = 0;
+}
+
+/* Parses `git blame --porcelain` output into commits and line ranges. */
+static int parse_blame(const sbuf_t* out, blame_t* b)
+{
+    line_iter_t it;
+    const char* l;
+    size_t cur = 0;
+    long final_line = 0;
+    int have = 0, ok = 1;
+
+    li_init(&it, out);
+    while (ok && (l = li_next(&it)) != NULL) {
+        size_t n;
+        long ln;
+        if (l[0] == '\t') {
+            blame_range_t* last;
+            if (!have) continue;
+            last = b->nranges ? &b->ranges[b->nranges - 1] : NULL;
+            if (last && last->commit == cur && last->end + 1 == final_line) {
+                last->end = final_line;
+            } else {
+                ARR_GROW(b->ranges, b->capranges, b->nranges + 1, ok);
+                if (!ok) break;
+                b->ranges[b->nranges].start = final_line;
+                b->ranges[b->nranges].end = final_line;
+                b->ranges[b->nranges].commit = cur;
+                b->nranges++;
+            }
+            b->commits[cur].lines++;
+            if (final_line > b->total_lines) b->total_lines = final_line;
+            continue;
+        }
+        n = blame_header(l, &ln);
+        if (n) {
+            cur = blame_find_commit(b, l, n, &ok);
+            final_line = ln;
+            have = ok;
+            continue;
+        }
+        if (!have) continue;
+        if (starts_with(l, "author ")) {
+            blame_set(&b->commits[cur].author, l + 7, &ok);
+        } else if (starts_with(l, "author-mail ")) {
+            const char* e = l + 12;
+            size_t len = strlen(e);
+            if (len >= 2 && e[0] == '<' && e[len - 1] == '>') { e++; len -= 2; }
+            free(b->commits[cur].email);
+            b->commits[cur].email = xstrndup(e, len);
+            if (!b->commits[cur].email) ok = 0;
+        } else if (starts_with(l, "author-time ")) {
+            b->commits[cur].time = strtoll(l + 12, NULL, 10);
+        } else if (starts_with(l, "summary ")) {
+            blame_set(&b->commits[cur].summary, l + 8, &ok);
+        }
+    }
+    li_free(&it);
+    return ok ? CHRONOS_OK : nomem();
+}
+
+static int leading_indent(const char* s)
+{
+    int n = 0;
+    while (s[n] == ' ' || s[n] == '\t') n++;
+    return n;
+}
+
+static const char* skip_ws(const char* p)
+{
+    while (*p == ' ' || *p == '\t') p++;
+    return p;
+}
+
+static void copy_name(char* dst, size_t cap, const char* src)
+{
+    size_t n = strlen(src);
+    if (n >= cap) n = cap - 1;
+    memcpy(dst, src, n);
+    dst[n] = '\0';
+}
+
+static int is_blank(const char* s)
+{
+    return *skip_ws(s) == '\0';
+}
+
+enum { SCAN_CODE, SCAN_COMMENT, SCAN_TEMPLATE };
+
+typedef struct {
+    int mode;      /* SCAN_CODE, or inside a block comment / template literal (carries across lines) */
+    int depth;     /* '{' nesting */
+    int parens;    /* '(' nesting, so multi-line parameter lists aren't cut short */
+    int opened;    /* a '{' has been seen */
+    int semicolon; /* a ';' at depth 0 before any '{' (a prototype) */
+    int underflow; /* a '}' closed an enclosing scope before any '{' (a call inside a body) */
+} brace_scan_t;
+
+/* Index just past the literal that starts with quote `q` at s[i], or 0 if it isn't closed on this line. */
+static size_t skip_quoted(const char* s, size_t i, char q)
+{
+    size_t k = i + 1;
+    while (s[k] && s[k] != q) k += (s[k] == '\\' && s[k + 1]) ? 2 : 1;
+    return s[k] == q ? k + 1 : 0;
+}
+
+/* Scans one line of a brace language for braces and parentheses outside
+ * comments, string/char literals and template literals. */
+static void scan_braces(const char* s, brace_scan_t* st)
+{
+    size_t i = 0;
+    while (s[i]) {
+        char c = s[i];
+        if (st->mode == SCAN_COMMENT) {
+            if (c == '*' && s[i + 1] == '/') { st->mode = SCAN_CODE; i += 2; } else i++;
+            continue;
+        }
+        if (st->mode == SCAN_TEMPLATE) {
+            if (c == '\\' && s[i + 1]) i += 2;
+            else { if (c == '`') st->mode = SCAN_CODE; i++; }
+            continue;
+        }
+        if (c == '/' && s[i + 1] == '/') return;
+        if (c == '/' && s[i + 1] == '*') { st->mode = SCAN_COMMENT; i += 2; continue; }
+        if (c == '`') { st->mode = SCAN_TEMPLATE; i++; continue; }
+        if (c == '"' || c == '\'') {
+            size_t next = skip_quoted(s, i, c);
+            if (next) { i = next; continue; }
+            if (c == '"') return; /* unterminated string: ignore the rest of the line */
+            i++;                  /* a lone ' is a Rust lifetime or label: ignore it */
+            continue;
+        }
+        if (c == '(') st->parens++;
+        else if (c == ')') { if (st->parens > 0) st->parens--; }
+        else if (c == '{') { st->depth++; st->opened = 1; }
+        else if (c == '}') { if (st->depth > 0) st->depth--; else if (!st->opened) st->underflow = 1; }
+        else if (c == ';' && st->depth == 0 && !st->opened) st->semicolon = 1;
+        i++;
+    }
+}
+
+/* Adds the parentheses on one line of Python/Ruby to *parens, ignoring strings and '#' comments. */
+static void count_parens(const char* s, int* parens)
+{
+    size_t i = 0;
+    while (s[i]) {
+        char c = s[i];
+        if (c == '#') return;
+        if (c == '"' || c == '\'') {
+            size_t next = skip_quoted(s, i, c);
+            if (!next) return;
+            i = next;
+            continue;
+        }
+        if (c == '(' || c == '[') (*parens)++;
+        else if ((c == ')' || c == ']') && *parens > 0) (*parens)--;
+        i++;
+    }
+}
+
+/* Whether a line is blank or (in Python/Ruby) only a comment. Such lines never end a body. */
+static int is_filler(const char* s, int indent_lang)
+{
+    const char* t = skip_ws(s);
+    return *t == '\0' || (indent_lang && *t == '#');
+}
+
+/* Body by indentation: everything after line `from - 1` indented deeper than the
+ * definition. Ends at its last real line, so blank lines before the next
+ * definition (often written by someone else) aren't counted. */
+static long dedent_end(char** lines, long nlines, long i, long from, int indent_lang)
+{
+    int base = leading_indent(lines[i]);
+    long j, k;
+    for (j = from; j < nlines; j++) {
+        if (is_filler(lines[j], indent_lang)) continue;
+        if (leading_indent(lines[j]) <= base) {
+            if (strcmp(skip_ws(lines[j]), "end") == 0) return j; /* Ruby's "end" belongs to the def */
+            break;
+        }
+    }
+    k = j - 1;
+    while (k > i && is_filler(lines[k], indent_lang)) k--;
+    return k < from - 1 ? from - 1 : k;
+}
+
+/* Python/Ruby: the signature runs until its brackets balance; the body is indented deeper. */
+static long indent_symbol_end(char** lines, long nlines, long i, int indent_lang)
+{
+    int parens = 0;
+    long j, sig = i;
+    for (j = i; j < nlines && j - i < MAX_SIGNATURE_LINES; j++) {
+        count_parens(lines[j], &parens);
+        if (parens <= 0) { sig = j; break; }
+    }
+    return dedent_end(lines, nlines, i, sig + 1, indent_lang);
+}
+
+/* Last line (0-based) of a definition starting at line `i`, or -1 when it has
+ * no body (a C prototype) or is really a call inside another body. Brace
+ * languages end where the braces balance; Python and Ruby (indent_lang) and
+ * lines ending in ':' end before the next line indented no deeper. */
+static long symbol_end(char** lines, long nlines, long i, int indent_lang)
+{
+    const char* def = lines[i];
+    const char* end = def + strlen(def);
+    brace_scan_t st;
+    long j;
+
+    while (end > def && (end[-1] == ' ' || end[-1] == '\t')) end--;
+    if (indent_lang || (end > def && end[-1] == ':')) return indent_symbol_end(lines, nlines, i, indent_lang);
+
+    memset(&st, 0, sizeof st);
+    for (j = i; j < nlines; j++) {
+        scan_braces(lines[j], &st);
+        if (st.semicolon || st.underflow) return -1;
+        if (st.opened && st.depth == 0) return j;
+        if (st.opened) continue;
+        /* No body yet: keep looking while the parameter list is open (one parameter
+         * per line), but give up a few lines after it closes. */
+        if (j - i + 1 >= MAX_SIGNATURE_LINES) break;
+        if (st.parens == 0 && j - i + 1 >= SHORT_SIGNATURE_LINES) break;
+    }
+    if (st.opened) return nlines - 1; /* unbalanced: runs to the end of the file */
+    return dedent_end(lines, nlines, i, i + 1, 0);
+}
+
+static int is_indent_language(const char* path);
+
+/* Finds functions, methods and classes in `text` with their full line extents:
+ * exact ones from the tree-sitter parser where it supports the language,
+ * otherwise from the line-based detector plus brace/indentation extents. */
+static int detect_symbols(const sbuf_t* text, const char* path, const char* oid, blame_t* b)
+{
+    char* copy;
+    char** lines = NULL;
+    size_t caplines = 0;
+    long nlines = 0, i;
+    int ok = 1, parsed, indent_lang = is_indent_language(path);
+    char* p;
+    char* end;
+    chronos_def_t* defs = NULL;
+    size_t ndefs = 0, d;
+
+    if (!text->data || !text->len) return CHRONOS_OK;
+
+    parsed = chronos_parse_definitions(path, oid, text->data, text->len, &defs, &ndefs);
+    if (parsed < 0) return nomem();
+    if (parsed > 0) {
+        for (d = 0; d < ndefs && b->nsymbols < MAX_BLAME_SYMBOLS; d++) {
+            ARR_GROW(b->symbols, b->capsymbols, b->nsymbols + 1, ok);
+            if (!ok) break;
+            copy_name(b->symbols[b->nsymbols].name, NAME_MAX_LEN, defs[d].name);
+            b->symbols[b->nsymbols].kind = defs[d].kind;
+            b->symbols[b->nsymbols].start = defs[d].start;
+            b->symbols[b->nsymbols].end = defs[d].end;
+            b->nsymbols++;
+        }
+        chronos_free_definitions(defs, ndefs);
+        return ok ? CHRONOS_OK : nomem();
+    }
+
+    copy = xstrndup(text->data, text->len);
+    if (!copy) return nomem();
+    p = copy;
+    end = copy + text->len;
+    while (p < end && ok) {
+        char* nl = (char*)memchr(p, '\n', (size_t)(end - p));
+        char* e = nl ? nl : end;
+        if (e > p && e[-1] == '\r') e[-1] = '\0';
+        *e = '\0';
+        ARR_GROW(lines, caplines, (size_t)nlines + 1, ok);
+        if (ok) lines[nlines++] = p;
+        p = nl ? nl + 1 : end;
+    }
+
+    for (i = 0; ok && i < nlines && b->nsymbols < MAX_BLAME_SYMBOLS; i++) {
+        char name[NAME_MAX_LEN];
+        const char* kind = NULL;
+        long last;
+        if (!chronos_detect_def(lines[i], name, sizeof name, &kind)) continue;
+        last = symbol_end(lines, nlines, i, indent_lang);
+        if (last < 0) continue;
+        /* A qualified name (a::b or a.b) inside another symbol's body is a call
+         * such as tauri::async_runtime::spawn_blocking(move || { ... }), not a
+         * definition; nested methods have bare names. */
+        if (strstr(name, "::") || strchr(name, '.')) {
+            size_t k;
+            int nested = 0;
+            for (k = 0; k < b->nsymbols && !nested; k++) {
+                nested = b->symbols[k].start < i + 1 && b->symbols[k].end >= last + 1;
+            }
+            if (nested) continue;
+        }
+        ARR_GROW(b->symbols, b->capsymbols, b->nsymbols + 1, ok);
+        if (!ok) break;
+        copy_name(b->symbols[b->nsymbols].name, NAME_MAX_LEN, name);
+        b->symbols[b->nsymbols].kind = kind;
+        b->symbols[b->nsymbols].start = i + 1;
+        b->symbols[b->nsymbols].end = last + 1;
+        b->nsymbols++;
+    }
+    free(lines);
+    free(copy);
+    return ok ? CHRONOS_OK : nomem();
+}
+
+/* Validates a repository-relative path and normalizes it: forward slashes, no
+ * empty or "." segments, no trailing slash. Rejects absolute paths and "..". */
+static char* normalize_repo_file(const char* path)
+{
+    char* p;
+    char* out;
+    char* seg;
+    size_t i, n, o = 0;
+    if (!path || !*path) { set_error("file_path is empty"); return NULL; }
+    n = strlen(path);
+    if (n > 4096) { set_error("file_path is too long"); return NULL; }
+    for (i = 0; i < n; i++) {
+        if ((unsigned char)path[i] < 0x20) { set_error("file_path contains control characters"); return NULL; }
+    }
+    p = xstrdup(path);
+    out = (char*)malloc(n + 1);
+    if (!p || !out) { free(p); free(out); nomem(); return NULL; }
+    for (i = 0; i < n; i++) if (p[i] == '\\') p[i] = '/';
+    if (p[0] == '/' || (isalpha((unsigned char)p[0]) && p[1] == ':')) {
+        set_error("file_path must be relative to the repository root: %s", path);
+        free(p);
+        free(out);
+        return NULL;
+    }
+    for (seg = p;;) {
+        char* slash = strchr(seg, '/');
+        size_t len = slash ? (size_t)(slash - seg) : strlen(seg);
+        if (len == 2 && seg[0] == '.' && seg[1] == '.') {
+            set_error("file_path may not leave the repository: %s", path);
+            free(p);
+            free(out);
+            return NULL;
+        }
+        if (len && !(len == 1 && seg[0] == '.')) {
+            if (o) out[o++] = '/';
+            memcpy(out + o, seg, len);
+            o += len;
+        }
+        if (!slash) break;
+        seg = slash + 1;
+    }
+    out[o] = '\0';
+    free(p);
+    if (!o) { set_error("file_path is empty"); free(out); return NULL; }
+    return out;
+}
+
+/* Like validate_ref, but also allows ~ and ^ (HEAD~1, main^2) and @{...}:
+ * the value only ever reaches `rev-parse --verify <rev>^{commit}`. */
+static int validate_revision(const char* r)
+{
+    size_t n, i;
+    if (!r || !*r) { set_error("revision is empty"); return 0; }
+    n = strlen(r);
+    if (n > 255) { set_error("revision is too long"); return 0; }
+    if (r[0] == '-') { set_error("revision may not start with '-'"); return 0; }
+    for (i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)r[i];
+        if (c < 0x20 || c == 0x7F || c == ' ' || c == ':' || c == '?' || c == '*' || c == '[' || c == '\\') {
+            set_error("revision contains an invalid character");
+            return 0;
+        }
+    }
+    if (strstr(r, "..")) { set_error("revision may not be a range"); return 0; }
+    return 1;
+}
+
+static int ascii_ieq(const char* a, const char* b)
+{
+    for (; *a && *b; a++, b++) {
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return 0;
+    }
+    return *a == *b;
+}
+
+/* Python and Ruby files, whose definitions end by indentation rather than braces. */
+static int is_indent_language(const char* path)
+{
+    static const char* const exts[] = {".py", ".pyi", ".pyw", ".rb", ".rake", ".gemspec", ".ru", NULL};
+    static const char* const names[] = {"Rakefile", "Gemfile", "Guardfile", "Vagrantfile", NULL};
+    const char* base = strrchr(path, '/');
+    const char* dot;
+    size_t i;
+    base = base ? base + 1 : path;
+    for (i = 0; names[i]; i++) if (strcmp(base, names[i]) == 0) return 1;
+    dot = strrchr(base, '.');
+    if (!dot) return 0;
+    for (i = 0; exts[i]; i++) if (ascii_ieq(dot, exts[i])) return 1;
+    return 0;
+}
+
+/* Two commits are by the same person if the emails match (case-insensitively),
+ * or, when either email is missing, if the names match. */
+static int same_person(const blame_commit_t* a, const blame_commit_t* b)
+{
+    const char* ea = a->email ? a->email : "";
+    const char* eb = b->email ? b->email : "";
+    if (*ea && *eb) return ascii_ieq(ea, eb);
+    return strcmp(a->author ? a->author : "", b->author ? b->author : "") == 0;
+}
+
+typedef struct {
+    size_t latest; /* commit index with the newest author-time */
+    long   lines;
+    long   commits;
+} blame_author_t;
+
+static int cmp_author(const void* x, const void* y, const blame_t* b)
+{
+    const blame_author_t* a = (const blame_author_t*)x;
+    const blame_author_t* c = (const blame_author_t*)y;
+    if (a->lines != c->lines) return a->lines > c->lines ? -1 : 1;
+    if (b->commits[a->latest].time != b->commits[c->latest].time)
+        return b->commits[a->latest].time > b->commits[c->latest].time ? -1 : 1;
+    return 0;
+}
+
+static void json_blame(sbuf_t* j, const char* top, const char* path, const char* oid, const blame_t* b, int* ok)
+{
+    blame_author_t* authors = NULL;
+    size_t nauthors = 0, capauthors = 0, i, k;
+    size_t* order = NULL;
+
+    /* Group commits by person. */
+    for (i = 0; i < b->ncommits && *ok; i++) {
+        const blame_commit_t* c = &b->commits[i];
+        if (c->lines == 0) continue;
+        for (k = 0; k < nauthors; k++) {
+            if (same_person(&b->commits[authors[k].latest], c)) break;
+        }
+        if (k == nauthors) {
+            ARR_GROW(authors, capauthors, nauthors + 1, *ok);
+            if (!*ok) break;
+            authors[nauthors].latest = i;
+            authors[nauthors].lines = 0;
+            authors[nauthors].commits = 0;
+            nauthors++;
+        }
+        authors[k].lines += c->lines;
+        authors[k].commits++;
+        if (c->time > b->commits[authors[k].latest].time) authors[k].latest = i;
+    }
+    /* Insertion sort: most lines first, then most recent. Author lists are short. */
+    for (i = 1; i < nauthors; i++) {
+        blame_author_t t = authors[i];
+        k = i;
+        while (k > 0 && cmp_author(&t, &authors[k - 1], b) < 0) { authors[k] = authors[k - 1]; k--; }
+        authors[k] = t;
+    }
+    /* Commits newest first. */
+    order = (size_t*)malloc((b->ncommits ? b->ncommits : 1) * sizeof *order);
+    if (!order) { *ok = 0; free(authors); return; }
+    for (i = 0; i < b->ncommits; i++) order[i] = i;
+    for (i = 1; i < b->ncommits; i++) {
+        size_t t = order[i];
+        k = i;
+        while (k > 0 && b->commits[t].time > b->commits[order[k - 1]].time) { order[k] = order[k - 1]; k--; }
+        order[k] = t;
+    }
+
+    sb_puts(j, "{\"repoPath\":");
+    json_str(j, top);
+    sb_puts(j, ",\"path\":");
+    json_str(j, path);
+    sb_puts(j, ",\"revision\":");
+    json_str(j, oid);
+    sb_puts(j, ",\"totalLines\":");
+    sb_put_i64(j, b->total_lines);
+
+    sb_puts(j, ",\"authors\":[");
+    for (i = 0; i < nauthors; i++) {
+        const blame_commit_t* c = &b->commits[authors[i].latest];
+        if (i) sb_putc(j, ',');
+        sb_puts(j, "{\"name\":");
+        json_str(j, c->author);
+        sb_puts(j, ",\"email\":");
+        json_str(j, c->email);
+        sb_puts(j, ",\"lines\":");
+        sb_put_i64(j, authors[i].lines);
+        sb_puts(j, ",\"commits\":");
+        sb_put_i64(j, authors[i].commits);
+        sb_puts(j, ",\"lastTime\":");
+        sb_put_i64(j, c->time);
+        sb_puts(j, ",\"lastCommit\":");
+        json_str(j, c->hash);
+        sb_puts(j, ",\"lastSummary\":");
+        json_str(j, c->summary);
+        sb_putc(j, '}');
+    }
+
+    sb_puts(j, "],\"commits\":[");
+    for (i = 0; i < b->ncommits; i++) {
+        const blame_commit_t* c = &b->commits[order[i]];
+        if (i) sb_putc(j, ',');
+        sb_puts(j, "{\"hash\":");
+        json_str(j, c->hash);
+        sb_puts(j, ",\"author\":");
+        json_str(j, c->author);
+        sb_puts(j, ",\"email\":");
+        json_str(j, c->email);
+        sb_puts(j, ",\"time\":");
+        sb_put_i64(j, c->time);
+        sb_puts(j, ",\"summary\":");
+        json_str(j, c->summary);
+        sb_puts(j, ",\"lines\":");
+        sb_put_i64(j, c->lines);
+        sb_putc(j, '}');
+    }
+
+    sb_puts(j, "],\"ranges\":[");
+    for (i = 0; i < b->nranges; i++) {
+        if (i) sb_putc(j, ',');
+        sb_puts(j, "{\"start\":");
+        sb_put_i64(j, b->ranges[i].start);
+        sb_puts(j, ",\"end\":");
+        sb_put_i64(j, b->ranges[i].end);
+        sb_puts(j, ",\"commit\":");
+        json_str(j, b->commits[b->ranges[i].commit].hash);
+        sb_putc(j, '}');
+    }
+
+    sb_puts(j, "],\"symbols\":[");
+    for (i = 0; i < b->nsymbols; i++) {
+        if (i) sb_putc(j, ',');
+        sb_puts(j, "{\"name\":");
+        json_str(j, b->symbols[i].name);
+        sb_puts(j, ",\"kind\":");
+        json_str(j, b->symbols[i].kind);
+        sb_puts(j, ",\"startLine\":");
+        sb_put_i64(j, b->symbols[i].start);
+        sb_puts(j, ",\"endLine\":");
+        sb_put_i64(j, b->symbols[i].end);
+        sb_putc(j, '}');
+    }
+    sb_puts(j, "]}");
+
+    free(order);
+    free(authors);
+}
+
+int chronos_blame(const char* repo_path, const char* file_path, const char* revision, char** out_json)
+{
+    char* top = NULL;
+    char* path = NULL;
+    char* oid = NULL;
+    blame_t b;
+    proc_t pr;
+    sbuf_t spec = {0};
+    sbuf_t j = {0};
+    int rc, ok = 1;
+
+    clear_error();
+    memset(&b, 0, sizeof b);
+    if (!out_json) { set_error("out_json is required"); return CHRONOS_ERR_ARGS; }
+    *out_json = NULL;
+    if (!revision || !*revision) revision = "HEAD";
+    if (!validate_revision(revision)) return CHRONOS_ERR_ARGS;
+    path = normalize_repo_file(file_path);
+    if (!path) return CHRONOS_ERR_ARGS;
+
+    rc = resolve_repo(repo_path, &top);
+    if (rc == CHRONOS_OK) rc = resolve_commit(top, revision, &oid);
+
+    if (rc == CHRONOS_OK) {
+        /* --no-textconv: textconv filters are commands from the repository config,
+         * and their output would not line up with the symbols found in the raw blob. */
+        const char* a[] = {"blame", "--porcelain", "--no-textconv", "-w", "-M", oid, "--", path};
+        rc = git_run(top, a, 8, &pr);
+        if (rc == CHRONOS_OK) {
+            if (pr.exit_code != 0) {
+                char* msg = first_line_dup(&pr.err);
+                set_error("git blame failed for %s: %s", path, msg ? msg : "unknown error");
+                free(msg);
+                rc = CHRONOS_ERR_GIT;
+            } else {
+                rc = parse_blame(&pr.out, &b);
+            }
+            proc_free(&pr);
+        }
+    }
+
+    /* Function extents come from the same revision's file text. */
+    if (rc == CHRONOS_OK) {
+        sb_puts(&spec, oid);
+        sb_putc(&spec, ':');
+        sb_puts(&spec, path);
+        if (spec.oom) rc = nomem();
+    }
+    if (rc == CHRONOS_OK) {
+        const char* a[] = {"cat-file", "blob", spec.data};
+        rc = git_run(top, a, 3, &pr);
+        if (rc == CHRONOS_OK) {
+            if (pr.exit_code == 0) rc = detect_symbols(&pr.out, path, oid, &b);
+            proc_free(&pr);
+        }
+    }
+
+    if (rc == CHRONOS_OK) {
+        json_blame(&j, top, path, oid, &b, &ok);
+        if (!ok || j.oom) rc = nomem();
+    }
+    if (rc == CHRONOS_OK) {
+        *out_json = j.data ? j.data : xstrdup("{}");
+        if (!*out_json) rc = nomem();
+    } else {
+        sb_free(&j);
+    }
+
+    sb_free(&spec);
+    blame_free(&b);
+    free(oid);
+    free(path);
+    free(top);
+    return rc;
+}
+
 const char* chronos_last_error(void) { return g_last_error; }
 
 void chronos_free_string(char* s) { free(s); }

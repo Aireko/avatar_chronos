@@ -130,6 +130,79 @@ static void assert_contains(const char *json, const char *fragment)
     }
 }
 
+static const ContextEvidence *find_evidence(const ContextEvidence *items, size_t count,
+                                            const char *id)
+{
+    for (size_t i = 0; i < count; ++i)
+        if (strcmp(items[i].id, id) == 0) return &items[i];
+    return NULL;
+}
+
+static const ContextGraphNode *find_node(const ContextGraphNode *items, size_t count,
+                                         const char *id)
+{
+    for (size_t i = 0; i < count; ++i)
+        if (strcmp(items[i].id, id) == 0) return &items[i];
+    return NULL;
+}
+
+static int has_edge_state(const ContextGraph *graph, ContextRelationState state)
+{
+    for (size_t i = 0; i < graph->edge_count; ++i)
+        if (graph->edges[i].state == state) return 1;
+    return 0;
+}
+
+/* These checks mirror the properties a consumer needs. The fixture is then
+ * compared byte-for-byte with the serialization of these validated objects. */
+static void validate_contract_objects(const ContextGraph *graph, const ContextBrief *brief,
+                                      const ContextRequest *request)
+{
+    for (size_t i = 0; i < graph->node_count; ++i) {
+        for (size_t j = i + 1; j < graph->node_count; ++j)
+            assert(strcmp(graph->nodes[i].id, graph->nodes[j].id) != 0);
+    }
+    for (size_t i = 0; i < graph->edge_count; ++i) {
+        for (size_t j = i + 1; j < graph->edge_count; ++j)
+            assert(strcmp(graph->edges[i].id, graph->edges[j].id) != 0);
+        const ContextGraphEdge *edge = &graph->edges[i];
+        assert(edge->evidence_id != NULL);
+        assert(find_evidence(graph->evidence, graph->evidence_count, edge->evidence_id) != NULL);
+        if (edge->state == CONTEXT_RELATION_SELECTED ||
+            edge->state == CONTEXT_RELATION_OMITTED)
+            assert(find_node(graph->nodes, graph->node_count, edge->to) != NULL);
+        if (edge->state == CONTEXT_RELATION_UNRESOLVED ||
+            edge->state == CONTEXT_RELATION_AMBIGUOUS)
+            assert(edge->to == NULL);
+    }
+    for (size_t i = 0; i < graph->evidence_count; ++i) {
+        for (size_t j = i + 1; j < graph->evidence_count; ++j)
+            assert(strcmp(graph->evidence[i].id, graph->evidence[j].id) != 0);
+        assert(find_evidence(brief->evidence, brief->evidence_count,
+                             graph->evidence[i].id) != NULL);
+    }
+    for (size_t i = 0; i < brief->section_count; ++i) {
+        const ContextBriefSection *section = &brief->sections[i];
+        for (size_t j = 0; j < section->item_count; ++j) {
+            const ContextBriefItem *item = &section->items[j];
+            for (size_t k = 0; k < item->evidence_count; ++k)
+                assert(find_evidence(graph->evidence, graph->evidence_count,
+                                     item->evidence_ids[k]) != NULL);
+        }
+    }
+    for (size_t i = 0; i < brief->omitted_count; ++i) {
+        const ContextEvidence *evidence =
+            find_evidence(graph->evidence, graph->evidence_count, brief->omitted_ids[i]);
+        assert(evidence != NULL && evidence->state == CONTEXT_RELATION_OMITTED);
+    }
+    assert(brief->evidence_count == graph->evidence_count);
+    assert(has_edge_state(graph, CONTEXT_RELATION_SELECTED));
+    assert(has_edge_state(graph, CONTEXT_RELATION_OMITTED));
+    assert(has_edge_state(graph, CONTEXT_RELATION_UNRESOLVED));
+    assert(has_edge_state(graph, CONTEXT_RELATION_UNAVAILABLE));
+    assert(brief->used_source_bytes <= request->budget.max_source_bytes);
+}
+
 static char *render_brief_text(const ContextRequest *request, const ContextBrief *brief,
                                const char *head_json, const char *base_json)
 {
@@ -464,6 +537,8 @@ int main(int argc, char **argv)
         .evidence_count = sizeof evidence / sizeof evidence[0],
         .evidence_coverage = CHRONOS_COMPLETE
     };
+
+    validate_contract_objects(&graph, &brief, &request);
 
     char *brief_json = serialize_brief(&brief);
     assert_contains(brief_json, "\"id\":\"entry-points\"");

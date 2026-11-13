@@ -17,11 +17,10 @@ Regenerate after an intentional contract change:
 ```bash
 make -C backend .build/test_context_contract
 cd backend && .build/test_context_contract --write-fixtures
-python3 tests/validate_context_fixture.py
 ```
 
-`test_context_contract` compares the committed files byte-for-byte, and
-`validate_context_fixture.py` independently checks the relationships.
+`test_context_contract` validates the in-memory contract objects and then
+compares the committed files byte-for-byte with their serialization.
 
 ## Stable IDs
 

@@ -69,11 +69,7 @@ test: all
 	    "$(BUILD)/test_revision_index") sh tests/run_revision_index_test.sh "$$bin" ;; \
 	    *) "./$$bin" ;; \
 	  esac; \
-	done; \
-	if command -v python3 >/dev/null 2>&1; then \
-	  echo "Checking context compiler fixture"; \
-	  python3 tests/validate_context_fixture.py; \
-	fi
+	done
 
 clean:
 	rm -rf $(BUILD)

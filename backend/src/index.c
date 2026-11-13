@@ -1,13 +1,33 @@
 #include "index.h"
+#include "mapper_internal.h"
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* First milestone: build one graph from parser records supplied by the caller. */
+typedef struct {
+    const unsigned char *bytes;
+    size_t scope;
+    size_t first_symbol;
+    size_t symbol_count;
+} IndexedFile;
+
 struct RepositoryIndex {
     RepositoryGraph graph;
+    MapperLookup *lookup;
+    IndexScope *scopes;
+    size_t scope_count;
+    size_t scope_capacity;
+    IndexedFile *files;
+    size_t file_count;
+    ChronosCoverage file_coverage;
+    size_t *symbol_scopes;
+    IndexCallLink *links;
+    size_t *outgoing_offsets;
+    size_t *incoming_offsets;
+    size_t *outgoing;
+    size_t *incoming;
 };
 
 static void *array_new(size_t count, size_t size)
@@ -124,6 +144,11 @@ void index_graph_free(RepositoryGraph *graph)
     }
     free((void *)graph->nodes);
     free((void *)graph->edges);
+    if (graph->comparison) {
+        free_revision(graph->comparison->base);
+        free_revision(graph->comparison->head);
+        free((void *)graph->comparison);
+    }
     free_diagnostics(graph->diagnostics, graph->diagnostic_count);
     free_revision(graph->revision);
     *graph = (RepositoryGraph){0};
@@ -132,6 +157,18 @@ void index_graph_free(RepositoryGraph *graph)
 void index_free(RepositoryIndex *index)
 {
     if (index == NULL) return;
+    for (size_t i = 0; i < index->scope_count; ++i)
+        if (index->scopes[i].kind != INDEX_SYMBOL) free((void *)index->scopes[i].path);
+    for (size_t i = 0; i < index->file_count; ++i) free((void *)index->files[i].bytes);
+    free(index->scopes);
+    free(index->files);
+    free(index->symbol_scopes);
+    free(index->links);
+    free(index->outgoing_offsets);
+    free(index->incoming_offsets);
+    free(index->outgoing);
+    free(index->incoming);
+    mapper_lookup_free(index->lookup);
     index_graph_free(&index->graph);
     free(index);
 }
@@ -302,70 +339,8 @@ static int populate_nodes(RepositoryGraph *graph, GraphSymbol *nodes, const Pars
     return CHRONOS_OK;
 }
 
-static int identifier_byte(unsigned char byte, int first)
-{
-    return (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
-           byte == '_' || byte >= 0x80 || (!first && byte >= '0' && byte <= '9');
-}
-
-static int direct_name(const char *text)
-{
-    const unsigned char *p = (const unsigned char *)text;
-    if (p[0] == ':' && p[1] == ':') p += 2;
-    for (;;) {
-        if (!identifier_byte(*p++, 1)) return 0;
-        while (identifier_byte(*p, 0)) ++p;
-        if (*p == '\0') return 1;
-        if (p[0] != ':' || p[1] != ':') return 0;
-        p += 2;
-    }
-}
-
-/* A starter resolver for direct names. Only a unique same-language
- * definition in a complete graph is enough to mark a call resolved. */
-static int call_matches(const GraphSymbol *node, const GraphSymbol *caller, const char *name)
-{
-    int absolute = name[0] == ':' && name[1] == ':';
-    if (absolute) name += 2;
-    return node->kind != PARSER_CLASS && node->form == PARSER_DEFINITION &&
-           same_text(node->language, caller->language) &&
-           (absolute || strstr(name, "::") != NULL ? same_text(node->qualified_name, name) :
-                                                      same_text(node->name, name));
-}
-
-static int resolve_call(const RepositoryGraph *graph, GraphCall *edge, const GraphSymbol *caller)
-{
-    if (!direct_name(edge->callee_text)) return 1;
-    const char *name = edge->callee_text;
-    size_t count = 0;
-    const GraphSymbol *target = NULL;
-    for (size_t i = 0; i < graph->node_count; ++i) {
-        const GraphSymbol *node = &graph->nodes[i];
-        if (call_matches(node, caller, name)) {
-            ++count;
-            target = node;
-        }
-    }
-    if (count == 1 && graph->node_coverage == CHRONOS_COMPLETE) {
-        edge->resolution = CALL_RESOLVED;
-        edge->callee = &target->ref;
-    } else if (count > 1) {
-        SymbolVersionRef *candidates = array_new(count, sizeof *candidates);
-        if (candidates == NULL) return 0;
-        edge->resolution = CALL_AMBIGUOUS;
-        edge->candidates = candidates;
-        edge->candidate_count = count;
-        size_t next = 0;
-        for (size_t i = 0; i < graph->node_count; ++i) {
-            const GraphSymbol *node = &graph->nodes[i];
-            if (call_matches(node, caller, name)) candidates[next++] = node->ref;
-        }
-    }
-    return 1;
-}
-
 static int populate_calls(RepositoryGraph *graph, GraphCall *edges, const ParsedFile *file,
-                          const size_t *local_nodes)
+                          const size_t *local_nodes, const MapperLookup *lookup)
 {
     for (size_t i = 0; i < file->call_count; ++i) {
         const ParsedCall *call = &file->calls[i];
@@ -379,12 +354,16 @@ static int populate_calls(RepositoryGraph *graph, GraphCall *edges, const Parsed
             continue;
         }
         const GraphSymbol *caller = &graph->nodes[local_nodes[local]];
+        if (call->range.start_byte < caller->location.range.start_byte ||
+            call->range.end_byte > caller->location.range.end_byte)
+            return CHRONOS_INVALID_ARGUMENT;
         GraphCall *edge = &edges[graph->edge_count++];
         edge->caller = caller->ref;
         edge->call_site = (SourceLocation){graph->revision, caller->location.file_path, call->range};
         edge->resolution = CALL_UNRESOLVED;
-        if (!copy_text(&edge->callee_text, call->callee_text) ||
-            !resolve_call(graph, edge, caller)) return CHRONOS_OUT_OF_MEMORY;
+        if (!copy_text(&edge->callee_text, call->callee_text)) return CHRONOS_OUT_OF_MEMORY;
+        int status = mapper_resolve_call(lookup, edge, caller);
+        if (status < 0) return status;
     }
     return CHRONOS_OK;
 }
@@ -404,7 +383,193 @@ static ChronosCoverage graph_coverage(ChronosCoverage inventory, size_t files, s
     return CHRONOS_INCOMPLETE;
 }
 
+static int add_scope(RepositoryIndex *index, IndexScope scope, size_t *id)
+{
+    if (index->scope_count == index->scope_capacity) {
+        size_t capacity = index->scope_capacity ? index->scope_capacity * 2 : 32;
+        if (capacity < index->scope_capacity || capacity > SIZE_MAX / sizeof scope)
+            return CHRONOS_TOO_LARGE;
+        IndexScope *scopes = realloc(index->scopes, capacity * sizeof scope);
+        if (!scopes) return CHRONOS_OUT_OF_MEMORY;
+        index->scopes = scopes;
+        index->scope_capacity = capacity;
+    }
+    *id = index->scope_count++;
+    index->scopes[*id] = scope;
+    return CHRONOS_OK;
+}
+
+static int add_file_scope(RepositoryIndex *index, const ParsedFile *file, size_t *id)
+{
+    size_t parent = 0;
+    const char *path = file->file_path;
+    for (const char *p = strchr(path, '/'); p; p = strchr(p + 1, '/')) {
+        size_t length = (size_t)(p - path);
+        if (length == 0 || p[-1] == '/' || p[1] == '\0') return CHRONOS_INVALID_ARGUMENT;
+        size_t found = 1;
+        while (found < index->scope_count) {
+            const IndexScope *scope = &index->scopes[found];
+            if (scope->kind == INDEX_MODULE && scope->parent == parent &&
+                strlen(scope->path) == length && memcmp(scope->path, path, length) == 0) break;
+            ++found;
+        }
+        if (found == index->scope_count) {
+            char *module = malloc(length + 1);
+            if (!module) return CHRONOS_OUT_OF_MEMORY;
+            memcpy(module, path, length);
+            module[length] = '\0';
+            int status = add_scope(index, (IndexScope){INDEX_MODULE, parent, module, NULL,
+                                                       index->file_coverage}, &found);
+            if (status < 0) { free(module); return status; }
+        }
+        if (file->coverage != CHRONOS_COMPLETE) index->scopes[found].coverage = CHRONOS_INCOMPLETE;
+        parent = found;
+    }
+
+    const char *copy = NULL;
+    if (!copy_text(&copy, path)) return CHRONOS_OUT_OF_MEMORY;
+    int status = add_scope(index, (IndexScope){INDEX_FILE, parent, copy, NULL, file->coverage}, id);
+    if (status < 0) free((void *)copy);
+    return status;
+}
+
+static int build_scopes(RepositoryIndex *index, const IndexFileInput *inputs, size_t file_count)
+{
+    const RepositoryGraph *graph = &index->graph;
+    size_t root;
+    int status = add_scope(index, (IndexScope){INDEX_PROJECT, INDEX_NO_SCOPE, NULL, NULL,
+                                               graph->node_coverage}, &root);
+    if (status < 0) return status;
+    index->symbol_scopes = array_new(graph->node_count, sizeof *index->symbol_scopes);
+    if (graph->node_count && !index->symbol_scopes) return CHRONOS_OUT_OF_MEMORY;
+
+    for (size_t i = 0; i < file_count; ++i) {
+        IndexedFile *file = &index->files[i];
+        status = add_file_scope(index, inputs[i].parsed, &file->scope);
+        if (status < 0) return status;
+        const GitBlob *blob = inputs[i].blob;
+        if (blob) {
+            unsigned char *bytes = malloc(blob->byte_count ? blob->byte_count : 1);
+            if (!bytes) return CHRONOS_OUT_OF_MEMORY;
+            if (blob->byte_count) memcpy(bytes, blob->bytes, blob->byte_count);
+            file->bytes = bytes;
+        }
+        for (size_t j = file->first_symbol; j < file->first_symbol + file->symbol_count; ++j) {
+            const GraphSymbol *symbol = &graph->nodes[j];
+            status = add_scope(index, (IndexScope){INDEX_SYMBOL, file->scope, symbol->location.file_path,
+                                                   symbol, inputs[i].parsed->coverage},
+                               &index->symbol_scopes[j]);
+            if (status < 0) return status;
+        }
+    }
+    for (size_t i = 0; i < graph->node_count; ++i) {
+        const SymbolVersionRef *parent = graph->nodes[i].parent;
+        if (!parent) continue;
+        const GraphSymbol *symbol = mapper_lookup_ref(index->lookup, parent);
+        index->scopes[index->symbol_scopes[i]].parent = index->symbol_scopes[symbol - graph->nodes];
+    }
+    /* Parser inputs may be synthetic. Reject a cycle before exposing traversal. */
+    for (size_t i = 0; i < graph->node_count; ++i) {
+        size_t scope = index->symbol_scopes[i];
+        size_t depth = 0;
+        while (index->scopes[scope].kind == INDEX_SYMBOL) {
+            if (++depth > graph->node_count) return CHRONOS_INVALID_ARGUMENT;
+            scope = index->scopes[scope].parent;
+        }
+    }
+    return CHRONOS_OK;
+}
+
+const IndexScope *index_scopes(const RepositoryIndex *index, size_t *count)
+{
+    if (count) *count = index ? index->scope_count : 0;
+    return index ? index->scopes : NULL;
+}
+
+size_t index_find_symbol(const RepositoryIndex *index, const SymbolVersionRef *ref)
+{
+    if (!index) return INDEX_NO_SCOPE;
+    const GraphSymbol *symbol = mapper_lookup_ref(index->lookup, ref);
+    return symbol ? index->symbol_scopes[symbol - index->graph.nodes] : INDEX_NO_SCOPE;
+}
+
+static int build_call_links(RepositoryIndex *index)
+{
+    const RepositoryGraph *graph = &index->graph;
+    size_t n = index->scope_count + 1;
+    index->links = array_new(graph->edge_count, sizeof *index->links);
+    index->outgoing_offsets = array_new(n, sizeof *index->outgoing_offsets);
+    index->incoming_offsets = array_new(n, sizeof *index->incoming_offsets);
+    index->outgoing = array_new(graph->edge_count, sizeof *index->outgoing);
+    index->incoming = array_new(graph->edge_count, sizeof *index->incoming);
+    if (!index->outgoing_offsets || !index->incoming_offsets ||
+        (graph->edge_count && (!index->links || !index->outgoing || !index->incoming)))
+        return CHRONOS_OUT_OF_MEMORY;
+
+    for (size_t i = 0; i < graph->edge_count; ++i) {
+        const GraphCall *call = &graph->edges[i];
+        size_t caller = index_find_symbol(index, &call->caller);
+        size_t callee = index_find_symbol(index, call->callee);
+        index->links[i] = (IndexCallLink){call, caller, callee};
+        ++index->outgoing_offsets[caller];
+        if (callee != INDEX_NO_SCOPE) ++index->incoming_offsets[callee];
+    }
+    for (size_t i = 1; i < n; ++i) {
+        index->outgoing_offsets[i] += index->outgoing_offsets[i - 1];
+        index->incoming_offsets[i] += index->incoming_offsets[i - 1];
+    }
+    /* Filling each list in reverse restores the original graph edge order. */
+    for (size_t i = graph->edge_count; i > 0; --i) {
+        const IndexCallLink *link = &index->links[i - 1];
+        index->outgoing[--index->outgoing_offsets[link->caller]] = i - 1;
+        if (link->callee != INDEX_NO_SCOPE)
+            index->incoming[--index->incoming_offsets[link->callee]] = i - 1;
+    }
+    return CHRONOS_OK;
+}
+
+static int scope_contains(const RepositoryIndex *index, size_t scope, size_t subject)
+{
+    if (scope == INDEX_NO_SCOPE) return 1;
+    while (subject != INDEX_NO_SCOPE) {
+        if (subject == scope) return 1;
+        subject = index->scopes[subject].parent;
+    }
+    return 0;
+}
+
+void index_call_map_free(IndexCallMap *map)
+{
+    if (!map) return;
+    free((void *)map->links);
+    *map = (IndexCallMap){0};
+}
+
+int index_map_calls(const RepositoryIndex *index, size_t from, size_t to, IndexCallMap *out)
+{
+    if (!index || !out || (from != INDEX_NO_SCOPE && from >= index->scope_count) ||
+        (to != INDEX_NO_SCOPE && to >= index->scope_count)) return CHRONOS_INVALID_ARGUMENT;
+    size_t count = 0;
+    for (size_t i = 0; i < index->graph.edge_count; ++i) {
+        const IndexCallLink *link = &index->links[i];
+        if (scope_contains(index, from, link->caller) && scope_contains(index, to, link->callee))
+            ++count;
+    }
+    IndexCallLink *links = array_new(count, sizeof *links);
+    if (count && !links) return CHRONOS_OUT_OF_MEMORY;
+    size_t next = 0;
+    for (size_t i = 0; i < index->graph.edge_count; ++i) {
+        const IndexCallLink *link = &index->links[i];
+        if (scope_contains(index, from, link->caller) && scope_contains(index, to, link->callee))
+            links[next++] = *link;
+    }
+    *out = (IndexCallMap){links, count, index->graph.edge_coverage};
+    return out->coverage == CHRONOS_COMPLETE ? CHRONOS_OK : CHRONOS_PARTIAL;
+}
+
+
 static int populate_index(RepositoryIndex *index, const IndexFileInput *files, size_t file_count,
+
                           ChronosCoverage file_coverage)
 {
     RepositoryGraph *graph = &index->graph;
@@ -428,6 +593,10 @@ static int populate_index(RepositoryIndex *index, const IndexFileInput *files, s
     graph->node_coverage = all_complete ? CHRONOS_COMPLETE :
                            graph_coverage(file_coverage, file_count, available);
     graph->edge_coverage = graph->node_coverage;
+    index->file_coverage = file_coverage;
+    index->files = array_new(file_count, sizeof *index->files);
+    if (file_count && !index->files) return CHRONOS_OUT_OF_MEMORY;
+    index->file_count = file_count;
     GraphSymbol *nodes = array_new(node_capacity, sizeof *nodes);
     GraphCall *edges = array_new(edge_capacity, sizeof *edges);
     ChronosDiagnostic *diagnostics = array_new(diagnostic_capacity, sizeof *diagnostics);
@@ -449,9 +618,17 @@ static int populate_index(RepositoryIndex *index, const IndexFileInput *files, s
             }
             if (!copy_diagnostic(&diagnostics[graph->diagnostic_count++], &file->diagnostics[j])) goto done;
         }
+        index->files[i].first_symbol = graph->node_count;
         status = populate_nodes(graph, nodes, file, local_nodes, &graph->node_coverage);
         if (status < 0) goto done;
+        index->files[i].symbol_count = graph->node_count - index->files[i].first_symbol;
     }
+
+    status = mapper_lookup_build(graph, &index->lookup);
+    if (status < 0) goto done;
+    graph->edge_coverage = graph->node_coverage;
+    status = build_scopes(index, files, file_count);
+    if (status < 0) goto done;
 
     /* All nodes must be present before looking up cross-file calls. */
     for (size_t i = 0, next = 0; i < file_count; ++i) {
@@ -463,9 +640,11 @@ static int populate_index(RepositoryIndex *index, const IndexFileInput *files, s
             local_nodes[j] = node;
             if (node == next) ++next;
         }
-        status = populate_calls(graph, edges, file, local_nodes);
+        status = populate_calls(graph, edges, file, local_nodes, index->lookup);
         if (status < 0) goto done;
     }
+    status = build_call_links(index);
+    if (status < 0) goto done;
     status = graph->node_coverage == CHRONOS_COMPLETE && graph->edge_coverage == CHRONOS_COMPLETE
                  ? CHRONOS_OK : CHRONOS_PARTIAL;
 done:
@@ -494,30 +673,205 @@ int index_build(const RevisionRef *revision, const IndexFileInput *files, size_t
     return status;
 }
 
+static const IndexedFile *symbol_file(const RepositoryIndex *index, size_t scope)
+{
+    while (index->scopes[scope].kind == INDEX_SYMBOL) scope = index->scopes[scope].parent;
+    for (size_t i = 0; i < index->file_count; ++i)
+        if (index->files[i].scope == scope) return &index->files[i];
+    return NULL;
+}
+
+static ContextSource symbol_source(const RepositoryIndex *index, size_t scope)
+{
+    const IndexedFile *file = symbol_file(index, scope);
+    if (!file || !file->bytes) return (ContextSource){.status = CONTEXT_SOURCE_UNAVAILABLE};
+    const SourceLocation *location = &index->scopes[scope].symbol->location;
+    return (ContextSource){CONTEXT_SOURCE_PRESENT, location,
+                           (const char *)file->bytes + location->range.start_byte,
+                           location->range.end_byte - location->range.start_byte};
+}
+
+const RevisionRef *index_revision(const RepositoryIndex *index)
+{
+    return index ? &index->graph.revision : NULL;
+}
+
+const ChronosDiagnostic *index_diagnostics(const RepositoryIndex *index, size_t *count)
+{
+    if (count) *count = index ? index->graph.diagnostic_count : 0;
+    return index ? index->graph.diagnostics : NULL;
+}
+
+int index_symbol_source(const RepositoryIndex *index, const SymbolVersionRef *ref, ContextSource *out)
+{
+    if (!index || !ref || !out) return CHRONOS_INVALID_ARGUMENT;
+    size_t scope = index_find_symbol(index, ref);
+    if (scope == INDEX_NO_SCOPE) return CHRONOS_NOT_FOUND;
+    *out = symbol_source(index, scope);
+    return out->status == CONTEXT_SOURCE_PRESENT ? CHRONOS_OK : CHRONOS_PARTIAL;
+}
+
+static void free_ref(const SymbolVersionRef *ref)
+{
+    if (!ref) return;
+    free_revision(ref->revision);
+    free((void *)ref->id);
+}
+
+static int copy_ref(SymbolVersionRef *out, const SymbolVersionRef *ref)
+{
+    return copy_revision(&out->revision, &ref->revision) && copy_text(&out->id, ref->id);
+}
+
 void index_change_set_free(IndexChangeSet *changes)
 {
-    /* This milestone produces no change sets. */
-    if (changes != NULL) *changes = (IndexChangeSet){0};
+    if (!changes) return;
+    for (size_t i = 0; i < changes->count; ++i) {
+        const IndexSymbolChange *item = &changes->items[i];
+        free_ref(item->before);
+        free_ref(item->after);
+        free((void *)item->before);
+        free((void *)item->after);
+        for (size_t j = 0; j < item->candidate_count; ++j) free_ref(&item->candidates[j]);
+        free((void *)item->candidates);
+    }
+    free((void *)changes->items);
+    free_revision(changes->revisions.base);
+    free_revision(changes->revisions.head);
+    free_diagnostics(changes->diagnostics, changes->diagnostic_count);
+    *changes = (IndexChangeSet){0};
+}
+
+static int own_ref(const SymbolVersionRef **out, const GraphSymbol *symbol)
+{
+    if (!symbol) return 1;
+    SymbolVersionRef *ref = calloc(1, sizeof *ref);
+    if (!ref) return 0;
+    *out = ref;
+    return copy_ref(ref, &symbol->ref);
+}
+
+static ChronosCoverage path_coverage(const RepositoryIndex *index, const char *path)
+{
+    for (size_t i = 0; i < index->file_count; ++i) {
+        const IndexScope *file = &index->scopes[index->files[i].scope];
+        if (same_text(file->path, path)) return file->coverage;
+    }
+    return index->file_coverage;
+}
+
+static size_t count_matches(const RepositoryIndex *index, const GraphSymbol *anchor,
+                            const GraphSymbol **first)
+{
+    size_t count = 0;
+    for (size_t i = 0; i < index->graph.node_count; ++i) {
+        const GraphSymbol *node = &index->graph.nodes[i];
+        if (same_key(node, anchor)) {
+            if (count == 0) *first = node;
+            ++count;
+        }
+    }
+    return count;
+}
+
+static int compare_side(const RepositoryIndex *side, const RepositoryIndex *other, int is_head,
+                        IndexChangeSet *result, IndexSymbolChange *items)
+{
+    static const SymbolChangeKind added = SYMBOL_ADDED, deleted = SYMBOL_DELETED;
+    static const SymbolChangeKind modified = SYMBOL_MODIFIED, unchanged = SYMBOL_UNCHANGED;
+    for (size_t i = 0; i < side->graph.node_count; ++i) {
+        const GraphSymbol *anchor = &side->graph.nodes[i];
+        const GraphSymbol *match = NULL, *ignored = NULL;
+        const char *path = anchor->location.file_path;
+        size_t same = count_matches(side, anchor, &ignored);
+        size_t count = count_matches(other, anchor, &match);
+        int complete = path_coverage(side, path) == CHRONOS_COMPLETE &&
+                       path_coverage(other, path) == CHRONOS_COMPLETE;
+        /* The base pass owns each confirmed pair. */
+        if (is_head && complete && same == 1 && count == 1) continue;
+        IndexSymbolChange *item = &items[result->count++];
+        const SymbolVersionRef **own = is_head ? &item->after : &item->before;
+        const SymbolVersionRef **opposite = is_head ? &item->before : &item->after;
+        if (!own_ref(own, anchor)) return CHRONOS_OUT_OF_MEMORY;
+
+        if (same > 1 || count > 1) {
+            item->match = INDEX_AMBIGUOUS;
+            SymbolVersionRef *refs = array_new(count, sizeof *refs);
+            if (count && !refs) return CHRONOS_OUT_OF_MEMORY;
+            item->candidates = refs;
+            for (size_t j = 0; j < other->graph.node_count; ++j) {
+                const GraphSymbol *candidate = &other->graph.nodes[j];
+                if (same_key(candidate, anchor) &&
+                    !copy_ref(&refs[item->candidate_count++], &candidate->ref))
+                    return CHRONOS_OUT_OF_MEMORY;
+            }
+        } else if (!complete) {
+            item->match = INDEX_MATCH_UNAVAILABLE;
+        } else if (count == 0) {
+            item->match = INDEX_NO_MATCH;
+            item->kind = is_head ? &added : &deleted;
+        } else {
+            item->match = INDEX_MATCHED;
+            if (!own_ref(opposite, match)) return CHRONOS_OUT_OF_MEMORY;
+            ContextSource before = symbol_source(side, side->symbol_scopes[i]);
+            ContextSource after = symbol_source(other, index_find_symbol(other, &match->ref));
+            if (before.status == CONTEXT_SOURCE_PRESENT && after.status == CONTEXT_SOURCE_PRESENT) {
+                item->kind = before.byte_count == after.byte_count &&
+                             memcmp(before.bytes, after.bytes, before.byte_count) == 0
+                                 ? &unchanged : &modified;
+            }
+        }
+        if (!item->kind) result->coverage = CHRONOS_INCOMPLETE;
+    }
+    return CHRONOS_OK;
 }
 
 int index_compare_revisions(const RepositoryIndex *base, const RepositoryIndex *head,
                             const GitChangedFiles *changes, IndexChangeSet *out)
 {
-    (void)changes;
-    if (base == NULL || head == NULL || out == NULL) return CHRONOS_INVALID_ARGUMENT;
-    /* Revision comparison is deferred. Optional blobs are validated at
-     * build time and can be retained here when comparison is implemented. */
-    return CHRONOS_NOT_IMPLEMENTED;
+    if (!base || !head || !out ||
+        !same_text(base->graph.revision.repository_id, head->graph.revision.repository_id) ||
+        (changes && (!same_revision(&changes->base, &base->graph.revision) ||
+                     !same_revision(&changes->head, &head->graph.revision) ||
+                     (changes->diagnostic_count && !changes->diagnostics))))
+        return CHRONOS_INVALID_ARGUMENT;
+    size_t capacity = base->graph.node_count;
+    if (!add_count(&capacity, head->graph.node_count)) return CHRONOS_TOO_LARGE;
+    IndexSymbolChange *items = array_new(capacity, sizeof *items);
+    IndexChangeSet result = {.items = items};
+    int status = CHRONOS_OUT_OF_MEMORY;
+    if ((capacity && !items) || !copy_revision(&result.revisions.base, &base->graph.revision) ||
+        !copy_revision(&result.revisions.head, &head->graph.revision)) goto fail;
+    if (base->graph.node_coverage == CHRONOS_UNAVAILABLE &&
+        head->graph.node_coverage == CHRONOS_UNAVAILABLE) result.coverage = CHRONOS_UNAVAILABLE;
+    else if (base->graph.node_coverage != CHRONOS_COMPLETE ||
+             head->graph.node_coverage != CHRONOS_COMPLETE) result.coverage = CHRONOS_INCOMPLETE;
+    if (changes && changes->diagnostic_count) {
+        ChronosDiagnostic *diagnostics = array_new(changes->diagnostic_count, sizeof *diagnostics);
+        if (!diagnostics) goto fail;
+        result.diagnostics = diagnostics;
+        for (size_t i = 0; i < changes->diagnostic_count; ++i) {
+            if (!valid_diagnostic(&changes->diagnostics[i])) { status = CHRONOS_INVALID_ARGUMENT; goto fail; }
+            if (!copy_diagnostic(&diagnostics[result.diagnostic_count++], &changes->diagnostics[i])) goto fail;
+        }
+    }
+    status = compare_side(base, head, 0, &result, items);
+    if (status >= 0) status = compare_side(head, base, 1, &result, items);
+    if (status < 0) goto fail;
+    *out = result;
+    return result.coverage == CHRONOS_COMPLETE ? CHRONOS_OK : CHRONOS_PARTIAL;
+fail:
+    index_change_set_free(&result);
+    return status;
 }
 
+
 /* References inside a graph borrow the graph's own node IDs and revision. */
-static const GraphSymbol *copied_node(const RepositoryGraph *source, const GraphSymbol *nodes,
-                                       const SymbolVersionRef *ref)
+static const GraphSymbol *copied_node(const RepositoryIndex *index, const GraphSymbol *nodes,
+                                     const SymbolVersionRef *ref)
 {
-    for (size_t i = 0; i < source->node_count; ++i) {
-        if (source->nodes[i].ref.id == ref->id) return &nodes[i];
-    }
-    return NULL;
+    const GraphSymbol *symbol = mapper_lookup_ref(index->lookup, ref);
+    return symbol ? &nodes[symbol - index->graph.nodes] : NULL;
 }
 
 static int copy_node(GraphSymbol *out, const GraphSymbol *node, RevisionRef revision)
@@ -537,22 +891,22 @@ static int copy_node(GraphSymbol *out, const GraphSymbol *node, RevisionRef revi
            copy_text(&out->source_sha256, node->source_sha256);
 }
 
-static int copy_edge(GraphCall *out, const GraphCall *edge, const RepositoryGraph *source,
+static int copy_edge(GraphCall *out, const GraphCall *edge, const RepositoryIndex *index,
                      const GraphSymbol *nodes)
 {
-    const GraphSymbol *caller = copied_node(source, nodes, &edge->caller);
+    const GraphSymbol *caller = copied_node(index, nodes, &edge->caller);
     out->caller = caller->ref;
     out->call_site = (SourceLocation){out->caller.revision, caller->location.file_path,
                                      edge->call_site.range};
     out->resolution = edge->resolution;
-    if (edge->callee != NULL) out->callee = &copied_node(source, nodes, edge->callee)->ref;
+    if (edge->callee != NULL) out->callee = &copied_node(index, nodes, edge->callee)->ref;
     if (edge->candidate_count != 0) {
         SymbolVersionRef *candidates = array_new(edge->candidate_count, sizeof *candidates);
         if (candidates == NULL) return 0;
         out->candidates = candidates;
         out->candidate_count = edge->candidate_count;
         for (size_t i = 0; i < edge->candidate_count; ++i) {
-            candidates[i] = copied_node(source, nodes, &edge->candidates[i])->ref;
+            candidates[i] = copied_node(index, nodes, &edge->candidates[i])->ref;
         }
     }
     return copy_text(&out->callee_text, edge->callee_text);
@@ -563,7 +917,13 @@ int index_export_graph(const RepositoryIndex *index, const IndexChangeSet *compa
 {
     if (index == NULL || out == NULL) return CHRONOS_INVALID_ARGUMENT;
     const RepositoryGraph *source = &index->graph;
-    if (comparison != NULL) return CHRONOS_NOT_IMPLEMENTED;
+    if (comparison && (!valid_revision(&comparison->revisions.base) ||
+                       !valid_revision(&comparison->revisions.head) ||
+                       !same_text(comparison->revisions.base.repository_id,
+                                  comparison->revisions.head.repository_id) ||
+                       (!same_revision(&source->revision, &comparison->revisions.base) &&
+                        !same_revision(&source->revision, &comparison->revisions.head)) ||
+                       (comparison->count && !comparison->items))) return CHRONOS_INVALID_ARGUMENT;
 
     RepositoryGraph result = {0};
     result.node_coverage = source->node_coverage;
@@ -579,16 +939,37 @@ int index_export_graph(const RepositoryIndex *index, const IndexChangeSet *compa
     if ((source->node_count && nodes == NULL) || (source->edge_count && edges == NULL) ||
         (diagnostic_count && diagnostics == NULL) ||
         !copy_revision(&result.revision, &source->revision)) goto fail;
+    if (comparison) {
+        GraphComparison *pair = calloc(1, sizeof *pair);
+        result.comparison = pair;
+        if (!pair || !copy_revision(&pair->base, &comparison->revisions.base) ||
+            !copy_revision(&pair->head, &comparison->revisions.head)) goto fail;
+    }
 
     for (size_t i = 0; i < source->node_count; ++i) {
         const GraphSymbol *node = &source->nodes[i];
         ++result.node_count;
         if (!copy_node(&nodes[i], node, result.revision)) goto fail;
-        if (node->parent != NULL) nodes[i].parent = &copied_node(source, nodes, node->parent)->ref;
+        if (node->parent != NULL) nodes[i].parent = &copied_node(index, nodes, node->parent)->ref;
     }
     for (size_t i = 0; i < source->edge_count; ++i) {
         ++result.edge_count;
-        if (!copy_edge(&edges[i], &source->edges[i], source, nodes)) goto fail;
+        if (!copy_edge(&edges[i], &source->edges[i], index, nodes)) goto fail;
+    }
+    if (comparison) {
+        int head = same_revision(&source->revision, &comparison->revisions.head);
+        for (size_t i = 0; i < comparison->count; ++i) {
+            const IndexSymbolChange *item = &comparison->items[i];
+            if (!item->kind) continue;
+            const GraphSymbol *symbol = mapper_lookup_ref(index->lookup, head ? item->after : item->before);
+            if (!symbol) continue;
+            SymbolChangeKind *kind = malloc(sizeof *kind);
+            if (!kind) goto fail;
+            *kind = *item->kind;
+            GraphSymbol *node = &nodes[symbol - source->nodes];
+            free((void *)node->change);
+            node->change = kind;
+        }
     }
     for (size_t i = 0; i < diagnostic_count; ++i) {
         if (!copy_diagnostic(&diagnostics[result.diagnostic_count++], &source->diagnostics[i])) goto fail;
@@ -599,5 +980,70 @@ int index_export_graph(const RepositoryIndex *index, const IndexChangeSet *compa
                ? CHRONOS_OK : CHRONOS_PARTIAL;
 fail:
     index_graph_free(&result);
+    return status;
+}
+
+void index_context_free(IndexContext *context)
+{
+    if (!context) return;
+    for (size_t i = 0; i < context->candidates.count; ++i)
+        free((void *)context->candidates.items[i].id);
+    free((void *)context->candidates.items);
+    *context = (IndexContext){0};
+}
+
+static int collect_candidate(const RepositoryIndex *index, const IndexCallLink *link,
+                             ContextCallDirection direction, ContextCandidate *item)
+{
+    const GraphCall *call = link->call;
+    const char *caller = call->caller.id;
+    const char *callee = call->callee ? call->callee->id : call->callee_text;
+    SourceRange range = call->call_site.range;
+    int n = snprintf(NULL, 0, "%zu:%s%zu:%s:%zu:%zu", strlen(caller), caller,
+                     strlen(callee), callee, range.start_byte, range.end_byte);
+    if (n < 0) return CHRONOS_TOO_LARGE;
+    char *id = malloc((size_t)n + 1);
+    if (!id) return CHRONOS_OUT_OF_MEMORY;
+    (void)snprintf(id, (size_t)n + 1, "%zu:%s%zu:%s:%zu:%zu", strlen(caller), caller,
+                   strlen(callee), callee, range.start_byte, range.end_byte);
+    size_t neighbor = direction == CONTEXT_INCOMING_CALL ? link->caller : link->callee;
+    ContextSource source = {.status = CONTEXT_SOURCE_UNAVAILABLE};
+    if (neighbor != INDEX_NO_SCOPE) source = symbol_source(index, neighbor);
+    *item = (ContextCandidate){id, direction, call, source};
+    return CHRONOS_OK;
+}
+
+int index_collect_context(const RepositoryIndex *index, const SymbolVersionRef *target,
+                         IndexContext *out)
+{
+    if (!index || !target || !out) return CHRONOS_INVALID_ARGUMENT;
+    size_t scope = index_find_symbol(index, target);
+    if (scope == INDEX_NO_SCOPE) return CHRONOS_NOT_FOUND;
+
+    size_t out_start = index->outgoing_offsets[scope], out_end = index->outgoing_offsets[scope + 1];
+    size_t in_start = index->incoming_offsets[scope], in_end = index->incoming_offsets[scope + 1];
+    size_t capacity = out_end - out_start;
+    if (!add_count(&capacity, in_end - in_start)) return CHRONOS_TOO_LARGE;
+    ContextCandidate *items = array_new(capacity, sizeof *items);
+    if (capacity && !items) return CHRONOS_OUT_OF_MEMORY;
+    IndexContext result = {.target_source = symbol_source(index, scope),
+                           .candidates = {items, 0, index->graph.edge_coverage}};
+    int status = CHRONOS_OK;
+    for (size_t i = out_start; i < out_end && status >= 0; ++i) {
+        status = collect_candidate(index, &index->links[index->outgoing[i]],
+                                   CONTEXT_OUTGOING_CALL, &items[result.candidates.count]);
+        if (status >= 0) ++result.candidates.count;
+    }
+    for (size_t i = in_start; i < in_end && status >= 0; ++i) {
+        const IndexCallLink *link = &index->links[index->incoming[i]];
+        if (link->caller == scope) continue;
+        status = collect_candidate(index, link, CONTEXT_INCOMING_CALL, &items[result.candidates.count]);
+        if (status >= 0) ++result.candidates.count;
+    }
+    if (status < 0) index_context_free(&result);
+    else {
+        *out = result;
+        if (result.candidates.coverage != CHRONOS_COMPLETE) status = CHRONOS_PARTIAL;
+    }
     return status;
 }

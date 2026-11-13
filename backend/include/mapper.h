@@ -1,5 +1,5 @@
-#ifndef CHRONOS_GRAPH_H
-#define CHRONOS_GRAPH_H
+#ifndef CHRONOS_MAPPER_H
+#define CHRONOS_MAPPER_H
 
 #include "parser.h" /* Shared source and symbol types. */
 
@@ -40,7 +40,7 @@ typedef struct {
 } GraphSymbol;
 
 typedef enum {
-    CALL_RESOLVED,
+    CALL_RESOLVED, /* Unique syntactic candidate among the indexed symbols. */
     CALL_UNRESOLVED,
     CALL_AMBIGUOUS
 } CallResolution;

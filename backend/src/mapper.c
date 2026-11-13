@@ -462,4 +462,3 @@ int graph_write_json(const RepositoryGraph *graph, char *out, size_t out_size)
     }
     return (int)writer.length;
 }
-```

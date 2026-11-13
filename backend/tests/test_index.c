@@ -65,4 +65,3 @@ int main(void)
     puts("single-revision index and graph smoke test passed");
     return 0;
 }
-```

@@ -1,6 +1,3 @@
-Declare language discovery for the revision walker.
-
-```c
 #ifndef CHRONOS_PARSER_H
 #define CHRONOS_PARSER_H
 

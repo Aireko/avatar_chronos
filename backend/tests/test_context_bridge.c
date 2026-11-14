@@ -19,7 +19,7 @@ typedef struct {
 static char *read_file(const char *relative, size_t *length)
 {
     char path[512];
-    (void)snprintf(path, sizeof path, "%s/%s", FIXTURE_ROOT, relative);
+    (void)snprintf(path, sizeof path, "%s/%s.txt", FIXTURE_ROOT, relative);
     FILE *file = fopen(path, "rb");
     assert(file != NULL);
     assert(fseek(file, 0, SEEK_END) == 0);

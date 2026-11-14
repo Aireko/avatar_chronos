@@ -122,6 +122,10 @@ int index_build(const RevisionRef *revision, const IndexFileInput *files,
                 size_t file_count, ChronosCoverage file_coverage,
                 RepositoryIndex **out);
 
+/* Diagnostic count of successful index builds in this process. Expansion
+ * tests use it to prove page requests do not rebuild the index. */
+size_t index_build_count(void);
+
 /* Match exact paths and qualified names. A unique pair can be INDEX_MATCHED
  * with a NULL kind when its bytes cannot be compared. Ambiguous or unknown
  * matches include the known anchor in before or after and leave kind NULL.

@@ -6,13 +6,13 @@
 
 static const RevisionRef revision = {"example/python", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"};
 static const char main_source[] = "from workers.core import work as execute\n\n"
-                                  "def main():\n    return execute()\n";
+                                  "def bootstrap():\n    return execute()\n";
 static const char worker_source[] = "def work():\n    return 42\n";
 static const char decoy_source[] = "def work():\n    return 0\n";
 
 static RepositoryIndex *build_fixture(void)
 {
-    const char *paths[] = {"app/main.py", "workers/core.py", "other/core.py"};
+    const char *paths[] = {"app/__main__.py", "workers/core.py", "other/core.py"};
     const char *sources[] = {main_source, worker_source, decoy_source};
     ParsedFile parsed[3] = {0};
     GitBlob blobs[3];
@@ -50,8 +50,8 @@ int main(void)
     ContextViewsRequest request = {.flow = &flow, .budget = {12, 4096}};
     ContextViews views = {0};
     assert(context_build_views(index, &request, &views) == CHRONOS_OK);
-    assert(find_item(&views.brief, "entry-points", "Entry point: main in app/main.py."));
-    const ContextBriefItem *top = find_item(&views.brief, "top-flows", "Flow: main -> work");
+    assert(find_item(&views.brief, "entry-points", "Entry point: bootstrap in app/__main__.py."));
+    const ContextBriefItem *top = find_item(&views.brief, "top-flows", "Flow: bootstrap -> work");
     assert(top && top->evidence_count == 1);
 
     const ContextGraphEdge *edge = NULL;
@@ -66,7 +66,7 @@ int main(void)
     size_t target = index_find_symbol(index, call->callee);
     assert(target < scope_count && strcmp(scopes[target].path, "workers/core.py") == 0);
     const SourceLocation *site = &call->call_site;
-    assert(strcmp(site->file_path, "app/main.py") == 0);
+    assert(strcmp(site->file_path, "app/__main__.py") == 0);
     assert(strcmp(site->revision.commit_sha, revision.commit_sha) == 0);
     assert(site->range.start_byte == (size_t)(strstr(main_source, "execute()") - main_source));
     assert(site->range.end_byte == site->range.start_byte + strlen("execute()"));
@@ -80,7 +80,8 @@ int main(void)
     flow.seed_count = 1;
     assert(context_build_views(index, &request, &views) == CHRONOS_OK);
     assert(find_item(&views.brief, "entry-points", "Task anchor: work in workers/core.py."));
-    assert(find_item(&views.brief, "edit-locations", "Likely edit location: main in app/main.py."));
+    assert(find_item(&views.brief, "edit-locations",
+                     "Likely edit location: bootstrap in app/__main__.py."));
     assert(!find_item(&views.brief, "edit-locations", "other/core.py"));
     assert(views.brief.used_source_bytes <= request.budget.max_source_bytes);
     context_views_free(&views);

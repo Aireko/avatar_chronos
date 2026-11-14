@@ -64,6 +64,14 @@ static int entry_point_path(const char *path)
     return 0;
 }
 
+static int python_package_entry(const GraphSymbol *symbol)
+{
+    return strcmp(symbol->language, "python") == 0 &&
+           symbol->kind == PARSER_FUNCTION && symbol->form == PARSER_DEFINITION &&
+           symbol->parent == NULL &&
+           strcmp(path_basename(symbol->location.file_path), "__main__.py") == 0;
+}
+
 static size_t module_scope(const IndexScope *scopes, size_t scope)
 {
     while (scope != INDEX_NO_SCOPE) {
@@ -100,7 +108,8 @@ static int resolve_seeds(const RepositoryIndex *index, const ContextFlowRequest 
             if (scopes[i].kind != INDEX_SYMBOL || scopes[i].symbol == NULL) continue;
             const GraphSymbol *symbol = scopes[i].symbol;
             if (entry_point_name(symbol->name) ||
-                entry_point_path(symbol->location.file_path)) {
+                entry_point_path(symbol->location.file_path) ||
+                python_package_entry(symbol)) {
                 if (!add_seed(out, i)) return CHRONOS_OUT_OF_MEMORY;
             }
         }

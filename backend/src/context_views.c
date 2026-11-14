@@ -322,6 +322,16 @@ static int is_test_like(const GraphSymbol *symbol)
                (strncmp(base, "test_", 5) == 0 ||
                 (length >= 8 && strcmp(base + length - 8, "_test.py") == 0));
     }
+    if (symbol->language != NULL && strcmp(symbol->language, "java") == 0) {
+        if (!path || !name || symbol->kind == PARSER_CLASS ||
+            symbol->form != PARSER_DEFINITION || strncmp(name, "test", 4) != 0) return 0;
+        const char *base = strrchr(path, '/');
+        base = base ? base + 1 : path;
+        size_t length = strlen(base);
+        return (length > 9 && strcmp(base + length - 9, "Test.java") == 0) ||
+               (length > 10 && strcmp(base + length - 10, "Tests.java") == 0) ||
+               strstr(path, "/src/test/") != NULL;
+    }
     return (path != NULL && (strstr(path, "test") != NULL || strstr(path, "spec") != NULL)) ||
            (name != NULL && (strncmp(name, "test_", 5) == 0 ||
                              strncmp(name, "test", 4) == 0 ||

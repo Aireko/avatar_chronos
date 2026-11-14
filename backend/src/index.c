@@ -1,4 +1,5 @@
 #include "index.h"
+#include "index_internal.h"
 #include "context_compiler.h"
 #include "mapper_internal.h"
 
@@ -24,6 +25,8 @@ struct RepositoryIndex {
     IndexedFile *files;
     size_t file_count;
     ChronosCoverage file_coverage;
+    IndexCoverage coverage;
+    int coverage_known;
     size_t *symbol_scopes;
     IndexCallLink *links;
     size_t *outgoing_offsets;
@@ -734,6 +737,71 @@ const ChronosDiagnostic *index_diagnostics(const RepositoryIndex *index, size_t 
 {
     if (count) *count = index ? index->graph.diagnostic_count : 0;
     return index ? index->graph.diagnostics : NULL;
+}
+
+const IndexCoverage *index_coverage(const RepositoryIndex *index)
+{
+    return index != NULL && index->coverage_known ? &index->coverage : NULL;
+}
+
+static unsigned percent_tenths(size_t part, size_t total)
+{
+    if (total == 0) return 0;
+    if (part > SIZE_MAX / 1000) return 1000;
+    return (unsigned)((part * 1000 + total / 2) / total);
+}
+
+int index_set_coverage(RepositoryIndex *index, const IndexCoverage *coverage)
+{
+    if (index == NULL || coverage == NULL ||
+        coverage->supported_files > coverage->source_files ||
+        coverage->unsupported_files != coverage->source_files - coverage->supported_files ||
+        coverage->supported_bytes > coverage->source_bytes ||
+        coverage->unsupported_bytes != coverage->source_bytes - coverage->supported_bytes)
+        return CHRONOS_INVALID_ARGUMENT;
+    if (index->coverage_known) return CHRONOS_INVALID_ARGUMENT;
+    index->coverage = *coverage;
+    index->coverage_known = 1;
+
+    char message[512];
+    if (coverage->source_files == 0) {
+        snprintf(message, sizeof message,
+                 "No source files were found in the revision.");
+    } else if (coverage->supported_files == 0) {
+        snprintf(message, sizeof message,
+                 "No supported source files were indexed (%zu source files are unsupported).",
+                 coverage->unsupported_files);
+    } else {
+        unsigned file_tenths = percent_tenths(coverage->supported_files, coverage->source_files);
+        unsigned byte_tenths = percent_tenths(coverage->supported_bytes, coverage->source_bytes);
+        snprintf(message, sizeof message,
+                 "Indexed %zu of %zu source files (%u.%u%%); %zu unsupported. "
+                 "Supported bytes: %zu of %zu (%u.%u%%).",
+                 coverage->supported_files, coverage->source_files,
+                 file_tenths / 10, file_tenths % 10, coverage->unsupported_files,
+                 coverage->supported_bytes, coverage->source_bytes,
+                 byte_tenths / 10, byte_tenths % 10);
+    }
+
+    size_t count = index->graph.diagnostic_count;
+    ChronosDiagnostic *items = realloc((void *)index->graph.diagnostics,
+                                       (count + 1) * sizeof *items);
+    if (items == NULL) return CHRONOS_OUT_OF_MEMORY;
+    index->graph.diagnostics = items;
+    items[count] = (ChronosDiagnostic){0};
+    ChronosDiagnostic source = {
+        "language-coverage",
+        coverage->supported_files == 0 ? DIAGNOSTIC_WARNING : DIAGNOSTIC_INFO,
+        message,
+        NULL
+    };
+    if (!copy_diagnostic(&items[count], &source)) {
+        free((void *)items[count].code);
+        free((void *)items[count].message);
+        return CHRONOS_OUT_OF_MEMORY;
+    }
+    index->graph.diagnostic_count = count + 1;
+    return CHRONOS_OK;
 }
 
 int index_symbol_source(const RepositoryIndex *index, const SymbolVersionRef *ref, ContextSource *out)

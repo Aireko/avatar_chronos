@@ -82,6 +82,11 @@ and aliases are resolved statically; dynamic dispatch, wildcard imports, and
 function pointers require additional semantic analysis. Partial parse coverage
 is reported alongside the relationships that could be extracted.
 
+`chronos_coverage <repo> <revision>` reports the source inventory and the
+`language-coverage` diagnostic. It exits nonzero when no supported source files
+are indexed so CI can reject empty context graphs. Run the mixed-language
+regression directly with `make -C backend coverage-diagnostic`.
+
 `index_compare_revisions` matches symbols by exact path and qualified name and
 compares their pinned bytes. `index_collect_context` supplies phase two with
 the target source, direct call evidence, and available snippets. Keep the index

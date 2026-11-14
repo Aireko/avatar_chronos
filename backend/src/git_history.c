@@ -2,6 +2,7 @@
 #include "git_process.h"
 #include "avatar.h"
 
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -90,6 +91,7 @@ void git_revision_files_free(GitRevisionFiles *files)
     if (!files) return;
     for (size_t i = 0; i < files->path_count; ++i) free((void *)files->paths[i]);
     free((void *)files->paths);
+    free(files->byte_counts);
     git_revision_free(&files->revision);
     *files = (GitRevisionFiles){0};
 }
@@ -98,11 +100,11 @@ int git_list_revision_files(const GitRepository *repo, const RevisionRef *revisi
                             GitRevisionFiles *out)
 {
     if (!valid_revision(repo, revision) || !out) return CHRONOS_INVALID_ARGUMENT;
-    const char *args[] = {"ls-tree", "-r", "-z", "--full-tree", revision->commit_sha};
+    const char *args[] = {"ls-tree", "-r", "-l", "-z", "--full-tree", revision->commit_sha};
     char *bytes = NULL;
     size_t length;
     int code;
-    int rc = chronos_git_capture(repo->local_path, args, 5, &bytes, &length, &code);
+    int rc = chronos_git_capture(repo->local_path, args, 6, &bytes, &length, &code);
     if (rc != AVATAR_OK) return rc == AVATAR_ERR_NOMEM ? CHRONOS_OUT_OF_MEMORY : CHRONOS_IO_ERROR;
     int status = CHRONOS_IO_ERROR;
     if (code != 0) goto done;
@@ -110,9 +112,12 @@ int git_list_revision_files(const GitRepository *repo, const RevisionRef *revisi
     size_t count = 0;
     for (size_t i = 0; i < length; ++i) if (bytes[i] == '\0') ++count;
     const char **paths = count ? calloc(count, sizeof *paths) : NULL;
+    size_t *sizes = count ? calloc(count, sizeof *sizes) : NULL;
     out->paths = paths;
+    out->byte_counts = sizes;
     status = CHRONOS_OUT_OF_MEMORY;
-    if ((count && !paths) || !copy_revision(&out->revision, repo->id, revision->commit_sha)) goto done;
+    if ((count && (!paths || !sizes)) ||
+        !copy_revision(&out->revision, repo->id, revision->commit_sha)) goto done;
     for (size_t i = 0; i < length; i += strlen(bytes + i) + 1) {
         const char *record = bytes + i;
         const char *tab = strchr(record, '\t');
@@ -122,8 +127,28 @@ int git_list_revision_files(const GitRepository *repo, const RevisionRef *revisi
         }
         /* Include tracked regular files. A symlink's blob contains a path. */
         if (strncmp(record, "100", 3) != 0) continue;
+        const char *size_end = tab;
+        while (size_end > record && size_end[-1] == ' ') --size_end;
+        const char *size_start = size_end;
+        while (size_start > record && size_start[-1] != ' ') --size_start;
+        char size_text[32];
+        size_t size_length = (size_t)(size_end - size_start);
+        if (size_length == 0 || size_length >= sizeof size_text) {
+            status = CHRONOS_IO_ERROR;
+            goto done;
+        }
+        memcpy(size_text, size_start, size_length);
+        size_text[size_length] = '\0';
+        errno = 0;
+        char *end = NULL;
+        unsigned long long file_size = strtoull(size_text, &end, 10);
+        if (errno != 0 || end == size_text || *end != '\0' || file_size > SIZE_MAX) {
+            status = CHRONOS_IO_ERROR;
+            goto done;
+        }
         paths[out->path_count] = text_copy(tab + 1, strlen(tab + 1));
         if (!paths[out->path_count]) goto done;
+        sizes[out->path_count] = (size_t)file_size;
         ++out->path_count;
     }
     status = CHRONOS_OK;

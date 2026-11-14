@@ -18,6 +18,7 @@ SOURCES := $(wildcard src/*.c)
 TESTS := $(wildcard tests/test_*.c)
 TEST_BINS := $(patsubst tests/%.c,$(BUILD)/%,$(TESTS))
 CLI := $(BUILD)/chronos_context
+COVERAGE_CLI := $(BUILD)/chronos_coverage
 
 GRAMMAR_DIRS := \
   $(NODE_MODULES)/tree-sitter-c/src \
@@ -29,9 +30,9 @@ GRAMMAR_DIRS := \
 
 TS_LIB := $(BUILD)/libtree-sitter-bundle.a
 
-.PHONY: all test clean
+.PHONY: all test clean coverage-diagnostic
 
-all: $(TEST_BINS) $(CLI)
+all: $(TEST_BINS) $(CLI) $(COVERAGE_CLI)
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -67,6 +68,13 @@ $(CLI): tests/chronos_context_cli.c $(SOURCES) $(TS_LIB)
 	$(CC) $(CFLAGS) $(SOURCES) $< \
 	  $(TS_LIB) $(LDFLAGS) -o $@
 
+$(COVERAGE_CLI): tests/chronos_coverage_cli.c $(SOURCES) $(TS_LIB)
+	$(CC) $(CFLAGS) $(SOURCES) $< \
+	  $(TS_LIB) $(LDFLAGS) -o $@
+
+coverage-diagnostic: $(COVERAGE_CLI)
+	sh tests/run_coverage_diagnostic_test.sh "$(COVERAGE_CLI)"
+
 test: all
 	@set -e; \
 	for bin in $(TEST_BINS); do \
@@ -76,7 +84,8 @@ test: all
 	    *) "./$$bin" ;; \
 	  esac; \
 	done; \
-	sh tests/run_context_compile_test.sh "$(CLI)"
+	sh tests/run_context_compile_test.sh "$(CLI)"; \
+	sh tests/run_coverage_diagnostic_test.sh "$(COVERAGE_CLI)"
 
 clean:
 	rm -rf $(BUILD)

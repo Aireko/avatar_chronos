@@ -25,6 +25,20 @@ int main(int argc, char **argv)
     RepositoryIndex *base = NULL, *head = NULL;
     assert(index_build_revision(&repo, "HEAD^", &base) == CHRONOS_OK);
     assert(index_build_revision(&repo, "HEAD", &head) == CHRONOS_OK);
+    const IndexCoverage *coverage = index_coverage(head);
+    assert(coverage != NULL && coverage->source_files == 6 &&
+           coverage->supported_files == 6 && coverage->unsupported_files == 0 &&
+           coverage->source_bytes > 0 && coverage->supported_bytes == coverage->source_bytes);
+    size_t diagnostic_count = 0;
+    const ChronosDiagnostic *diagnostics = index_diagnostics(head, &diagnostic_count);
+    int found_coverage = 0;
+    for (size_t i = 0; i < diagnostic_count; ++i) {
+        if (strcmp(diagnostics[i].code, "language-coverage") != 0) continue;
+        assert(diagnostics[i].severity == DIAGNOSTIC_INFO);
+        assert(strstr(diagnostics[i].message, "Indexed 6 of 6 source files") != NULL);
+        found_coverage = 1;
+    }
+    assert(found_coverage);
     GitChangedFiles files = {0};
     assert(git_list_changed_files(&repo, index_revision(base), index_revision(head), &files) == CHRONOS_OK);
     assert(files.file_count == 1 && files.files[0].kind == GIT_FILE_MODIFIED);

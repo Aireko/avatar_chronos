@@ -20,6 +20,17 @@ typedef enum {
 
 #define INDEX_NO_SCOPE ((size_t)-1)
 
+/* Repository source inventory. Only paths with a recognized source extension
+ * are counted; generated files, docs, and configuration are excluded. */
+typedef struct {
+    size_t source_files;
+    size_t supported_files;
+    size_t unsupported_files;
+    size_t source_bytes;
+    size_t supported_bytes;
+    size_t unsupported_bytes;
+} IndexCoverage;
+
 /* IDs are array positions in index_scopes(). Root is 0. Modules correspond
  * to Git directories. Empty source files still have a scope. */
 typedef struct {
@@ -67,6 +78,9 @@ const char *index_file_bytes(const RepositoryIndex *index, const char *path, siz
 int index_build_revision(const GitRepository *repo, const char *selector, RepositoryIndex **out);
 const RevisionRef *index_revision(const RepositoryIndex *index);
 const ChronosDiagnostic *index_diagnostics(const RepositoryIndex *index, size_t *count);
+/* Borrowed inventory summary, or NULL when an index was assembled without
+ * repository inventory metadata. Valid until the index is freed. */
+const IndexCoverage *index_coverage(const RepositoryIndex *index);
 int index_symbol_source(const RepositoryIndex *index, const SymbolVersionRef *ref, ContextSource *out);
 
 /* Supply phase two with direct callers/callees and pinned source. The index

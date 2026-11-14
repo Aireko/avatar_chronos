@@ -54,6 +54,18 @@ int main(void)
     assert(file.calls[1].enclosing_symbol_id == 0);
     assert_slice(ts_source, file.calls[1].range, "start()");
     parser_free(&file);
+    const char py_source[] = "class Worker:\n    async def run(self):\n        return helper()\n";
+    assert(parser_parse("app.py", &revision, py_source, sizeof py_source - 1, &file) == CHRONOS_OK);
+    const ParsedSymbol *worker = find_symbol(&file, "Worker");
+    const ParsedSymbol *method = find_symbol(&file, "Worker::run");
+    assert(worker && method && method->kind == PARSER_METHOD && method->parent_id == worker->id);
+    assert(file.call_count == 1 && file.calls[0].enclosing_symbol_id == method->id);
+    assert_slice(py_source, file.calls[0].range, "helper()");
+    parser_free(&file);
+    const char stub[] = "def helper() -> int: ...\n";
+    assert(parser_parse("app.pyi", &revision, stub, sizeof stub - 1, &file) == CHRONOS_OK);
+    assert(file.symbol_count == 1 && file.symbols[0].form == PARSER_DECLARATION);
+    parser_free(&file);
     puts("parser ownership and byte-range tests passed");
     return 0;
 }

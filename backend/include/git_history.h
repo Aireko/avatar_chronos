@@ -45,6 +45,7 @@ typedef struct {
 typedef struct {
     RevisionRef revision;
     const char *const *paths; /* Tracked blob paths at this commit. */
+    size_t *byte_counts; /* Owned; parallel to paths. */
     size_t path_count;
     ChronosCoverage coverage;
     const ChronosDiagnostic *diagnostics;

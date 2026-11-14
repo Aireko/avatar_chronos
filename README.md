@@ -27,7 +27,7 @@ The aim is a function-level code review tool. You pick two commits, and Chronos 
 
 A lot of the backend for that is already here. The C indexer parses two revisions with Tree-sitter, matches symbols between them and maps direct calls. The context compiler packages a ranked, size-limited brief around a target function. What's missing is mostly the wiring: feeding that brief to the reviewer instead of a raw diff, opening the context panel (`src/context/ContextViewsPanel.tsx`) from the UI, moving the commit graph's function history onto the Tree-sitter index, and linking review findings back to nodes in the graph.
 
-Left out on purpose for now: tracking functions across renames, call resolution beyond plain names (imports, dynamic dispatch and function pointers aren't followed), and any kind of database. The index is rebuilt from Git each time.
+Left out on purpose for now: tracking functions across renames, full type inference, dynamic dispatch and function pointers, and any kind of database. Python and Java imports and aliases are followed statically. The index is rebuilt from Git each time.
 
 ## How it's built
 
@@ -36,7 +36,7 @@ Left out on purpose for now: tracking functions across renames, call resolution 
 | Desktop shell | [Tauri 2](https://tauri.app) (Rust) |
 | UI | React 19, TypeScript, Vite. Plain CSS with theme variables, no component library. The hand-drawn font is Patrick Hand, and code uses the system monospace font |
 | Backend | C11, compiled into the app by Cargo through the [`cc`](https://docs.rs/cc) crate |
-| Parsing | [Tree-sitter](https://tree-sitter.github.io) with the C, Rust, JavaScript, TypeScript and TSX grammars |
+| Parsing | [Tree-sitter](https://tree-sitter.github.io) with the C, Rust, JavaScript, TypeScript, TSX, Python and Java grammars |
 | Git | The `git` command line, called from C and Rust |
 | AI | Ollama serving `qwen3.5` models, called from Rust with `reqwest` |
 | GitHub | The `gh` CLI, for PR reviews |
@@ -125,6 +125,29 @@ make -C backend test
 ```
 
 It compiles Tree-sitter out of `node_modules`, so run `npm ci --ignore-scripts` first. On Windows, run it in WSL. CI runs the C suite and `cargo test` on every push and pull request. The Vitest tests aren't in CI yet.
+
+### Repository index
+
+`index_build_revision` reads a pinned Git revision. The tree contains the project
+root, tracked source directories, supported files, and parsed symbols with their
+lexical parents. Supported extensions cover C, Rust, JavaScript, TypeScript, TSX,
+Python, and Java. Working-tree edits are outside the selected commit.
+
+`index_map_calls` projects direct callsites between any two scopes. Resolution
+uses unique syntactic names in the indexed language. Python and Java module-level
+imports and aliases are resolved statically; dynamic dispatch, wildcard imports,
+and function pointers require additional semantic analysis. Partial parse
+coverage is reported alongside the relationships that could be extracted.
+
+`chronos_coverage <repo> <revision>` reports the source inventory and the
+`language-coverage` diagnostic. It exits nonzero when no supported source files
+are indexed so CI can reject empty context graphs. Run the mixed-language
+regression directly with `make -C backend coverage-diagnostic`.
+
+`index_compare_revisions` matches symbols by exact path and qualified name and
+compares their pinned bytes. `index_collect_context` supplies phase two with
+the target source, direct call evidence, and available snippets. Keep the index
+alive while consuming that evidence.
 
 ## Adding a C function
 

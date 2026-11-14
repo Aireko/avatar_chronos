@@ -8,27 +8,6 @@
 extern "C" {
 #endif
 
-/*
- * Context compiler contract, schema version 1.
- *
- * Phase one builds a RepositoryIndex for a pinned Git revision. The compiler
- * starts from that index and produces two complementary views for the same
- * evidence:
- *
- *   - context-graph.json: the module -> file -> symbol graph used by the UI.
- *     It contains no source text. A client opens source by evidence ID.
- *   - context-brief.json: the budgeted, template-rendered agent brief. Every
- *     displayed relationship and every source suggestion carries an evidence
- *     ID from the same evidence catalog as the graph.
- *
- * Review mode additionally reuses ReviewContext and review-context.json v1
- * from context_package.h for the single-symbol before/after package.
- *
- * The mock UI owns a separate schema (the `minikv-ui` contract). The compiler
- * graph is an explicit adapter input rather than a silent re-interpretation of
- * the indexer graph shape. CHRONOS_MOCK_UI_ADAPTER* pins that adapter.
- */
-
 #define CHRONOS_COMPILER_REQUEST_SCHEMA_VERSION 1u
 #define CHRONOS_COMPILER_GRAPH_SCHEMA_VERSION 1u
 #define CHRONOS_COMPILER_BRIEF_SCHEMA_VERSION 1u
@@ -85,20 +64,9 @@ typedef enum {
     CONTEXT_EVIDENCE_SOURCE     /* Pinned source bytes for one symbol. */
 } ContextEvidenceKind;
 
-/*
- * Relation states are deliberately independent of ChronosCoverage.
- *
- *   selected     Discovered and inside the active budget.
- *   omitted      Discovered and resolved, then excluded by the budget.
- *   unresolved   A call site exists, but no unique target was indexed.
- *   ambiguous    A call site exists and has two or more indexed candidates.
- *   unavailable  Discovery evidence is missing; this is not a budget result.
- *
- * Omitted-by-budget therefore never masquerades as unresolved or unavailable.
- * A relation with an unresolved or ambiguous target still has a callsite
- * evidence ID. A relation with unavailable discovery still has an ID for the
- * attempted edge, but its evidence entry carries no usable source location.
- */
+/* Relation state is independent of discovery coverage. omitted is budget-only;
+ * unresolved/ambiguous describe calls without a unique target; unavailable
+ * means discovery evidence is missing. */
 typedef enum {
     CONTEXT_RELATION_SELECTED,
     CONTEXT_RELATION_OMITTED,
@@ -107,12 +75,8 @@ typedef enum {
     CONTEXT_RELATION_UNAVAILABLE
 } ContextRelationState;
 
-/* Evidence IDs are stable strings derived from scope/symbol/callsite data,
- * never from array positions. Use the allocators below; they are the single
- * source of truth for IDs shared by the graph, the brief, and index context
- * collection. IDs are unique within one document's pinned revision; the
- * document's repositoryId and revision complete the identity across commits.
- * The caller frees the returned string. */
+/* Stable IDs derived from scope/symbol/callsite data, never array positions.
+ * The caller frees returned strings. */
 char *context_scope_id_alloc(ContextScopeKind kind, const char *path,
                              const SymbolVersionRef *symbol);
 char *context_symbol_scope_id_alloc(const GraphSymbol *symbol);
@@ -128,12 +92,10 @@ const char *context_relation_state_name(ContextRelationState state);
 const char *context_scope_kind_name(ContextScopeKind kind);
 const char *context_evidence_kind_name(ContextEvidenceKind kind);
 
-/* Validates request shape, pinned revisions, mode-specific anchors, and hop
- * bounds. Budget zero values are valid. Does not touch the repository. */
+/* Validates request shape, pinned revisions, anchors and hop bounds. */
 int context_request_validate(const ContextRequest *request);
 
-/* One retrievable piece of evidence. location is the pinned source location a
- * client opens; it is NULL for a known relationship without source bytes. */
+/* One retrievable piece of evidence. */
 typedef struct {
     const char *id;
     ContextEvidenceKind kind;
@@ -162,9 +124,7 @@ typedef struct {
     const GraphCall *call;   /* Present for call edges. */
 } ContextGraphEdge;
 
-/* The initial graph payload intentionally contains no source text. Clients
- * resolve evidence_id against the evidence catalog, then read the pinned
- * location. status uses the graph JSON coverage strings. */
+/* The graph payload contains locations, not source text. */
 typedef struct {
     unsigned schema_version;
     RevisionRef revision;
@@ -211,28 +171,7 @@ typedef struct {
     ChronosCoverage evidence_coverage;
 } ContextBrief;
 
-/*
- * JSON writers use the caller-buffer convention from mapper.h and
- * context_package.h: query with out == NULL and out_size == 0; a short buffer
- * returns the required length and is untouched; a sufficient buffer is
- * NUL-terminated. The returned value excludes the NUL. Invalid contract input
- * returns CHRONOS_INVALID_ARGUMENT and leaves out untouched.
- *
- * context-graph.json v1:
- *   schemaVersion, repositoryId, revision, comparison, nodes, edges,
- *   evidence, diagnostics, adapter
- *
- * context-brief.json v1:
- *   schemaVersion, repositoryId, revision, comparison, sections, budget,
- *   omittedEvidenceIds, coverage, evidence
- *
- * Collections use {status, items}; status is "complete", "incomplete", or
- * "unavailable". Evidence items are {id, kind, state, location, call}. Every
- * graph edge and every brief evidenceIds entry must resolve to an evidence ID
- * in its document. The adapter block is:
- *   {"name":"minikv-ui","schemaVersion":1,"graphSchemaVersion":1,
- *    "briefSchemaVersion":1,"reviewContextSchemaVersion":1}
- */
+/* JSON writers use the caller-buffer convention. Query with NULL, 0. */
 int context_request_write_json(const ContextRequest *request, char *out, size_t out_size);
 int context_graph_write_json(const ContextGraph *graph, char *out, size_t out_size);
 int context_brief_write_json(const ContextBrief *brief, char *out, size_t out_size);

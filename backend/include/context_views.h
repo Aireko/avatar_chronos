@@ -12,28 +12,8 @@ extern "C" {
 #define CHRONOS_VIEWS_MAX_ITEMS 128u
 #define CHRONOS_VIEWS_DEFAULT_MAX_SOURCE_BYTES 4096u
 
-/*
- * Both-view compiler output, schema version 1.
- *
- * One run discovers flows and bridges, then materializes:
- *
- *   graph  module-oriented scope graph: project -> module -> file -> symbol,
- *          contains edges, resolved/unresolved/ambiguous call edges. Nodes and
- *          edges have stable IDs and every edge has an evidence ID. The graph
- *          contains locations and calls only, never source text.
- *   brief  template-rendered agent brief: entry points, top flows, likely
- *          edit/test locations, unresolved calls, and evidence IDs for
- *          retrieving more source. The brief is budgeted independently, so a
- *          graph can reveal evidence the brief omitted.
- *
- * Both views share one evidence catalog. The same evidence ID therefore opens
- * the same pinned source location from either view.
- *
- * The flow request supplies mode, seeds, hop/flow/node limits. The view budget
- * zero values use the defaults above. Brief item order is entry points, top
- * flows, edit locations, test locations, then unresolved calls. A skipped
- * item's evidence IDs appear in brief.omittedEvidenceIds.
- */
+/* Builds a source-free scope/call graph and a budgeted template brief from one
+ * flow request. Both share one evidence catalog. */
 typedef struct {
     const ContextFlowRequest *flow;
     ContextBudget budget;
@@ -49,9 +29,7 @@ typedef struct {
     size_t scope_id_count;
 } ContextViews;
 
-/* Start out zeroed. Returns CHRONOS_OK for complete coverage, CHRONOS_PARTIAL
- * when discovery was incomplete, or a negative status. The flow request and
- * index must outlive the call. */
+/* Starts zeroed. Index and flow request must outlive the result. */
 int context_build_views(const RepositoryIndex *index, const ContextViewsRequest *request,
                         ContextViews *out);
 void context_views_free(ContextViews *views);

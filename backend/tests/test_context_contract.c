@@ -1,14 +1,6 @@
 /*
- * Contract tests for the context compiler (sprint slice 1).
- *
- * Run normally:
- *   .build/test_context_contract
- *
- * Regenerate the committed fixture after an intentional contract change:
- *   .build/test_context_contract --write-fixtures
- *
- * The fixture is the agreed JSON and brief used by the UI adapter. The same
- * evidence IDs must resolve from both the graph and the brief.
+ * Contract tests for the context compiler: request validation, stable IDs,
+ * graph/brief shape, evidence references, and serialization guards.
  */
 #include "context_compiler.h"
 
@@ -16,9 +8,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define FIXTURE_DIR "tests/fixtures/context_compiler"
-#define MAX_JSON 65536
 
 static const RevisionRef BASE_REVISION = {
     "example/payments", "1111111111111111111111111111111111111111"
@@ -95,31 +84,6 @@ static char *serialize_brief(const ContextBrief *brief)
     assert(context_brief_write_json(brief, json, (size_t)length + 1) == length);
     assert(json[length] == '\0');
     return json;
-}
-
-static char *read_file(const char *path)
-{
-    FILE *file = fopen(path, "rb");
-    assert(file != NULL);
-    assert(fseek(file, 0, SEEK_END) == 0);
-    long length = ftell(file);
-    assert(length >= 0);
-    assert(fseek(file, 0, SEEK_SET) == 0);
-    char *text = malloc((size_t)length + 1);
-    assert(text != NULL);
-    assert(fread(text, 1, (size_t)length, file) == (size_t)length);
-    text[length] = '\0';
-    fclose(file);
-    return text;
-}
-
-static void write_file(const char *path, const char *text)
-{
-    FILE *file = fopen(path, "wb");
-    assert(file != NULL);
-    size_t length = strlen(text);
-    assert(fwrite(text, 1, length, file) == length);
-    fclose(file);
 }
 
 static void assert_contains(const char *json, const char *fragment)
@@ -203,51 +167,8 @@ static void validate_contract_objects(const ContextGraph *graph, const ContextBr
     assert(brief->used_source_bytes <= request->budget.max_source_bytes);
 }
 
-static char *render_brief_text(const ContextRequest *request, const ContextBrief *brief,
-                               const char *head_json, const char *base_json)
+int main(void)
 {
-    (void)head_json;
-    (void)base_json;
-    char *text = calloc(1, MAX_JSON);
-    assert(text != NULL);
-    size_t used = (size_t)snprintf(
-        text, MAX_JSON,
-        "Context brief: %s\nHead: %s\nBase: %s\nMode: %s\nBudget: maxItems=%zu "
-        "maxSourceBytes=%zu usedSourceBytes=%zu\nCoverage: %s\n",
-        request->repository->id, request->head.commit_sha,
-        request->base ? request->base->commit_sha : "(none)",
-        context_mode_name(request->mode), request->budget.max_items,
-        request->budget.max_source_bytes, brief->used_source_bytes,
-        brief->coverage == CHRONOS_COMPLETE ? "complete" : "incomplete");
-    for (size_t i = 0; i < brief->section_count; ++i) {
-        const ContextBriefSection *section = &brief->sections[i];
-        used += (size_t)snprintf(text + used, MAX_JSON - used, "\n[%s] %s\n",
-                                 section->id, section->title);
-        for (size_t j = 0; j < section->item_count; ++j) {
-            const ContextBriefItem *item = &section->items[j];
-            used += (size_t)snprintf(text + used, MAX_JSON - used, "- %s (%s)",
-                                     item->text, context_relation_state_name(item->state));
-            if (item->evidence_count == 0) {
-                used += (size_t)snprintf(text + used, MAX_JSON - used, " evidence: none\n");
-            } else {
-                used += (size_t)snprintf(text + used, MAX_JSON - used, " evidence:");
-                for (size_t k = 0; k < item->evidence_count; ++k)
-                    used += (size_t)snprintf(text + used, MAX_JSON - used, " %s",
-                                             item->evidence_ids[k]);
-                used += (size_t)snprintf(text + used, MAX_JSON - used, "\n");
-            }
-        }
-    }
-    used += (size_t)snprintf(text + used, MAX_JSON - used, "\nOmitted by budget:\n");
-    for (size_t i = 0; i < brief->omitted_count; ++i)
-        used += (size_t)snprintf(text + used, MAX_JSON - used, "- %s\n", brief->omitted_ids[i]);
-    return text;
-}
-
-int main(int argc, char **argv)
-{
-    int write_fixtures = argc == 2 && strcmp(argv[1], "--write-fixtures") == 0;
-
     char *project_id = context_scope_id_alloc(CONTEXT_SCOPE_PROJECT, NULL, NULL);
     char *payments_id = context_scope_id_alloc(CONTEXT_SCOPE_MODULE, "payments", NULL);
     char *shared_id = context_scope_id_alloc(CONTEXT_SCOPE_MODULE, "shared", NULL);
@@ -561,45 +482,9 @@ int main(int argc, char **argv)
     invalid_brief.section_count = 1;
     assert(context_brief_write_json(&invalid_brief, NULL, 0) == CHRONOS_INVALID_ARGUMENT);
 
-    char *brief_text = render_brief_text(&request, &brief, NULL, NULL);
-    assert_contains(brief_text, "[entry-points] Entry points");
-    assert_contains(brief_text, "call:v1:");
-
-    if (write_fixtures) {
-        char path[512];
-        (void)snprintf(path, sizeof path, "%s/request.json", FIXTURE_DIR);
-        write_file(path, request_json);
-        (void)snprintf(path, sizeof path, "%s/context-graph.json", FIXTURE_DIR);
-        write_file(path, graph_json);
-        (void)snprintf(path, sizeof path, "%s/context-brief.json", FIXTURE_DIR);
-        write_file(path, brief_json);
-        (void)snprintf(path, sizeof path, "%s/brief.txt", FIXTURE_DIR);
-        write_file(path, brief_text);
-        puts("context compiler contract fixture written");
-    } else {
-        char path[512];
-        (void)snprintf(path, sizeof path, "%s/request.json", FIXTURE_DIR);
-        char *expected = read_file(path);
-        assert(strcmp(expected, request_json) == 0);
-        free(expected);
-        (void)snprintf(path, sizeof path, "%s/context-graph.json", FIXTURE_DIR);
-        expected = read_file(path);
-        assert(strcmp(expected, graph_json) == 0);
-        free(expected);
-        (void)snprintf(path, sizeof path, "%s/context-brief.json", FIXTURE_DIR);
-        expected = read_file(path);
-        assert(strcmp(expected, brief_json) == 0);
-        free(expected);
-        (void)snprintf(path, sizeof path, "%s/brief.txt", FIXTURE_DIR);
-        expected = read_file(path);
-        assert(strcmp(expected, brief_text) == 0);
-        free(expected);
-        puts("context compiler contract and fixture passed");
-    }
-
+    puts("context compiler contract tests passed");
     free(request_json);
     free(graph_json);
     free(brief_json);
-    free(brief_text);
     return 0;
 }

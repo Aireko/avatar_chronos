@@ -61,12 +61,7 @@ typedef struct {
 
 /* Rank usable direct call evidence by descending relevance, then by
  * ascending evidence ID (strcmp). Copy discovery coverage unchanged.
- * No graph traversal or source lookup is needed for this operation.
- *
- * Slice-two relevance is intentionally small and deterministic:
- * incoming resolved = 1.0, outgoing resolved = 0.9,
- * outgoing ambiguous = 0.5, outgoing unresolved = 0.25. Later flow ranking
- * replaces this seed score without changing the ordering contract. */
+ * No graph traversal or source lookup is needed for this operation. */
 int context_rank_candidates(const ContextCandidates *candidates, ContextRanking *out);
 void context_ranking_free(ContextRanking *ranking);
 

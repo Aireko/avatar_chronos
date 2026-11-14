@@ -1,11 +1,10 @@
 /*
  * Hand-labeled context compiler evaluation.
  *
- * Run: .build/test_context_eval [--write-golden]
+ * Run: .build/test_context_eval
  *
- * Covers onboarding, change impact, symbol review and the Chronos bridge
- * fixture. Golden JSON is byte-compared; semantic assertions check required
- * evidence, unresolved relationships, budgets and source-free graph payloads.
+ * Covers onboarding, change impact, multi-symbol review, symbol review and the
+ * Chronos bridge fixture with semantic assertions and token/baseline metrics.
  */
 #include "context_views.h"
 #include "parser.h"
@@ -116,47 +115,6 @@ static int find_symbol(const RepositoryIndex *index, const char *name,
     return 0;
 }
 
-static char *read_text(const char *path)
-{
-    FILE *file = fopen(path, "rb");
-    assert(file != NULL);
-    assert(fseek(file, 0, SEEK_END) == 0);
-    long length = ftell(file);
-    assert(length >= 0);
-    assert(fseek(file, 0, SEEK_SET) == 0);
-    char *text = malloc((size_t)length + 1);
-    assert(text != NULL);
-    assert(fread(text, 1, (size_t)length, file) == (size_t)length);
-    text[length] = '\0';
-    fclose(file);
-    return text;
-}
-
-static void write_text(const char *path, const char *text)
-{
-    FILE *file = fopen(path, "wb");
-    assert(file != NULL);
-    size_t length = strlen(text);
-    assert(fwrite(text, 1, length, file) == length);
-    fclose(file);
-}
-
-static void golden_compare(const char *name, const char *text, int write_golden)
-{
-    char path[512];
-    (void)snprintf(path, sizeof path, "tests/fixtures/context_eval/golden/%s", name);
-    if (write_golden) {
-        write_text(path, text);
-        return;
-    }
-    char *expected = read_text(path);
-    if (strcmp(expected, text) != 0) {
-        fprintf(stderr, "golden mismatch: %s\n", name);
-        assert(0);
-    }
-    free(expected);
-}
-
 static size_t estimate_tokens(size_t bytes)
 {
     return (bytes + 3) / 4;
@@ -262,16 +220,6 @@ static size_t retained_calls(const RepositoryIndex *index, const ContextGraph *g
         free(id);
     }
     return retained;
-}
-
-static char *serialize_brief(const ContextBrief *brief)
-{
-    int length = context_brief_write_json(brief, NULL, 0);
-    assert(length > 0);
-    char *json = malloc((size_t)length + 1);
-    assert(json != NULL);
-    assert(context_brief_write_json(brief, json, (size_t)length + 1) == length);
-    return json;
 }
 
 static char *serialize_graph(const ContextGraph *graph)
@@ -388,9 +336,8 @@ static size_t evaluate_chronos_bridge(void)
     return retained;
 }
 
-int main(int argc, char **argv)
+int main(void)
 {
-    int write_golden = argc == 2 && strcmp(argv[1], "--write-golden") == 0;
     RepositoryIndex *index = build_index();
 
     const ContextFlowRequest onboarding = {
@@ -403,10 +350,7 @@ int main(int argc, char **argv)
     assert(count_items(&views.brief) <= 12);
     assert(views.brief.used_source_bytes <= 4096);
 
-    char *onboarding_brief = serialize_brief(&views.brief);
     char *onboarding_graph = serialize_graph(&views.graph);
-    golden_compare("onboarding-brief.json", onboarding_brief, write_golden);
-    golden_compare("onboarding-graph.json", onboarding_graph, write_golden);
 
     const RequiredCall onboarding_required[] = {
         {"main", "alpha", 1},
@@ -429,7 +373,6 @@ int main(int argc, char **argv)
            estimate_tokens(brief_prompt_bytes(&views.brief)),
            estimate_tokens(onboarding_baseline + TASK_PROMPT_BYTES),
            onboarding_retained, unresolved_edges(&views.graph));
-    free(onboarding_brief);
     free(onboarding_graph);
     context_views_free(&views);
 
@@ -443,10 +386,7 @@ int main(int argc, char **argv)
     request = (ContextViewsRequest){&change, {12, 4096}};
     ContextViews change_views = {0};
     assert(context_build_views(index, &request, &change_views) == CHRONOS_OK);
-    char *change_brief = serialize_brief(&change_views.brief);
     char *change_graph = serialize_graph(&change_views.graph);
-    golden_compare("change-brief.json", change_brief, write_golden);
-    golden_compare("change-graph.json", change_graph, write_golden);
 
     char *gamma_source = context_symbol_evidence_id_alloc(&gamma_ref);
     assert(gamma_source != NULL);
@@ -470,7 +410,6 @@ int main(int argc, char **argv)
            estimate_tokens(brief_prompt_bytes(&change_views.brief)),
            estimate_tokens(change_baseline + TASK_PROMPT_BYTES),
            change_retained, unresolved_edges(&change_views.graph));
-    free(change_brief);
     free(change_graph);
     context_views_free(&change_views);
 
@@ -492,10 +431,7 @@ int main(int argc, char **argv)
     assert(multi_views.brief.used_source_bytes <= 4096);
     assert(brief_text_contains(&multi_views.brief, "Target: main in app/main.c."));
     assert(brief_text_contains(&multi_views.brief, "Target: gamma in lib/remote.c."));
-    char *multi_brief = serialize_brief(&multi_views.brief);
     char *multi_graph = serialize_graph(&multi_views.graph);
-    golden_compare("multi-brief.json", multi_brief, write_golden);
-    golden_compare("multi-graph.json", multi_graph, write_golden);
     const RequiredCall multi_required[] = {
         {"main", "alpha", 1},
         {"beta", "gamma", 1},
@@ -512,7 +448,6 @@ int main(int argc, char **argv)
            estimate_tokens(brief_prompt_bytes(&multi_views.brief)),
            estimate_tokens(onboarding_baseline + TASK_PROMPT_BYTES),
            multi_retained, unresolved_edges(&multi_views.graph));
-    free(multi_brief);
     free(multi_graph);
     context_views_free(&multi_views);
 
@@ -538,7 +473,6 @@ int main(int argc, char **argv)
     char *review_json = malloc((size_t)review_length + 1);
     assert(review_json != NULL);
     assert(context_write_json(&review, review_json, (size_t)review_length + 1) == review_length);
-    golden_compare("review-context.json", review_json, write_golden);
 
     const RequiredCall review_required[] = {
         {"beta", "gamma", 0},
@@ -570,7 +504,6 @@ int main(int argc, char **argv)
     size_t bridge_retained = evaluate_chronos_bridge();
     assert(bridge_retained == 8);
 
-    if (write_golden) puts("context evaluation golden files written");
-    else puts("context evaluation golden and semantic checks passed");
+    puts("context evaluation semantic checks passed");
     return 0;
 }

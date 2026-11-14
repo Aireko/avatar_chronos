@@ -1,6 +1,8 @@
 /* "Who worked on this?": drawn in the same hand-made family as graph.css.
    The panel sits inside the tool drawer's scrolling body, so it draws no outer
-   card of its own; every colour comes from the .app theme variables. */
+   card of its own; every colour comes from the .app theme variables (which also set
+   color-scheme). Fields take their pen and focus ring from graph.css, and the keyframes
+   rise and stamp are graph.css's shared ones. */
 .people-panel {
   padding: 2px 18px 0;
   overflow-wrap: anywhere;
@@ -35,12 +37,6 @@
 
 /* ---------- controls ---------- */
 .people-panel .field { font-size: 16px; }
-.people-panel .field:focus-visible,
-.people-panel select:focus-visible,
-.people-panel textarea:focus-visible {
-  outline: 2.5px dashed var(--pen-2);
-  outline-offset: 3px;
-}
 .people-panel .field[aria-invalid="true"] { border-color: var(--bad); border-style: dashed; }
 .people-panel .btn { flex: none; }
 
@@ -90,7 +86,19 @@
 }
 .people-panel .people-error { border-color: var(--bad); color: var(--bad); }
 .people-notice { border-color: var(--ok); border-style: dashed; }
-.people-notice::before { content: "\2713" / ""; margin-right: 6px; color: var(--ok); }
+/* Pen-drawn ticks (graph.css's --tick-mask), not a font glyph. */
+.people-notice::before {
+  content: "";
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  background: currentColor;
+  -webkit-mask: var(--tick-mask) center / contain no-repeat;
+  mask: var(--tick-mask) center / contain no-repeat;
+  margin-right: 6px;
+  vertical-align: -0.05em;
+  color: var(--ok);
+}
 
 .people-warn {
   display: flex;
@@ -149,7 +157,7 @@
 
 .people-who { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
 .people-name { font-size: 20px; font-weight: 400; line-height: 1.15; }
-.people-tag { font-size: 13px; }
+.people-tag { font-size: 14px; }
 .people-email {
   flex: 1 1 100%;
   min-width: 0;
@@ -201,9 +209,17 @@
 .people-swap > span { grid-area: 1 / 1; text-align: center; }
 .people-swap > .is-off { visibility: hidden; }
 .people-panel .btn.people-copied { border-color: var(--ok); color: var(--ok); }
-.people-copied-label::before { content: "\2713" / ""; margin-right: 5px; }
-.people-copied-label { animation: people-stamp 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards; }
-@keyframes people-stamp { from { opacity: 0; transform: scale(0.85) rotate(-3deg); } }
+.people-copied-label::before {
+  content: "";
+  display: inline-block;
+  width: 0.75em;
+  height: 0.75em;
+  background: currentColor;
+  -webkit-mask: var(--tick-mask) center / contain no-repeat;
+  mask: var(--tick-mask) center / contain no-repeat;
+  margin-right: 5px;
+}
+.people-copied-label { animation: stamp 0.22s var(--ease-pop) backwards; }
 
 /* ---------- states: working, empty, near the limit ---------- */
 .people-panel .people-working { margin: 14px 0 0; }
@@ -230,11 +246,10 @@
 .people-report,
 .people-error,
 .people-notice,
-.people-panel .people-empty { animation: people-rise 0.22s ease-out backwards; }
-.people-person { animation: people-rise 0.22s ease-out backwards; animation-delay: calc(var(--i, 0) * 35ms); }
-@keyframes people-rise { from { opacity: 0; transform: translateY(6px); } }
+.people-panel .people-empty { animation: rise 0.22s ease-out backwards; }
+.people-person { animation: rise 0.22s ease-out backwards; animation-delay: calc(var(--i, 0) * 35ms); }
 
-.people-lines { animation: people-rise 0.18s ease-out backwards; }
+.people-lines { animation: rise 0.18s ease-out backwards; }
 
 .people-bar-fill {
   transition: width 0.28s ease-out;

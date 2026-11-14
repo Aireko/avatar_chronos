@@ -1,4 +1,4 @@
-import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import "@fontsource/patrick-hand/400.css";
 // Base doodle styles first, so the tool panels' stylesheets (imported by the
@@ -9,8 +9,16 @@ import { isTauri } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import AiPanel from "./ai/AiPanel";
-import { backendVersion, errorMessage, exportGraph, type ChronosGraph } from "./backend";
+import {
+  backendVersion,
+  errorMessage,
+  exportGraph,
+  runGitCommand,
+  runShellCommand,
+  type ChronosGraph,
+} from "./backend";
 import ContributorsPanel from "./blame/ContributorsPanel";
+import { PanelBoundary } from "./tools/PanelBoundary";
 import BugCheckPanel from "./bugcheck/BugCheckPanel";
 import { CodeEditor, type DiffCompare } from "./graph/CodeEditor";
 import { CommitDetails } from "./graph/CommitDetails";
@@ -35,9 +43,48 @@ import {
 } from "./tools/icons";
 import { Presence } from "./tools/Presence";
 import { ToolDrawer, type ToolId } from "./tools/ToolDrawer";
+import { historyChanged, isToolSwap } from "./tools/appLogic";
 
 /** How long the "History up to date" note stays after a reload. */
 const RELOAD_NOTE_MS = 2600;
+
+/** What the "unsaved edits" question says about the step that would lose them. */
+type LeaveAsk = { title: string; discard: string };
+const LEAVE_CLOSE: LeaveAsk = { title: "Close the editor?", discard: "Discard and close" };
+const LEAVE_SCOPE: LeaveAsk = { title: "Switch the history view?", discard: "Discard and switch" };
+const LEAVE_REPO: LeaveAsk = { title: "Open the other repository?", discard: "Discard and open" };
+const LEAVE_REFRESH: LeaveAsk = { title: "Reload the editor's files?", discard: "Discard and reload" };
+const LEAVE_COMPARE: LeaveAsk = { title: "Compare with another commit?", discard: "Discard and compare" };
+
+/** Panels whose opener gets the keyboard back when they close. */
+type Opener = "panel" | "tool" | "editor" | "terminal" | "leave";
+
+/**
+ * After a panel closes, put keyboard focus on `target` if focus was dropped with the
+ * panel (onto <body>, or still inside the closing, inert copy). Runs after React commits.
+ */
+function focusLater(target: () => Element | null | undefined) {
+  window.requestAnimationFrame(() => {
+    const active = document.activeElement;
+    if (active && active !== document.body && !active.closest("[inert],[hidden]")) return;
+    const el = target();
+    if (el instanceof HTMLElement || el instanceof SVGElement) {
+      if (el.isConnected && !el.closest("[inert],[hidden]")) el.focus({ preventScroll: true });
+    }
+  });
+}
+
+/** Put the keyboard in the terminal's prompt once the dock is showing. */
+function focusTerminalSoon() {
+  window.requestAnimationFrame(() =>
+    document.querySelector<HTMLInputElement>(".dock-panel:not(.is-leaving) .term-input")?.focus({ preventScroll: true }),
+  );
+}
+
+/** The commit the map has selected, as a focusable node. */
+function selectedNodeEl(): Element | null {
+  return document.querySelector(".stage .node.selected");
+}
 
 /** What a reload found, in a few words for the status bar. */
 function reloadText(added: number, dropped: number): string {
@@ -80,19 +127,122 @@ function App() {
   const [graph, setGraph] = useState<ChronosGraph>();
   const [scope, setScope] = useState<Scope>(PROJECT);
   const [selected, setSelected] = useState<string | null>(null);
-  const [panel, setPanel] = useState<{ mode: PanelMode; id: number } | null>(null);
+  // `focus`: the ticket takes the keyboard when it opens (not while arrow keys walk the map).
+  const [panel, setPanel] = useState<{ mode: PanelMode; id: number; focus: boolean } | null>(null);
   const [showEditor, setShowEditor] = useState(false);
   const [diffCompare, setDiffCompare] = useState<DiffCompare | null>(null);
   // File the plain editor opens first (a HEAD file picked in the commit ticket).
   const [editorStart, setEditorStart] = useState<string | null>(null);
+  // The editor has edits that are not saved (reported by CodeEditor).
+  const [editorDirty, setEditorDirty] = useState(false);
+  // Bumped to make the editor read the files again (it remounts).
+  const [editorEpoch, setEditorEpoch] = useState(0);
+  // The history moved while the editor was open, so its files may be out of date.
+  const [editorStale, setEditorStale] = useState(false);
+  // A step that would close or reload the editor, waiting for "Discard" or "Keep editing".
+  const [leave, setLeave] = useState<(LeaveAsk & { go: () => void }) | null>(null);
   const [showTerminal, setShowTerminal] = useState(false);
   // At most one drawer is open on the right: a tool or the commit details.
   const [tool, setTool] = useState<ToolId | null>(null);
+  // The drawer keeps showing the last tool while it slides away, and every tool that
+  // has been opened stays mounted (hidden), so its downloads and checks keep going.
+  const [lastTool, setLastTool] = useState<ToolId | null>(null);
+  const [openedTools, setOpenedTools] = useState<ReadonlySet<ToolId>>(() => new Set());
+  // Switching straight from one tool to another re-inks the drawer (opening does not).
+  const [toolSwap, setToolSwap] = useState(false);
+  // A rebase stopped on a conflict and is waiting to be continued or aborted.
+  const [rebasePaused, setRebasePaused] = useState(false);
+  const [rebaseBusy, setRebaseBusy] = useState<"abort" | "continue" | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   // What the last reload found; keyed by `n` so a repeat reload stamps it again.
   const [reloadNote, setReloadNote] = useState<{ text: string; fresh: boolean; n: number } | null>(null);
   const ids = useRef(new Map<string, string>());
+
+  // Read by callbacks that outlive a render (a terminal command finishing later, say).
+  const graphRef = useRef(graph);
+  graphRef.current = graph;
+  const showEditorRef = useRef(showEditor);
+  showEditorRef.current = showEditor;
+  const dirtyRef = useRef(false);
+
+  // Where keyboard focus goes back to when each panel closes.
+  const openers = useRef<Partial<Record<Opener, Element | null>>>({});
+  const pathField = useRef<HTMLInputElement>(null);
+  const editorKey = useRef<HTMLButtonElement>(null);
+  const terminalKey = useRef<HTMLButtonElement>(null);
+  const toolKeys = useRef(new Map<ToolId, HTMLButtonElement>());
+  const leaveKeep = useRef<HTMLButtonElement>(null);
+  const leaveDiscard = useRef<HTMLButtonElement>(null);
+
+  function rememberOpener(kind: Opener) {
+    const el = document.activeElement;
+    openers.current[kind] = el && el !== document.body ? el : null;
+  }
+
+  function returnFocus(kind: Opener, fallback?: () => Element | null | undefined) {
+    const saved = openers.current[kind];
+    openers.current[kind] = null;
+    focusLater(() => (saved?.isConnected && !saved.closest("[inert],[hidden]") ? saved : fallback?.()));
+  }
+
+  const onDirtyChange = useCallback((dirty: boolean) => {
+    dirtyRef.current = dirty;
+    setEditorDirty(dirty);
+  }, []);
+
+  /**
+   * Runs `go`, a step that closes, reloads or retargets the editor, but first asks
+   * when the editor has unsaved edits.
+   */
+  function guardEditor(ask: LeaveAsk, go: () => void) {
+    if (!showEditorRef.current || !dirtyRef.current) {
+      go();
+      return;
+    }
+    rememberOpener("leave");
+    setLeave({ ...ask, go });
+  }
+
+  function keepEditing() {
+    setLeave(null);
+    returnFocus("leave");
+  }
+
+  function discardEdits() {
+    const go = leave?.go;
+    const opener = openers.current.leave;
+    setLeave(null);
+    openers.current.leave = null;
+    dirtyRef.current = false;
+    setEditorDirty(false);
+    go?.();
+    // Steps that move the keyboard themselves (closing the editor, say) have already
+    // queued that, and this runs after them: it only catches focus left behind on the
+    // closing question (e.g. after choosing another commit to compare with).
+    focusLater(() =>
+      opener?.isConnected && !opener.closest("[inert],[hidden]")
+        ? opener
+        : (document.querySelector(".editor-layer:not(.is-leaving) .file-search-input") ?? pathField.current),
+    );
+  }
+
+  // The question takes the keyboard while it is up ("Keep editing" is the safe choice).
+  useEffect(() => {
+    if (leave) leaveKeep.current?.focus({ preventScroll: true });
+  }, [leave]);
+
+  // Reloading or closing the window would drop unsaved edits too, so the browser asks.
+  // (A native close of the desktop window isn't covered here.)
+  useEffect(() => {
+    if (!editorDirty || !showEditor) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [editorDirty, showEditor]);
 
   const scoped = useMemo(() => (graph ? scopeGraph(graph, scope) : null), [graph, scope]);
   const layout = useMemo(
@@ -124,13 +274,60 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [reloadNote]);
 
+  // A paused rebase leaves HEAD detached, so only then ask git whether one is waiting.
+  useEffect(() => {
+    if (!graph || currentBranch || !isTauri()) {
+      setRebasePaused(false);
+      return;
+    }
+    let alive = true;
+    runShellCommand(graph.repoPath, "git rev-parse -q --verify REBASE_HEAD").then(
+      (r) => alive && setRebasePaused(r.ok && r.stdout.trim().length > 0),
+      () => alive && setRebasePaused(false),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [graph, currentBranch]);
+
   /** Swap in fresh history. Within the same repository, commits keep their identity so changes animate. */
   function applyGraph(next: ChronosGraph) {
-    ids.current = carryIds(graph?.commits ?? [], ids.current, next.commits);
+    const prev = graphRef.current;
+    // A command from a repository that has since been closed: not this history.
+    if (prev && next.repoPath !== prev.repoPath) return;
+    ids.current = carryIds(prev?.commits ?? [], ids.current, next.commits);
+    graphRef.current = next;
     setGraph(next);
     setSelected((current) =>
       current && next.commits.some((c) => c.hash === current) ? current : null,
     );
+    // A checkout, pull or rebase can change the files the editor has open.
+    if (showEditorRef.current && historyChanged(prev, next)) setEditorStale(true);
+  }
+
+  /** Close the editor now (callers have already asked about unsaved edits). */
+  function closeEditorNow() {
+    setShowEditor(false);
+    setDiffCompare(null);
+    setEditorStale(false);
+    dirtyRef.current = false;
+    setEditorDirty(false);
+    returnFocus("editor", () => editorKey.current);
+  }
+
+  function closeEditor() {
+    guardEditor(LEAVE_CLOSE, closeEditorNow);
+  }
+
+  /** Read the editor's files again: it remounts on the new epoch. */
+  function refreshEditor() {
+    guardEditor(LEAVE_REFRESH, () => {
+      setEditorEpoch((n) => n + 1);
+      setEditorStale(false);
+      dirtyRef.current = false;
+      setEditorDirty(false);
+      focusLater(() => document.querySelector(".editor-layer:not(.is-leaving) .file-search-input"));
+    });
   }
 
   async function load(target: string) {
@@ -142,25 +339,36 @@ function App() {
 
     try {
       const { graph: next } = await exportGraph(repo);
+      const current = graphRef.current;
 
-      if (graph && next.repoPath === graph.repoPath) {
-        const before = new Set(graph.commits.map((c) => c.hash));
+      if (current && next.repoPath === current.repoPath) {
+        const before = new Set(current.commits.map((c) => c.hash));
         const after = new Set(next.commits.map((c) => c.hash));
         const added = next.commits.filter((c) => !before.has(c.hash)).length;
-        const dropped = graph.commits.filter((c) => !after.has(c.hash)).length;
+        const dropped = current.commits.filter((c) => !after.has(c.hash)).length;
         applyGraph(next);
+        // Reload is the user asking for fresh files, so an open editor offers them too.
+        if (showEditorRef.current) setEditorStale(true);
         setReloadNote((prev) => ({
           text: reloadText(added, dropped),
           fresh: added > 0 || dropped > 0,
           n: (prev?.n ?? 0) + 1,
         }));
       } else {
-        setReloadNote(null);
-        ids.current = new Map();
-        setGraph(next);
-        setSelected(null);
-        setPanel(null);
-        setScope(PROJECT);
+        // Another repository: everything tied to the old one goes (the editor, terminal
+        // and People tool are keyed by the repository, so they start over).
+        guardEditor(LEAVE_REPO, () => {
+          setReloadNote(null);
+          ids.current = new Map();
+          graphRef.current = next;
+          setGraph(next);
+          setSelected(null);
+          setPanel(null);
+          setScope(PROJECT);
+          setEditorStart(null);
+          setRebasePaused(false);
+          if (showEditorRef.current) closeEditorNow();
+        });
       }
     } catch (e) {
       setError(errorMessage(e));
@@ -170,25 +378,31 @@ function App() {
   }
 
   function changeScope(next: Scope) {
-    setScope(next);
-    setSelected(null);
-    setPanel(null);
-    setShowEditor(false);
-    setDiffCompare(null);
+    const go = () => {
+      setScope(next);
+      setSelected(null);
+      setPanel(null);
+      if (showEditorRef.current) closeEditorNow();
+    };
+    if (showEditor) guardEditor(LEAVE_SCOPE, go);
+    else go();
   }
 
   /** Clicking a commit shows its action bar; the details panel only opens from that bar. */
   function pick(hash: string | null) {
+    const commit = hash && graph ? graph.commits.find((c) => c.hash === hash) : undefined;
+    // In the side-by-side editor, picking another commit compares with that one instead,
+    // which reloads the working-tree pane.
+    if (showEditor && diffCompare && commit && graph && commit.hash !== graph.head && commit.hash !== diffCompare.baseRev) {
+      guardEditor(LEAVE_COMPARE, () => {
+        setSelected(commit.hash);
+        setPanel(null);
+        setDiffCompare({ baseRev: commit.hash, baseLabel: commit.shortHash, headLabel: "working tree" });
+      });
+      return;
+    }
     setSelected(hash);
     setPanel(null);
-    if (!showEditor || !diffCompare || !hash || !graph) return;
-    const commit = graph.commits.find((c) => c.hash === hash);
-    if (!commit || commit.hash === graph.head) return;
-    setDiffCompare({
-      baseRev: commit.hash,
-      baseLabel: commit.shortHash,
-      headLabel: "working tree",
-    });
   }
 
   /**
@@ -210,20 +424,39 @@ function App() {
         path,
       });
     }
+    // The ticket's file button goes away with the ticket; closing the editor falls back
+    // to the dock's Code editor key.
+    rememberOpener("editor");
     setSelected(hash);
     setPanel(null);
+    setEditorStale(false);
     setShowEditor(true);
-  }
-
-  function closeEditor() {
-    setShowEditor(false);
-    setDiffCompare(null);
   }
 
   /** Opening a tool closes the commit details (they share the right-hand side), and vice versa. */
   function toggleTool(id: ToolId) {
-    setTool((current) => (current === id ? null : id));
+    const next = tool === id ? null : id;
+    setToolSwap(isToolSwap(tool, next));
+    setTool(next);
     setPanel(null);
+    if (next) {
+      setLastTool(next);
+      setOpenedTools((prev) => (prev.has(next) ? prev : new Set(prev).add(next)));
+    }
+  }
+
+  /** Close the tool drawer and hand the keyboard back to its toolbar button. */
+  function closeTool() {
+    const id = tool;
+    setTool(null);
+    setToolSwap(false);
+    if (id) focusLater(() => toolKeys.current.get(id));
+  }
+
+  /** Close the commit ticket; the keyboard goes back to the commit on the map. */
+  function closePanel() {
+    setPanel(null);
+    focusLater(selectedNodeEl);
   }
 
   /** Native folder picker, so the path doesn't have to be typed. */
@@ -260,6 +493,8 @@ function App() {
   // Arrow keys move along the branch.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // The unsaved-edits question handles its own keys.
+      if (leave) return;
       const target = e.target;
       const typing =
         target instanceof HTMLInputElement ||
@@ -285,16 +520,16 @@ function App() {
       if (typing) return;
 
       if (e.key === "Escape") {
-        if (panel) setPanel(null);
-        else if (tool) setTool(null);
-        else if (showEditor) {
-          setShowEditor(false);
-          setDiffCompare(null);
-        } else if (showTerminal) setShowTerminal(false);
+        if (panel) closePanel();
+        else if (tool) closeTool();
+        else if (showEditor) closeEditor();
+        else if (showTerminal) closeTerminal();
         else setSelected(null);
         return;
       }
 
+      // The map may handle its own arrow keys; then there is nothing left to do here.
+      if (e.defaultPrevented) return;
       if (tool || showEditor || !layout || !selected) return;
 
       const node = layout.byHash.get(selected);
@@ -313,40 +548,85 @@ function App() {
       }
 
       if (next) {
+        e.preventDefault();
         setSelected(next);
-        if (panel) setPanel({ mode: "details", id: Date.now() });
+        // The ticket is replaced for the new commit; if the keyboard was in it, the new
+        // one takes it (otherwise focus would drop to the top of the page).
+        const inTicket = target instanceof Element && Boolean(target.closest(".slide-panel .ticket"));
+        if (panel) setPanel({ mode: "details", id: Date.now(), focus: inTicket });
+        // Keyboard focus walks with the selection, so Enter acts on the commit you see
+        // highlighted (only when it was on the map to begin with).
+        const onMap = target === document.body || (target instanceof Element && target.closest(".stage .node"));
+        if (onMap) {
+          window.requestAnimationFrame(() => {
+            const node = selectedNodeEl();
+            if (node instanceof SVGElement || node instanceof HTMLElement) node.focus({ preventScroll: true });
+          });
+        }
       }
     };
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-    // toggleEditor and toggleTerminal read `graph`.
+    // toggleEditor, toggleTerminal and the close helpers read `graph` and the editor state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graph, layout, selected, panel, tool, showEditor, showTerminal]);
+  }, [graph, layout, selected, panel, tool, showEditor, showTerminal, leave, diffCompare]);
 
   function toggleEditor() {
     if (!graph) {
       setError("Open a repository first.");
       return;
     }
+    if (showEditor) {
+      closeEditor();
+      return;
+    }
+    rememberOpener("editor");
     setEditorStart(null);
-    setShowEditor((v) => {
-      if (v) {
-        setDiffCompare(null);
-        return false;
-      }
-      setPanel(null);
-      return true;
-    });
+    setEditorStale(false);
+    setPanel(null);
+    setShowEditor(true);
   }
 
+  function closeTerminal() {
+    setShowTerminal(false);
+    returnFocus("terminal", () => terminalKey.current);
+  }
 
   function toggleTerminal() {
     if (!graph) {
       setError("Open a repository first.");
       return;
     }
-    setShowTerminal((v) => !v);
+    if (showTerminal) {
+      closeTerminal();
+      return;
+    }
+    rememberOpener("terminal");
+    setShowTerminal(true);
+    focusTerminalSoon();
+  }
+
+  /** Way out of a rebase that stopped on a conflict. */
+  async function finishRebase(how: "abort" | "continue") {
+    const repo = graphRef.current?.repoPath;
+    if (!repo) return;
+    setRebaseBusy(how);
+    setError("");
+    try {
+      // (The backend runs git with a no-op editor, so continuing keeps each commit's message.)
+      const run = await runGitCommand(repo, `rebase --${how}`);
+      if (run.graph) applyGraph(run.graph);
+      if (!run.result.ok) {
+        const why = (run.result.error ?? run.result.stderr ?? "").trim() || `git exited with ${run.result.exitCode}`;
+        setError(how === "abort" ? `Couldn't abort the rebase: ${why}` : `The rebase can't continue yet: ${why}`);
+      }
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setRebaseBusy(null);
+      focusLater(() => selectedNodeEl() ?? pathField.current);
+    }
   }
 
   /** The theme switch repaints everything, so the whole window cross-fades instead of snapping. */
@@ -359,17 +639,21 @@ function App() {
     );
   }
 
-
   // Every path seen in the loaded history, offered as suggestions in the People tool.
   const filePaths = useMemo(
     () => [...new Set(graph?.commits.flatMap((c) => c.filesChanged.map((f) => f.path)) ?? [])].sort(),
     [graph],
   );
   const desktop = isTauri();
-  const activeTool = TOOLS.find((t) => t.id === tool);
+  const drawerOpen = Boolean(tool && !panel);
+  // While the drawer slides away (or waits, closed) it keeps the last tool's band.
+  const drawerTool = TOOLS.find((t) => t.id === (tool ?? lastTool));
+  const editorUp = Boolean(graph && layout && scoped && showEditor);
 
   return (
     <div className="app" data-theme={theme}>
+      {/* While the unsaved-edits question is up, the rest of the window waits. */}
+      <div className="app-body" inert={leave ? true : undefined}>
       <header className="toolbar">
         <span className="app-name">Chronos</span>
 
@@ -382,6 +666,7 @@ function App() {
           }}
         >
           <input
+            ref={pathField}
             className="field"
             value={path}
             onChange={(e) => setPath(e.currentTarget.value)}
@@ -431,6 +716,10 @@ function App() {
           {TOOLS.map(({ id, label, hint, icon: Icon }) => (
             <button
               key={id}
+              ref={(el) => {
+                if (el) toolKeys.current.set(id, el);
+                else toolKeys.current.delete(id);
+              }}
               className="btn tool-btn"
               aria-pressed={tool === id}
               onClick={() => toggleTool(id)}
@@ -466,12 +755,70 @@ function App() {
                 <WarnIcon />
                 <span>{error}</span>
               </span>
-              <button className="btn" onClick={() => setError("")}>
+              <button
+                className="btn"
+                onClick={() => {
+                  setError("");
+                  focusLater(() => pathField.current);
+                }}
+              >
                 Dismiss
               </button>
             </div>
           </div>
         )}
+      </Presence>
+
+      {/* A rebase that stopped on a conflict stays in view until it is finished or aborted,
+          whatever happens to the commit ticket it started from. */}
+      <Presence show={Boolean(graph && rebasePaused)} className="banner-roll" exitMs={160}>
+        <div className="banner-clip">
+          <section className="banner rebase-note" aria-label="Rebase paused">
+            <span className="banner-text">
+              <WarnIcon />
+              <span>
+                <strong className="rebase-note-title">A rebase is paused on a conflict.</strong>{" "}
+                <span className="rebase-note-help">
+                  Fix the files and stage them (<code>git add</code>), then continue. Or abort to put everything back.
+                </span>
+              </span>
+            </span>
+            <span className="rebase-note-keys">
+              <button
+                type="button"
+                className="btn"
+                disabled={rebaseBusy !== null}
+                onClick={() => {
+                  if (!showTerminal) {
+                    rememberOpener("terminal");
+                    setShowTerminal(true);
+                  }
+                  focusTerminalSoon();
+                }}
+              >
+                Terminal
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={rebaseBusy !== null}
+                aria-busy={rebaseBusy === "continue" || undefined}
+                onClick={() => void finishRebase("continue")}
+              >
+                {rebaseBusy === "continue" ? "Continuing…" : "Continue"}
+              </button>
+              <button
+                type="button"
+                className="btn primary"
+                disabled={rebaseBusy !== null}
+                aria-busy={rebaseBusy === "abort" || undefined}
+                onClick={() => void finishRebase("abort")}
+              >
+                {rebaseBusy === "abort" ? "Aborting…" : "Abort rebase"}
+              </button>
+            </span>
+          </section>
+        </div>
       </Presence>
 
       <main className="stage">
@@ -502,7 +849,8 @@ function App() {
                 onSelect={pick}
                 onAction={(mode) => {
                   setTool(null);
-                  setPanel({ mode, id: Date.now() });
+                  setToolSwap(false);
+                  setPanel({ mode, id: Date.now(), focus: true });
                 }}
               />
             )
@@ -532,9 +880,11 @@ function App() {
             </div>
           )}
 
-          <Presence show={Boolean(graph && layout && scoped && showEditor)} className="editor-layer" exitMs={160}>
+          <Presence show={editorUp} className="editor-layer" exitMs={160}>
             {graph && layout && scoped && (
               <CodeEditor
+                // A new repository, or a refresh, starts the editor over on fresh files.
+                key={`${graph.repoPath}#${editorEpoch}`}
                 repoPath={graph.repoPath}
                 graph={scoped.graph}
                 layout={layout}
@@ -543,9 +893,37 @@ function App() {
                 startPath={editorStart}
                 onSelect={pick}
                 onCompare={setDiffCompare}
+                onDirtyChange={onDirtyChange}
                 onClose={closeEditor}
               />
             )}
+          </Presence>
+
+          {/* The history moved under the open editor (Reload, a git command, a rebase). */}
+          <Presence show={editorUp && editorStale} className="editor-note" exitMs={140}>
+            <div className="editor-note-card" role="status">
+              <p className="editor-note-text">
+                The repository changed. Files in the editor may be out of date
+                {editorDirty ? ", and saving would write over the new version." : "."}
+              </p>
+              <span className="editor-note-keys">
+                <button type="button" className="btn" onClick={refreshEditor}>
+                  Reload files
+                </button>
+                <button
+                  type="button"
+                  className="ticket-close"
+                  aria-label="Dismiss the note"
+                  title="Dismiss"
+                  onClick={() => {
+                    setEditorStale(false);
+                    focusLater(() => document.querySelector(".editor-layer:not(.is-leaving) .file-search-input"));
+                  }}
+                >
+                  ×
+                </button>
+              </span>
+            </div>
           </Presence>
           </div>
 
@@ -554,6 +932,7 @@ function App() {
             <CommitDetails
               key={`${selectedNode.commit.hash}:${panel.id}`}
               start={panel.mode}
+              autoFocus={panel.focus}
               repoPath={graph.repoPath}
               graph={scoped.graph}
               layout={layout}
@@ -563,59 +942,87 @@ function App() {
               pathAtCommit={scoped.pathAt.get(selectedNode.commit.hash)}
               removed={scoped.gone.has(selectedNode.commit.hash)}
               currentBranch={currentBranch}
+              rebasePaused={rebasePaused}
               onGraphChange={applyGraph}
               onSelect={(hash) => {
                 setSelected(hash);
-                setPanel({ mode: "details", id: Date.now() });
+                setPanel({ mode: "details", id: Date.now(), focus: true });
               }}
               onOpenSideDiff={() => openSideDiff(selectedNode.commit.hash)}
               onOpenFile={(file) => openSideDiff(selectedNode.commit.hash, file)}
-              onClose={() => setPanel(null)}
+              onClose={closePanel}
             />
           )}
           </Presence>
 
-          <Presence show={Boolean(activeTool && !panel)} className="slide-panel">
-            {activeTool && (
-              <ToolDrawer title={activeTool.title} icon={activeTool.icon} onClose={() => setTool(null)}>
-                <div key={activeTool.id} className="tool-swap">
-                  {activeTool.id === "ai" && <AiPanel />}
-                  {activeTool.id === "reviews" && <BugCheckPanel />}
-                  {activeTool.id === "people" && (
-                    <ContributorsPanel repoPath={graph?.repoPath ?? path} filePaths={filePaths} />
-                  )}
-                </div>
+          {/* Kept mounted while closed, so a model download or a PR check carries on. */}
+          <Presence show={drawerOpen} className="slide-panel" keepMounted>
+            {drawerTool && (
+              <ToolDrawer
+                title={drawerTool.title}
+                icon={drawerTool.icon}
+                open={drawerOpen}
+                swap={toolSwap}
+                onClose={closeTool}
+              >
+                {TOOLS.filter((t) => openedTools.has(t.id)).map((t) => (
+                  <div
+                    key={t.id}
+                    className={`tool-pane${toolSwap && t.id === tool ? " is-swap" : ""}`}
+                    hidden={t.id !== drawerTool.id || undefined}
+                  >
+                    <PanelBoundary name={t.label}>
+                      {t.id === "ai" && <AiPanel />}
+                      {t.id === "reviews" && <BugCheckPanel repoPath={graph?.repoPath} />}
+                      {t.id === "people" && (
+                        <ContributorsPanel
+                          key={graph?.repoPath ?? ""}
+                          repoPath={graph?.repoPath ?? path}
+                          filePaths={filePaths}
+                        />
+                      )}
+                    </PanelBoundary>
+                  </div>
+                ))}
               </ToolDrawer>
             )}
           </Presence>
         </div>
 
-        <Presence show={Boolean(graph && showTerminal)} className="dock-panel" exitMs={200}>
+        {/* Kept mounted while closed, so the output and any running command survive. */}
+        <Presence show={Boolean(graph && showTerminal)} className="dock-panel" exitMs={200} keepMounted>
           {graph && (
             <Terminal
+              key={graph.repoPath}
               repoPath={graph.repoPath}
               repoLabel={repoLabel}
               onGraphChange={applyGraph}
-              onClose={() => setShowTerminal(false)}
+              onClose={closeTerminal}
             />
           )}
         </Presence>
 
         <div className="dock-toggles" role="toolbar" aria-label="Views">
+          {/* In the editor, "Back to map" (and Ctrl+E) closes it; this key would only sit
+              on top of the file tree. */}
+          {!showEditor && (
+            <button
+              ref={editorKey}
+              type="button"
+              className="btn dock-key"
+              aria-pressed={false}
+              aria-keyshortcuts="Control+E"
+              title="Open the code editor (Ctrl+E)"
+              onClick={toggleEditor}
+            >
+              <span>Code editor</span>
+              <kbd className="dock-kbd" aria-hidden="true">
+                Ctrl E
+              </kbd>
+            </button>
+          )}
           <button
-            type="button"
-            className={`btn dock-key${showEditor ? " primary" : ""}`}
-            aria-pressed={showEditor}
-            aria-keyshortcuts="Control+E"
-            title={showEditor ? "Back to the map (Ctrl+E)" : "Open the code editor (Ctrl+E)"}
-            onClick={toggleEditor}
-          >
-            <span>Code editor</span>
-            <kbd className="dock-kbd" aria-hidden="true">
-              Ctrl E
-            </kbd>
-          </button>
-          <button
+            ref={terminalKey}
             type="button"
             className={`btn dock-key${showTerminal ? " primary" : ""}`}
             aria-pressed={showTerminal}
@@ -638,8 +1045,8 @@ function App() {
               {graph.repoPath}
             </span>
             {/* Keyed by value: a changed figure ticks in, so a reload or scope change is noticed. */}
-            <span key={`b:${currentBranch}`} className="status-tick">
-              {currentBranch ? `On ${currentBranch}` : "Detached HEAD"}
+            <span key={`b:${currentBranch}:${rebasePaused}`} className="status-tick">
+              {currentBranch ? `On ${currentBranch}` : rebasePaused ? "Rebasing (paused)" : "Detached HEAD"}
             </span>
             <span key={`c:${scoped?.graph.commits.length ?? 0}:${scope.kind}`} className="status-tick">
               {scoped?.graph.commits.length ?? 0} commits{scope.kind !== "project" ? ` touching this ${scope.kind}` : ""}
@@ -674,6 +1081,48 @@ function App() {
           {connected === false ? "Backend not connected" : connected ? version : "Connecting…"}
         </span>
       </footer>
+      </div>
+
+      {/* Closing or reloading the editor would drop unsaved edits: ask first, in the
+          same hand-drawn style, instead of the browser's own dialog. */}
+      <Presence show={Boolean(leave)} className="leave-scrim" exitMs={140}>
+        {leave && (
+          <div
+            className="leave-card"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="leave-title"
+            aria-describedby="leave-text"
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                keepEditing();
+              } else if (e.key === "Tab") {
+                // Keep the keyboard inside the question.
+                e.preventDefault();
+                const next = document.activeElement === leaveKeep.current ? leaveDiscard.current : leaveKeep.current;
+                next?.focus();
+              }
+            }}
+          >
+            <h2 id="leave-title" className="section-title leave-title">
+              {leave.title}
+            </h2>
+            <p id="leave-text" className="leave-text">
+              The file in the editor has <span className="leave-mark">unsaved edits</span>. They will be lost.
+            </p>
+            <div className="leave-keys">
+              <button ref={leaveDiscard} type="button" className="btn leave-discard" onClick={discardEdits}>
+                {leave.discard}
+              </button>
+              <button ref={leaveKeep} type="button" className="btn primary" onClick={keepEditing}>
+                Keep editing
+              </button>
+            </div>
+          </div>
+        )}
+      </Presence>
     </div>
   );
 }

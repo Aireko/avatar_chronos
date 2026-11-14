@@ -27,6 +27,10 @@ interface Props {
   pathAtCommit?: string;
   removed?: boolean;
   currentBranch: string | null;
+  /** A rebase is paused on a conflict (App shows the way out in a note). */
+  rebasePaused?: boolean;
+  /** Take keyboard focus when the ticket opens (not when arrow keys walk the map). */
+  autoFocus?: boolean;
   onGraphChange: (graph: ChronosGraph) => void;
   onSelect: (hash: string) => void;
   onOpenSideDiff: () => void;
@@ -65,6 +69,8 @@ export function CommitDetails({
   pathAtCommit,
   removed,
   currentBranch,
+  rebasePaused = false,
+  autoFocus = false,
   onGraphChange,
   onSelect,
   onOpenSideDiff,
@@ -81,6 +87,14 @@ export function CommitDetails({
   const cancelKey = useRef<HTMLButtonElement>(null);
   const rebaseKey = useRef<HTMLButtonElement>(null);
   const refocusRebase = useRef(false);
+  const sheet = useRef<HTMLElement>(null);
+
+  // Opened from the commit's action bar (which has just gone away), so the keyboard
+  // carries on here instead of falling back to the top of the page.
+  useEffect(() => {
+    if (autoFocus) sheet.current?.focus({ preventScroll: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Keyboard focus follows the rebase question: onto Cancel when it opens (the safe
   // choice), and back to the Rebase key when it is cancelled.
@@ -226,10 +240,14 @@ export function CommitDetails({
         : `Put ${target} back to this commit`
       : currentBranch
         ? `Move ${currentBranch} onto this commit`
-        : "Check out a branch first";
+        : rebasePaused
+          ? "Finish or abort the paused rebase first"
+          : "Check out a branch first";
 
   return (
     <aside
+      ref={sheet}
+      tabIndex={-1}
       className="ticket"
       style={{ "--line": lane.color, "--on": lane.on } as CSSProperties}
       aria-label="Commit details"
@@ -378,6 +396,12 @@ export function CommitDetails({
               <h3>{outcomeTitle}</h3>
               {outcome.result.error && <p>{outcome.result.error}</p>}
               {output && <pre>{output}</pre>}
+              {stuck && (
+                <p className="quiet">
+                  Fix the conflicts and continue in the terminal, or abort here. The note at the top of the window
+                  keeps both ways out after this ticket closes.
+                </p>
+              )}
               {stuck && (
                 <button
                   className="key plain"

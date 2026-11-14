@@ -42,7 +42,10 @@
 }
 .scope-title { display: flex; align-items: center; gap: 8px; font-size: 19px; }
 .scope-back { border: 0; background: none; color: var(--pen-2); font: inherit; cursor: pointer; padding: 0; }
-.scope-list { margin: 0; padding: 0; list-style: none; overflow-y: auto; min-height: 0; }
+.scope-list {
+  margin: 0; padding: 0; list-style: none; overflow-y: auto; min-height: 0;
+  scrollbar-width: thin; scrollbar-color: var(--soft) transparent;
+}
 .scope-list button {
   display: block; width: 100%; padding: 4px 8px; border: 0; background: none; color: var(--ink);
   font-family: var(--mono); font-size: 14px; text-align: left; cursor: pointer; overflow-wrap: anywhere;
@@ -64,8 +67,7 @@
 .scope-step { animation: scope-step-in 0.18s ease-out backwards; }
 @keyframes scope-step-in { from { opacity: 0; transform: translateX(10px); } }
 /* "Loading…" waits a beat, so a quick load never flashes it. */
-.scope-loading { animation: scope-wait 0.2s ease-out 0.18s backwards; }
-@keyframes scope-wait { from { opacity: 0; } }
+.scope-loading { animation: fade-in 0.2s ease-out 0.18s backwards; } /* fade-in: graph.css */
 
 @media (prefers-reduced-motion: reduce) {
   .scope-step,

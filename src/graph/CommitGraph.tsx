@@ -1,24 +1,34 @@
 import {
+  memo,
   useEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
+  type Dispatch,
   type PointerEvent as ReactPointerEvent,
+  type SetStateAction,
 } from "react";
 import type { ChronosGraph } from "../backend";
 import {
   STATION_R,
   cameraAt,
+  cullLayout,
   drawDelay,
+  drawDelayAt,
   drawInWindow,
   fitAxis,
   fitZoom,
   glideMs,
+  legendRows,
+  sameRange,
   scribbleLoop,
+  visibleColumns,
   wheelZoomFactor,
   type CameraShot,
+  type ColumnRange,
   type GraphLayout,
+  type GraphNode,
   type Lane,
 } from "./layout";
 import { scopeNoun, type Scope } from "./scope";
@@ -64,32 +74,85 @@ function clampZoom(z: number, exact = false) {
 }
 
 /**
- * The draw-in plan for one opening of the map. Each element present when the map opened
- * keeps the decision made then (a delay, or null: already there), so a later reload or
- * rebase that shifts columns never restarts an old element's animation. Elements that
- * appear afterwards (new commits, replayed lines) draw in at once.
+ * The draw-in for one opening of the map, on the performance.now() clock. When a map opens,
+ * the columns around head get staggered start times; everything else is simply there. An
+ * element that appears later (a new commit, a replayed line) starts drawing the moment its
+ * layout arrives. Nothing else ever animates in, so a reload or rebase that shifts columns
+ * never restarts an old element's animation, and a line that is culled and drawn again
+ * (panned away and back) mid-intro picks up where it was instead of starting over.
  */
 interface Intro {
   repo: string;
-  plan: Map<string, number | null>;
+  /** When each element's draw-in starts, keyed "n:id", "e:key" or "b:key". Only a few are here. */
+  born: Map<string, number>;
+  seenNodes: Set<string>;
+  seenEdges: Set<string>;
+  seenBridges: Set<string>;
 }
 
-function planIntro(graph: ChronosGraph, layout: GraphLayout, zoom: number): Intro {
+/** Starts the draw-in for a newly opened repository. */
+function openIntro(graph: ChronosGraph, layout: GraphLayout, zoom: number, now: number): Intro {
   const lastCol = layout.nodes.length - 1;
   const focus = (graph.head ? layout.byHash.get(graph.head)?.col : undefined) ?? lastCol;
   const width = typeof window === "undefined" ? 1280 : window.innerWidth;
   const win = drawInWindow(focus, lastCol, width, zoom);
-  const plan = new Map<string, number | null>();
-  for (const n of layout.nodes) plan.set(`n:${n.id}`, drawDelay(win, n.col));
-  for (const e of layout.edges) plan.set(`e:${e.key}`, drawDelay(win, e.order));
-  for (const b of layout.bridges) plan.set(`b:${b.key}`, drawDelay(win, b.order));
-  return { repo: graph.repoPath, plan };
+  const born = new Map<string, number>();
+  for (const n of layout.nodes.slice(Math.max(0, win.from), win.to + 1)) {
+    const d = drawDelay(win, n.col);
+    if (d !== null) born.set(`n:${n.id}`, now + d);
+  }
+  for (const e of layout.edges) {
+    const d = drawDelay(win, e.order);
+    if (d !== null) born.set(`e:${e.key}`, now + d);
+  }
+  for (const b of layout.bridges) {
+    const d = drawDelay(win, b.order);
+    if (d !== null) born.set(`b:${b.key}`, now + d);
+  }
+  return {
+    repo: graph.repoPath,
+    born,
+    seenNodes: new Set(layout.nodes.map((n) => n.id)),
+    seenEdges: new Set(layout.edges.map((e) => e.key)),
+    seenBridges: new Set(layout.bridges.map((b) => b.key)),
+  };
 }
 
-/** null: no animation. A number: animate after that many ms. */
-function entryDelay(intro: Intro, key: string): number | null {
-  const planned = intro.plan.get(key);
-  return planned === undefined ? 0 : planned;
+/** A new layout of the same repository: whatever was not there before draws in now. */
+function updateIntro(intro: Intro, layout: GraphLayout, now: number) {
+  for (const [key, start] of intro.born) if (start < now - 5000) intro.born.delete(key);
+  const nodes = new Set<string>();
+  const edges = new Set<string>();
+  const bridges = new Set<string>();
+  for (const n of layout.nodes) {
+    nodes.add(n.id);
+    if (!intro.seenNodes.has(n.id) && !intro.born.has(`n:${n.id}`)) intro.born.set(`n:${n.id}`, now);
+  }
+  for (const e of layout.edges) {
+    edges.add(e.key);
+    if (!intro.seenEdges.has(e.key) && !intro.born.has(`e:${e.key}`)) intro.born.set(`e:${e.key}`, now);
+  }
+  for (const b of layout.bridges) {
+    bridges.add(b.key);
+    if (!intro.seenBridges.has(b.key) && !intro.born.has(`b:${b.key}`)) intro.born.set(`b:${b.key}`, now);
+  }
+  intro.seenNodes = nodes;
+  intro.seenEdges = edges;
+  intro.seenBridges = bridges;
+}
+
+/** How an element enters: with the .draw class after `delay`, or not at all. */
+interface DrawAttr {
+  cls: string;
+  delay?: string;
+}
+const NO_DRAW: DrawAttr = { cls: "" };
+
+/** A function whose identity never changes but which always runs the latest `fn`. */
+function useStable<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
+  const ref = useRef(fn);
+  ref.current = fn;
+  return useState(() => (...args: A) => ref.current(...args))[0];
 }
 
 export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, currentBranch, onSelect, onAction }: Props) {
@@ -103,6 +166,8 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
   const [goal, setGoal] = useState(1);
   const [legendOpen, setLegendOpen] = useState(true);
   const [focusLane, setFocusLane] = useState<number | null>(null);
+  // The commit holding keyboard focus, kept drawn even when panned off screen.
+  const [focusedHash, setFocusedHash] = useState<string | null>(null);
   // The commit the map just flew to (legend, head key), ringed for a moment. `n` restarts the ink.
   const [landing, setLanding] = useState<{ hash: string; n: number } | null>(null);
   const zoomRef = useRef(zoom);
@@ -121,9 +186,48 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
   const sheetSize = useRef({ w: sheetW, h: sheetH });
   sheetSize.current = { w: sheetW, h: sheetH };
 
-  // A fresh plan for each repository; the component itself remounts when the scope changes.
-  const [intro, setIntro] = useState(() => planIntro(graph, layout, 1));
-  if (intro.repo !== graph.repoPath) setIntro(planIntro(graph, layout, zoomRef.current));
+  // A fresh draw-in for each repository (the component itself remounts when the scope
+  // changes); each later layout of it only draws in what is new. Re-running this for the same
+  // layout changes nothing, so it is safe in a memo.
+  const intro = useRef<Intro | null>(null);
+  // How each drawn element enters, kept while it stays drawn (see `attrs` below).
+  const attrCache = useRef(new Map<string, DrawAttr>());
+  useMemo(() => {
+    const now = performance.now();
+    if (!intro.current || intro.current.repo !== graph.repoPath) {
+      intro.current = openIntro(graph, layout, zoomRef.current, now);
+      // Another repository (a clone or worktree can share commits): forget the old entrances.
+      attrCache.current = new Map();
+    } else {
+      updateIntro(intro.current, layout, now);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layout, graph.repoPath]);
+
+  // Only the columns on screen (plus a block either side) are drawn, so a history of tens of
+  // thousands of commits costs about as much as one screenful. The range moves a block at a time.
+  const lastCol = layout.nodes.length - 1;
+  const [range, setRange] = useState<ColumnRange>(() => {
+    const node = (graph.head ? layout.byHash.get(graph.head) : undefined) ?? layout.nodes[lastCol];
+    const w = typeof window === "undefined" ? 1280 : window.innerWidth;
+    const left = node ? Math.max(0, node.x + MAP_PAD - w / 2) : 0;
+    return visibleColumns(left, w, 1, MAP_PAD, lastCol);
+  });
+  const rangeRef = useRef(range);
+  rangeRef.current = range;
+  const lastColRef = useRef(lastCol);
+  lastColRef.current = lastCol;
+
+  /** Re-reads which columns are on screen; renders only when that moves to another block. */
+  function syncRange() {
+    const el = viewport.current;
+    if (!el) return;
+    const next = visibleColumns(el.scrollLeft, el.clientWidth, liveZoom.current, MAP_PAD, lastColRef.current);
+    if (!sameRange(next, rangeRef.current)) {
+      rangeRef.current = next;
+      setRange(next);
+    }
+  }
 
   /** Draws the map at zoom `z` straight onto the DOM, without a React render. */
   function paintZoom(z: number) {
@@ -190,6 +294,8 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
       if (shot.zoom !== liveZoom.current) paintZoom(shot.zoom);
       el.scrollLeft = shot.x * shot.zoom - ax;
       el.scrollTop = shot.y * shot.zoom - ay;
+      // A zoom with the scroll pinned at 0 fires no scroll event, so check the range here too.
+      syncRange();
     };
     const land = () => {
       cam.current = null;
@@ -256,6 +362,24 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
   }
 
   useEffect(() => cancelFrame, []);
+
+  // Panning, resizing and new layouts move the drawn range.
+  useEffect(() => {
+    const el = viewport.current;
+    if (!el) return;
+    el.addEventListener("scroll", syncRange, { passive: true });
+    const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => syncRange());
+    resize?.observe(el);
+    return () => {
+      el.removeEventListener("scroll", syncRange);
+      resize?.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    syncRange();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layout]);
 
   // Trackpad/mouse: free 2D pan. Shift+wheel pans horizontally. Ctrl/Cmd+wheel (and pinch)
   // glides the zoom about the cursor; each event retargets the glide, so a burst stays smooth.
@@ -389,10 +513,10 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
   }
 
   /** The legend points at a branch: glide to its newest commit and ring it. */
-  function showLane(lane: Lane) {
+  const showLane = useStable((lane: Lane) => {
     const node = layout.byHash.get(lane.tip);
     if (node) scrollToPoint(node.x, node.y, { onLand: () => ring(node.commit.hash) });
-  }
+  });
 
   /** Head, or the newest commit when head is not on this map. */
   const homeNode = (graph.head ? layout.byHash.get(graph.head) : undefined) ?? layout.nodes[layout.nodes.length - 1];
@@ -417,157 +541,161 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
     });
   }
 
-  // The drawing only changes with the history, the selection and head. Zooming, panning and
-  // pointing at the legend re-render this component without touching thousands of circles.
-  const drawing = useMemo(() => {
-    const draw = (delay: number | null, lag = 0) =>
-      delay === null ? { cls: "", delay: undefined } : { cls: " draw", delay: `${delay + lag}ms` };
-    const solid = layout.edges.filter((e) => !e.ghost);
-    const ghosts = layout.edges.filter((e) => e.ghost);
-    const edgeIn = new Map(layout.edges.map((e) => [e.key, draw(entryDelay(intro, `e:${e.key}`))] as const));
+  // What is drawn: the nodes in the column range and the lines and hops that reach into it.
+  const view = useMemo(() => cullLayout(layout, range), [layout, range]);
 
-    // Pointing at a branch in the legend fades every other line. One rule per lane, so the
-    // highlight is a single attribute change on the <svg>, not a re-render of the drawing.
-    const laneCss =
-      layout.lanes.length < 2
-        ? ""
-        : `${layout.lanes
-            .map((l) => `.map-svg[data-focus="${l.index}"] [data-lane]:not([data-lane="${l.index}"])`)
-            .join(",\n")} { opacity: 0.16; }`;
+  // How each drawn element enters. Worked out once when it is first drawn and then kept for
+  // as long as it stays drawn, so a later render never changes a running animation's delay.
+  const attrs = useMemo(() => {
+    const now = performance.now();
+    const born = intro.current?.born ?? new Map<string, number>();
+    const old = attrCache.current;
+    const next = new Map<string, DrawAttr>();
+    const take = (key: string, lag = 0) => {
+      let at = old.get(key);
+      if (!at) {
+        const delay = drawDelayAt(born.get(key), now, lag);
+        at = delay === null ? NO_DRAW : { cls: " draw", delay: `${delay}ms` };
+      }
+      next.set(key, at);
+    };
+    for (const e of view.edges) take(`e:${e.key}`);
+    for (const b of view.bridges) take(`b:${b.key}`, BRIDGE_LAG);
+    for (const n of view.nodes) take(`n:${n.id}`, STATION_LAG);
+    attrCache.current = next;
+    return next;
+  }, [view]);
 
+  // The lines only change with the history and the drawn range. Selecting, zooming, panning
+  // within a block and pointing at the legend re-render this component without touching them.
+  const lines = useMemo(() => {
+    const solid = view.edges.filter((e) => !e.ghost);
+    const ghosts = view.edges.filter((e) => e.ghost);
+    const at = (key: string) => attrs.get(key) ?? NO_DRAW;
     return (
       <>
-        {laneCss && <style>{laneCss}</style>}
         {ghosts.map((edge) => {
-          const at = edgeIn.get(edge.key)!;
+          const a = at(`e:${edge.key}`);
           return (
             <path
               key={edge.key}
               d={edge.d}
               pathLength={1}
-              className={`tube-ghost${at.cls}`}
+              className={`tube-ghost${a.cls}`}
               data-lane={edge.lane}
-              style={{ stroke: edge.color, animationDelay: at.delay }}
+              style={{ d: `path("${edge.d}")`, stroke: edge.color, animationDelay: a.delay } as CSSProperties}
             />
           );
         })}
         {/* Paper-coloured casings first, then the pen lines, so joins stay clean. */}
         {solid.map((edge) => {
-          const at = edgeIn.get(edge.key)!;
+          const a = at(`e:${edge.key}`);
           return (
             <path
               key={`c-${edge.key}`}
               d={edge.d}
               pathLength={1}
-              className={`tube-casing${at.cls}`}
-              style={{ d: `path("${edge.d}")`, animationDelay: at.delay } as CSSProperties}
+              className={`tube-casing${a.cls}`}
+              style={{ d: `path("${edge.d}")`, animationDelay: a.delay } as CSSProperties}
             />
           );
         })}
         {solid.map((edge) => {
-          const at = edgeIn.get(edge.key)!;
+          const a = at(`e:${edge.key}`);
           return (
             <path
               key={`f-${edge.key}`}
               d={edge.d}
               pathLength={1}
-              className={`tube${at.cls}`}
+              className={`tube${a.cls}`}
               data-lane={edge.lane}
-              style={{ d: `path("${edge.d}")`, animationDelay: at.delay, stroke: edge.color } as CSSProperties}
+              style={{ d: `path("${edge.d}")`, animationDelay: a.delay, stroke: edge.color } as CSSProperties}
             />
           );
         })}
-        {/* Where a line crosses another branch's row, it hops over with a small gap. */}
-        {layout.bridges.map((bridge) => {
-          const at = draw(entryDelay(intro, `b:${bridge.key}`), BRIDGE_LAG);
+        {/* Where a line crosses another branch's row, it hops over with a small gap. The hop is
+            placed by a transform, so it glides with its line when a rebase moves it. */}
+        {view.bridges.map((bridge) => {
+          const a = at(`b:${bridge.key}`);
           return (
-            <g key={bridge.key} className={`bridge${at.cls}`} style={{ animationDelay: at.delay }}>
-              <line className="bridge-gap" x1={bridge.x} x2={bridge.x} y1={bridge.y - 9} y2={bridge.y + 9} />
+            <g
+              key={bridge.key}
+              className={`bridge${a.cls}`}
+              style={{ transform: `translate(${bridge.x}px, ${bridge.y}px)`, animationDelay: a.delay }}
+            >
+              <line className="bridge-gap" x1={0} x2={0} y1={-9} y2={9} />
               <line
                 className="bridge-line"
                 data-lane={bridge.lane}
-                x1={bridge.x}
-                x2={bridge.x}
-                y1={bridge.y - 12}
-                y2={bridge.y + 12}
+                x1={0}
+                x2={0}
+                y1={-12}
+                y2={12}
                 style={{ stroke: bridge.color }}
               />
             </g>
           );
         })}
-
-        {layout.nodes.map((node) => {
-          const isSelected = node.commit.hash === selected;
-          const isHead = node.commit.hash === graph.head;
-          const at = draw(entryDelay(intro, `n:${node.id}`), STATION_LAG);
-          return (
-            <g
-              key={node.id}
-              className={`node${isSelected ? " selected" : ""}${at.cls}`}
-              data-lane={node.lane}
-              style={
-                {
-                  transform: `translate(${node.x}px, ${node.y}px)`,
-                  "--line": node.color,
-                  "--d": at.delay,
-                } as CSSProperties
-              }
-              tabIndex={0}
-              role="button"
-              aria-label={node.commit.message}
-              onClick={(e) => {
-                e.stopPropagation();
-                if (!drag.current.moved) onSelectRef.current(node.commit.hash);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  onSelectRef.current(node.commit.hash);
-                }
-              }}
-            >
-              <title>{node.commit.message}</title>
-              <circle className="node-hit" r={26} />
-              <path className="halo" d={node.halo} />
-              <g className="station">
-                <path className="ring" d={node.shape} />
-                {node.kind === "interchange" && <circle className="ring-core" r={3.6} />}
-              </g>
-
-              {isHead && (
-                <g className="head-note">
-                  <text y={-(R + 24)}>head</text>
-                  <path d={`M 1 ${-(R + 19)} q 3 5 -1 11 m -5 -5 q 3 4 5 6 q 3 -3 5 -7`} pathLength={1} />
-                </g>
-              )}
-
-              {node.flags.map((flag) => (
-                <g key={flag.name} className="flag" transform={`translate(0 ${flag.dy})`}>
-                  <text style={{ fill: flag.color }}>{flag.name}</text>
-                  {flag.isCurrent && (
-                    <path
-                      className="flag-underline"
-                      d={`M ${-flag.w / 2} 5 q ${flag.w / 4} 3.5 ${flag.w / 2} 0.5 t ${flag.w / 2} -0.5`}
-                      pathLength={1}
-                      style={{ stroke: flag.color }}
-                    />
-                  )}
-                </g>
-              ))}
-
-              <text className="map-label" y={R + 24}>
-                {node.label.map((line, i) => (
-                  <tspan key={i} x={0} dy={i === 0 ? 0 : 18}>
-                    {line}
-                  </tspan>
-                ))}
-              </text>
-            </g>
-          );
-        })}
       </>
     );
-  }, [layout, selected, graph.head, intro]);
+  }, [view, attrs]);
+
+  // One Tab stop for the whole map (a roving tabindex): the chosen commit, else head, else the
+  // commit in the middle of what is drawn. Arrow keys (in App) move the choice, and focus follows.
+  const selectedNode = selected ? layout.byHash.get(selected) : undefined;
+  const focusedNode = focusedHash ? layout.byHash.get(focusedHash) : undefined;
+  // The chosen commit and the one holding keyboard focus stay drawn (and focusable) when they
+  // are off screen, so a wheel pan never drops focus onto the page. They go in column order
+  // either side of the drawn run: React then never has to move a focused element (moving one
+  // in the DOM blurs it) when it scrolls back into range or out of it.
+  const extra = [selectedNode, focusedNode].filter(
+    (n, i, all): n is GraphNode => !!n && all.indexOf(n) === i && (n.col < range.from || n.col > range.to),
+  );
+  const drawnNodes =
+    extra.length === 0
+      ? view.nodes
+      : [
+          ...extra.filter((n) => n.col < range.from).sort((a, b) => a.col - b.col),
+          ...view.nodes,
+          ...extra.filter((n) => n.col > range.to).sort((a, b) => a.col - b.col),
+        ];
+  const headNode = graph.head ? layout.byHash.get(graph.head) : undefined;
+  const tabHash =
+    selectedNode?.commit.hash ??
+    focusedNode?.commit.hash ??
+    (headNode && headNode.col >= range.from && headNode.col <= range.to ? headNode.commit.hash : undefined) ??
+    view.nodes[Math.floor(view.nodes.length / 2)]?.commit.hash;
+
+  const pickStation = useStable((hash: string, click: boolean) => {
+    if (click && drag.current.moved) return;
+    onSelectRef.current(hash);
+  });
+
+  // When the selection moves while focus is on the map (arrow keys, or Enter on a commit),
+  // focus moves with it, so the focus ring, Enter and screen readers all follow the halo.
+  // Read during render: by the effect, a re-keyed action bar may already have dropped focus.
+  const prevSelected = useRef(selected);
+  const focusWasInMap = useRef(false);
+  if (prevSelected.current !== selected) {
+    prevSelected.current = selected;
+    const active = typeof document === "undefined" ? null : document.activeElement;
+    focusWasInMap.current = !!active && !!viewport.current?.contains(active);
+  }
+  useEffect(() => {
+    const was = focusWasInMap.current;
+    focusWasInMap.current = false;
+    if (!was || !selected) return;
+    const active = document.activeElement;
+    // Focus left on the page body only counts when it was dropped from the map just now.
+    if (active && active !== document.body && !viewport.current?.contains(active)) return;
+    focusStation(selected);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected]);
+
+  function focusStation(hash: string) {
+    const el = viewport.current?.querySelector<SVGGElement>(`.node[data-hash="${hash}"]`);
+    if (el && el !== document.activeElement) el.focus({ preventScroll: true });
+  }
 
   const landingNode = landing ? layout.byHash.get(landing.hash) : undefined;
   const menuNode = selected && !panelOpen ? layout.byHash.get(selected) : undefined;
@@ -622,9 +750,27 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
               width={layout.width}
               height={layout.height}
               style={{ left: MAP_PAD, top: MAP_PAD }}
-              data-focus={focusLane ?? undefined}
+              role="group"
+              aria-label="Commit map"
+              onFocus={(e) => setFocusedHash((e.target as Element).getAttribute("data-hash"))}
+              onBlur={() => setFocusedHash(null)}
             >
-              {drawing}
+              {/* Pointing at a branch in the legend fades every other line: one rule, for that lane only. */}
+              {focusLane !== null && (
+                <style>{`.map-svg [data-lane]:not([data-lane="${focusLane}"]) { opacity: 0.16; }`}</style>
+              )}
+              {lines}
+              {drawnNodes.map((node) => (
+                <Station
+                  key={node.id}
+                  node={node}
+                  selected={node === selectedNode}
+                  tabbable={node.commit.hash === tabHash}
+                  isHead={node.commit.hash === graph.head}
+                  at={attrs.get(`n:${node.id}`) ?? NO_DRAW}
+                  onPick={pickStation}
+                />
+              ))}
               {landingNode && (
                 <g
                   key={landing!.n}
@@ -651,6 +797,13 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
                   aria-label="Commit actions"
                   onClick={(e) => e.stopPropagation()}
                   onPointerDown={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => {
+                    // Escape steps back to the commit (it stays chosen) instead of dropping the choice.
+                    if (e.key === "Escape") {
+                      e.stopPropagation();
+                      focusStation(menuNode.commit.hash);
+                    }
+                  }}
                 >
                   {menu.map((item) => (
                     <button key={item.mode} disabled={item.disabled} title={item.hint} onClick={() => onAction(item.mode)}>
@@ -679,30 +832,7 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
             <span className="legend-caret" aria-hidden="true">▾</span>
           </button>
           <Presence show={legendOpen} className="legend-drawer">
-            <div className="legend-roll">
-              <ul className="legend-list">
-                {layout.lanes.map((lane) => (
-                  <li key={lane.index} className="legend-row">
-                    <button
-                      type="button"
-                      className="legend-pick"
-                      title={`${lane.isHead ? `${lane.name} (current)` : lane.name}: show on the map`}
-                      onClick={() => showLane(lane)}
-                      onPointerEnter={() => setFocusLane(lane.index)}
-                      onPointerLeave={() => setFocusLane((f) => (f === lane.index ? null : f))}
-                      onFocus={() => setFocusLane(lane.index)}
-                      onBlur={() => setFocusLane((f) => (f === lane.index ? null : f))}
-                    >
-                      <span className="legend-swatch" style={{ background: lane.color }} />
-                      <span className="legend-name">
-                        {lane.name}
-                        {lane.isHead ? " · head" : ""}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
+            <LegendList lanes={layout.lanes} onShow={showLane} onFocusLane={setFocusLane} />
           </Presence>
         </div>
 
@@ -766,6 +896,147 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
     </div>
   );
 }
+
+interface StationProps {
+  node: GraphNode;
+  selected: boolean;
+  /** The map's one Tab stop (roving tabindex); every other commit is reached with the arrow keys. */
+  tabbable: boolean;
+  isHead: boolean;
+  at: DrawAttr;
+  onPick: (hash: string, click: boolean) => void;
+}
+
+/**
+ * One commit on the map. Memoised with stable props, so choosing a commit re-renders only the
+ * old and the new choice, not every station on screen.
+ */
+const Station = memo(function Station({ node, selected, tabbable, isHead, at, onPick }: StationProps) {
+  return (
+    <g
+      className={`node${selected ? " selected" : ""}${at.cls}`}
+      data-lane={node.lane}
+      data-hash={node.commit.hash}
+      style={
+        {
+          transform: `translate(${node.x}px, ${node.y}px)`,
+          "--line": node.color,
+          "--d": at.delay,
+        } as CSSProperties
+      }
+      tabIndex={tabbable ? 0 : -1}
+      role="button"
+      aria-pressed={selected}
+      aria-label={isHead ? `${node.commit.message} (head)` : node.commit.message}
+      onClick={(e) => {
+        e.stopPropagation();
+        onPick(node.commit.hash, true);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onPick(node.commit.hash, false);
+        }
+      }}
+    >
+      <title>{node.commit.message}</title>
+      <circle className="node-hit" r={26} />
+      <path className="halo" d={node.halo} />
+      <g className="station">
+        <path className="ring" d={node.shape} />
+        {node.kind === "interchange" && <circle className="ring-core" r={3.6} />}
+      </g>
+
+      {isHead && (
+        <g className="head-note">
+          <text y={-(R + 24)}>head</text>
+          <path d={`M 1 ${-(R + 19)} q 3 5 -1 11 m -5 -5 q 3 4 5 6 q 3 -3 5 -7`} pathLength={1} />
+        </g>
+      )}
+
+      {node.flags.map((flag) => (
+        <g key={flag.name} className="flag" transform={`translate(0 ${flag.dy})`}>
+          <text style={{ fill: flag.color }}>{flag.name}</text>
+          {flag.isCurrent && (
+            <path
+              className="flag-underline"
+              d={`M ${-flag.w / 2} 5 q ${flag.w / 4} 3.5 ${flag.w / 2} 0.5 t ${flag.w / 2} -0.5`}
+              pathLength={1}
+              style={{ stroke: flag.color }}
+            />
+          )}
+        </g>
+      ))}
+
+      <text className="map-label" y={R + 24}>
+        {node.label.map((line, i) => (
+          <tspan key={i} x={0} dy={i === 0 ? 0 : 18}>
+            {line}
+          </tspan>
+        ))}
+      </text>
+    </g>
+  );
+});
+
+/** How many more merged lines each press of "+N merged lines" lists. */
+const MERGED_PAGE = 40;
+
+interface LegendListProps {
+  lanes: Lane[];
+  onShow: (lane: Lane) => void;
+  onFocusLane: Dispatch<SetStateAction<number | null>>;
+}
+
+/**
+ * The branch key. Memoised on the lanes, so zooming and pointing at it never rebuild it. On a
+ * big history, lines from merged, deleted branches (often thousands) fold behind one row.
+ */
+const LegendList = memo(function LegendList({ lanes, onShow, onFocusLane }: LegendListProps) {
+  const [shownMerged, setShownMerged] = useState(0);
+  const { rows, hidden } = legendRows(lanes, shownMerged);
+  return (
+    <div className="legend-roll">
+      <ul className="legend-list">
+        {rows.map((lane) => (
+          <li key={lane.index} className="legend-row">
+            <button
+              type="button"
+              className="legend-pick"
+              title={`${lane.isHead ? `${lane.name} (current)` : lane.name}: show on the map`}
+              onClick={() => onShow(lane)}
+              onPointerEnter={() => onFocusLane(lane.index)}
+              onPointerLeave={() => onFocusLane((f) => (f === lane.index ? null : f))}
+              onFocus={() => onFocusLane(lane.index)}
+              onBlur={() => onFocusLane((f) => (f === lane.index ? null : f))}
+            >
+              <span className="legend-swatch" style={{ background: lane.color }} />
+              <span className="legend-name">
+                {lane.name}
+                {lane.isHead ? " · head" : ""}
+              </span>
+            </button>
+          </li>
+        ))}
+        {hidden > 0 && (
+          <li className="legend-row">
+            <button
+              type="button"
+              className="legend-pick legend-more"
+              title="List more lines from branches that were merged and deleted"
+              onClick={() => setShownMerged((n) => n + MERGED_PAGE)}
+            >
+              <span className="legend-more-mark" aria-hidden="true">+</span>
+              <span className="legend-name">
+                {hidden.toLocaleString()} merged {hidden === 1 ? "line" : "lines"}
+              </span>
+            </button>
+          </li>
+        )}
+      </ul>
+    </div>
+  );
+});
 
 /** Four pen-drawn corners round a dot: show everything. */
 function FitIcon() {

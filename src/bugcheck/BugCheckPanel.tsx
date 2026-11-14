@@ -17,8 +17,10 @@ import {
 } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { runShellCommand } from "../backend";
 import { bugCheckService, isValidPrNumber, isValidRepo, toBugCheckError } from "./bugCheckService";
 import { type ChunkOutcome, chunkTicks, ticksLabel } from "./chunkTicks";
+import { githubRepoFromRemote } from "./originRepo";
 import type {
   BugCheckError,
   BugCheckEvent,
@@ -36,8 +38,8 @@ import type {
 } from "./types";
 import "./BugCheckPanel.css";
 
+/** The repository the user last typed in; used when the open repository has no GitHub origin. */
 const REPO_KEY = "prBugCheck.repo";
-const DEFAULT_REPO = "Aireko/avatar";
 const MAX_COMMENTS_PER_REVIEW = 50;
 const MAX_ACTIVITY = 8;
 
@@ -70,12 +72,13 @@ function stagger(index: number): CSSProperties {
   return { "--i": Math.min(index, MAX_STAGGER) } as CSSProperties;
 }
 
+/** The saved repository, or "" (never some unrelated default: the user types one in). */
 function loadRepo(): string {
   try {
     const saved = localStorage.getItem(REPO_KEY);
-    return saved && isValidRepo(saved) ? saved : DEFAULT_REPO;
+    return saved && isValidRepo(saved) ? saved : "";
   } catch {
-    return DEFAULT_REPO;
+    return "";
   }
 }
 
@@ -414,7 +417,12 @@ function FindingCard({
   );
 }
 
-export default function BugCheckPanel() {
+interface BugCheckPanelProps {
+  /** The local repository open in Chronos; its GitHub `origin` is the default repository. */
+  repoPath?: string;
+}
+
+export default function BugCheckPanel({ repoPath }: BugCheckPanelProps = {}) {
   const [gh, setGh] = useState<GhStatus>();
   const [ghError, setGhError] = useState<BugCheckError>();
   const [checkingGh, setCheckingGh] = useState(false);
@@ -423,6 +431,10 @@ export default function BugCheckPanel() {
   const [repoDraft, setRepoDraft] = useState(repo);
   const repoRef = useRef(repo);
   repoRef.current = repo;
+  // The GitHub repository of the open repository's origin remote, once looked up. Until
+  // then (with a repository open) no list is loaded, so an unrelated one never flashes up.
+  const [originRepo, setOriginRepo] = useState<string>();
+  const [originChecked, setOriginChecked] = useState(!repoPath);
 
   const [prs, setPrs] = useState<PrWithStatus[]>();
   const [prsError, setPrsError] = useState<BugCheckError>();
@@ -529,9 +541,48 @@ export default function BugCheckPanel() {
     return () => runAbort.current?.abort();
   }, [refreshGh, refreshWatch]);
 
+  // The open repository decides the default: its GitHub origin when it has one, otherwise
+  // the repository typed in last (or none). Runs again whenever another repository opens.
   useEffect(() => {
-    void loadPrs(repo);
-  }, [repo, loadPrs]);
+    if (!repoPath) {
+      setOriginRepo(undefined);
+      setOriginChecked(true);
+      return;
+    }
+    let live = true;
+    setOriginChecked(false);
+    const use = (next: string, origin: string | undefined) => {
+      if (!live) return;
+      setOriginRepo(origin);
+      setOriginChecked(true);
+      setRepoDraft(next);
+      if (next !== repoRef.current) {
+        // Drop a list still loading for the previous repository (a watcher reload, say):
+        // with no repository now ("") nothing newer would supersede it, and its late
+        // answer would show another repository's PRs (and keep "Loading..." stuck).
+        prsRequest.current++;
+        setLoadingPrs(false);
+        setPrs(undefined);
+        setPrsError(undefined);
+        setRepo(next);
+      }
+    };
+    runShellCommand(repoPath, "git remote get-url origin").then(
+      (result) => {
+        const origin = result.ok ? githubRepoFromRemote(result.stdout) : undefined;
+        if (origin && isValidRepo(origin)) use(origin, origin);
+        else use(loadRepo(), undefined);
+      },
+      () => use(loadRepo(), undefined),
+    );
+    return () => {
+      live = false;
+    };
+  }, [repoPath]);
+
+  useEffect(() => {
+    if (originChecked && repo) void loadPrs(repo);
+  }, [repo, originChecked, loadPrs]);
 
   // Watcher events: keep the auto-review state, the PR list and an open report current.
   useEffect(
@@ -560,7 +611,7 @@ export default function BugCheckPanel() {
           setWatchProgress(undefined);
         }
         if (event.type === "reviewDone" || event.type === "polled") {
-          void loadPrs(repoRef.current);
+          if (repoRef.current) void loadPrs(repoRef.current);
           const open = reportRef.current;
           // Reload an open report only if the watcher just reviewed that very PR (repo and number).
           if (event.type === "reviewDone" && open && open.number === event.number && sameRepo(open.repo, event.repo)) {
@@ -575,19 +626,20 @@ export default function BugCheckPanel() {
     event.preventDefault();
     const next = repoDraft.trim();
     if (!isValidRepo(next)) {
-      setPrsError({ kind: "invalid_request", message: `'${next}' is not a GitHub repository`, hint: "Use owner/name, e.g. Aireko/avatar" });
+      setPrsError({ kind: "invalid_request", message: `'${next}' is not a GitHub repository`, hint: "Use owner/name, as in github.com/owner/name" });
       return;
     }
     saveRepo(next);
     if (next === repo) void loadPrs(next);
     else {
       setPrs(undefined);
+      setPrsError(undefined);
       setRepo(next);
     }
   }
 
   async function runCheck(number: number) {
-    if (runAbort.current) return;
+    if (runAbort.current || !repo) return;
     const target = repo;
     const controller = new AbortController();
     runAbort.current = controller;
@@ -616,6 +668,7 @@ export default function BugCheckPanel() {
   }
 
   async function viewReport(number: number) {
+    if (!repo) return;
     setReportError(undefined);
     try {
       const stored = await bugCheckService.getReport(repo, number);
@@ -815,8 +868,22 @@ export default function BugCheckPanel() {
 
       <div className="bc-block">
         <h3 className="bc-title">
-          Open pull requests in <span className="bc-title-repo">{repo}</span>
+          Open pull requests
+          {repo && (
+            <>
+              {" "}
+              in <span className="bc-title-repo">{repo}</span>
+              {originRepo && sameRepo(repo, originRepo) && <span className="bc-muted bc-origin"> (from origin)</span>}
+            </>
+          )}
         </h3>
+        {!repo && originChecked && (
+          <p className="bc-empty">
+            {repoPath
+              ? "The open repository has no GitHub origin remote. Type a GitHub repository (owner/name) above to list its open pull requests."
+              : "Type a GitHub repository (owner/name) above to list its open pull requests."}
+          </p>
+        )}
         {prsError && <ErrorBox error={prsError} />}
         {!prs && loadingPrs && !prsError && (
           <div className="bc-loading" role="status">
@@ -884,13 +951,13 @@ export default function BugCheckPanel() {
           />
           <button
             type="button"
-            className="btn bc-btn-sm"
+            className="btn"
             onClick={() => void runCheck(otherNumber)}
-            disabled={!otherValid || running}
+            disabled={!otherValid || running || !repo}
           >
             Run bug check
           </button>
-          <button type="button" className="btn bc-btn-sm" onClick={() => void viewReport(otherNumber)} disabled={!otherValid}>
+          <button type="button" className="btn" onClick={() => void viewReport(otherNumber)} disabled={!otherValid || !repo}>
             View report
           </button>
           <span className="bc-muted">also works for closed and merged PRs</span>
@@ -912,13 +979,13 @@ export default function BugCheckPanel() {
           </div>
           <div className="bc-option-grid">
             <label htmlFor="bc-ctx">Context window</label>
-            <select id="bc-ctx" className="bc-select" value={numCtx} onChange={(e) => setNumCtx(Number(e.target.value))}>
+            <select id="bc-ctx" className="field bc-select" value={numCtx} onChange={(e) => setNumCtx(Number(e.target.value))}>
               <option value={8192}>8K tokens (less memory, more and smaller parts)</option>
               <option value={16384}>16K tokens (default)</option>
               <option value={32768}>32K tokens (more memory)</option>
             </select>
             <label htmlFor="bc-conf">Minimum confidence</label>
-            <select id="bc-conf" className="bc-select" value={minConfidence} onChange={(e) => setMinConfidence(Number(e.target.value))}>
+            <select id="bc-conf" className="field bc-select" value={minConfidence} onChange={(e) => setMinConfidence(Number(e.target.value))}>
               <option value={0.3}>30%</option>
               <option value={0.5}>50% (default)</option>
               <option value={0.7}>70%</option>
@@ -1076,13 +1143,13 @@ export default function BugCheckPanel() {
                   </button>
                   <button
                     type="button"
-                    className="btn bc-btn-sm"
+                    className="btn"
                     onClick={() => setSelected(new Set(unpostedIds))}
                     disabled={unpostedIds.length === 0}
                   >
                     Select all
                   </button>
-                  <button type="button" className="btn bc-btn-sm" onClick={() => setSelected(new Set())}>
+                  <button type="button" className="btn" onClick={() => setSelected(new Set())}>
                     Select none
                   </button>
                   {overLimit && (
@@ -1155,7 +1222,7 @@ export default function BugCheckPanel() {
       <div className="bc-block">
         <h3 className="bc-title">Auto review</h3>
         <p className="bc-muted">
-          While the app is running, checks open PRs of <strong>{repo}</strong> that have no up-to-date check, one at a
+          While the app is running, checks open PRs of {repo ? <strong>{repo}</strong> : "the repository above"} that have no up-to-date check, one at a
           time. The first poll works through every open PR not checked yet (up to 50, which can take a long time on a
           small GPU); after that, only PRs that are opened or get new commits.
         </p>
@@ -1164,7 +1231,7 @@ export default function BugCheckPanel() {
             <input
               type="checkbox"
               checked={!!watch?.enabled}
-              disabled={watchBusy || watch === undefined}
+              disabled={watchBusy || watch == null || (!watch.enabled && !repo)}
               onChange={(e) => void setWatching(e.target.checked)}
             />{" "}
             Enabled
@@ -1201,7 +1268,7 @@ export default function BugCheckPanel() {
         {watchDirty && (
           <div className="bc-row">
             <span className="bc-warn">Settings changed.</span>
-            <button type="button" className="btn bc-btn-sm" onClick={() => void setWatching(true)} disabled={watchBusy}>
+            <button type="button" className="btn bc-btn-sm" onClick={() => void setWatching(true)} disabled={watchBusy || !repo}>
               Apply
             </button>
           </div>

@@ -38,6 +38,8 @@ export interface Lane {
   color: string;
   on: string;
   isHead: boolean;
+  /** A line a branch still points at (or head). Lines inferred from merged, deleted branches are not. */
+  named: boolean;
   y: number;
   tip: string; // hash of the line's newest commit
 }
@@ -75,6 +77,8 @@ export interface GraphEdge {
   ghost: boolean; // leads to history older than what is loaded
   order: number; // column of the newer end, used to time the draw-in
   lane: number; // the branch line whose colour it carries
+  from: number; // the columns it spans, so the map can skip lines that are off screen
+  to: number;
 }
 
 /** Where a vertical line passes over a row line that belongs to another branch. */
@@ -85,6 +89,7 @@ export interface Bridge {
   color: string;
   order: number;
   lane: number;
+  col: number; // the column just left of it, for skipping it when off screen
 }
 
 export interface GraphLayout {
@@ -154,15 +159,56 @@ function textWidth(text: string, font: string): number {
   return measureCtx.measureText(text).width;
 }
 
-function fitText(text: string, font: string, maxWidth: number): string {
-  if (textWidth(text, font) <= maxWidth) return text;
-  let cut = text;
-  while (cut.length > 1 && textWidth(`${cut}…`, font) > maxWidth) cut = cut.slice(0, -1);
-  return `${cut.trimEnd()}…`;
+/** Shortens `text` with an ellipsis until it fits, finding the longest fitting cut by binary search. */
+export function fitText(
+  text: string,
+  font: string,
+  maxWidth: number,
+  measure: (text: string, font: string) => number = textWidth,
+): string {
+  if (measure(text, font) <= maxWidth) return text;
+  // The longest prefix (at least one character) that still fits with "…" after it.
+  let lo = 1;
+  let hi = text.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (measure(`${text.slice(0, mid)}…`, font) <= maxWidth) lo = mid;
+    else hi = mid - 1;
+  }
+  return `${text.slice(0, Math.max(1, lo)).trimEnd()}…`;
+}
+
+/*
+ * Per-commit drawing work that depends only on the commit, kept between layouts so a reload,
+ * rebase or git command (which lays out the whole history again) mostly reuses it. Bounded:
+ * a cache that grows past CACHE_MAX simply starts afresh.
+ */
+const CACHE_MAX = 60000;
+const shapeCache = new Map<string, { shape: string; halo: string }>();
+const labelCache = new Map<string, string[]>();
+
+function remember<V>(cache: Map<string, V>, key: string, make: () => V, keep = true): V {
+  const hit = cache.get(key);
+  if (hit !== undefined) return hit;
+  const value = make();
+  if (!keep) return value;
+  if (cache.size >= CACHE_MAX) cache.clear();
+  cache.set(key, value);
+  return value;
+}
+
+/** Labels measured before the hand font has loaded would keep the fallback font's widths. */
+function fontsSettled(): boolean {
+  if (typeof document === "undefined" || !document.fonts) return true;
+  return document.fonts.status === "loaded";
 }
 
 /** Wraps a commit message onto at most two lines that fit inside its column. */
 function wrapLabel(text: string, maxLines = 2): string[] {
+  return remember(labelCache, text, () => wrapLabelNow(text, maxLines), fontsSettled());
+}
+
+function wrapLabelNow(text: string, maxLines: number): string[] {
   const lines: string[] = [];
   let current = "";
   for (const word of text.trim().split(/\s+/)) {
@@ -324,6 +370,47 @@ function elbow(p: GraphNode, c: GraphNode, xv: number, rnd: () => number): strin
   ].join(" ");
 }
 
+/* ---------- row packing ---------- */
+/**
+ * The spans (in half-columns) already taken on each row. A span fits on a row when it keeps a
+ * gap of at least 2 from every span there. Each row's spans are kept sorted and apart, so only
+ * the two neighbours of where the new span would go need checking: O(log n), not O(n).
+ */
+export class RowPacker {
+  private rows: [number, number][][] = [];
+
+  get count(): number {
+    return this.rows.length;
+  }
+
+  /** Index of the first span on `row` that starts after `s`. */
+  private after(list: [number, number][], s: number): number {
+    let lo = 0;
+    let hi = list.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (list[mid][0] > s) hi = mid;
+      else lo = mid + 1;
+    }
+    return lo;
+  }
+
+  fits(row: number, s: number, e: number): boolean {
+    const list = this.rows[row];
+    if (!list || list.length === 0) return true;
+    const i = this.after(list, s);
+    const before = list[i - 1];
+    const next = list[i];
+    return (!before || s - before[1] >= 2) && (!next || next[0] - e >= 2);
+  }
+
+  add(row: number, s: number, e: number): void {
+    while (this.rows.length <= row) this.rows.push([]);
+    const list = this.rows[row];
+    list.splice(this.after(list, s), 0, [s, e]);
+  }
+}
+
 /* ---------- main entry ---------- */
 export function layoutGraph(
   commits: Commit[],
@@ -355,6 +442,7 @@ export function layoutGraph(
 
   const ordered = sortBranches(branches);
   ordered.forEach((b) => claim(b.commitHash, b.name, b.isHead));
+  const branchChains = chains.length; // chains before this start at a commit a branch points at
   const mergedBy = new Map<string, string>();
   for (const c of commits) c.parents.slice(1).forEach((p) => mergedBy.set(p, c.message));
   for (const c of commits) if (!chainOf.has(c.hash)) claim(c.hash, inferLineName(c, mergedBy.get(c.hash)), false);
@@ -384,12 +472,10 @@ export function layoutGraph(
   }
 
   /* 4. Pack lines into rows: nearest free row to where the line branched from; rows are reused. */
-  const rowSpans: [number, number][][] = [];
-  const fits = (row: number, s: number, e: number) =>
-    (rowSpans[row] ?? []).every(([a, b]) => s - b >= 2 || a - e >= 2);
+  const rows = new RowPacker();
+  const fits = (row: number, s: number, e: number) => rows.fits(row, s, e);
   const place = (chain: Chain, row: number) => {
-    if (!rowSpans[row]) rowSpans[row] = [];
-    rowSpans[row].push([chain.start2, chain.end2]);
+    rows.add(row, chain.start2, chain.end2);
     chain.row = row;
   };
   const queue = [...chains].sort((a, b) => a.start2 - b.start2 || a.index - b.index);
@@ -409,7 +495,7 @@ export function layoutGraph(
     }
     place(chain, chosen);
   }
-  const rowCount = Math.max(1, rowSpans.length);
+  const rowCount = Math.max(1, rows.count);
 
   /* 5. Commit circles. */
   const nodes: GraphNode[] = [...commits].reverse().map((commit, column) => {
@@ -428,8 +514,10 @@ export function layoutGraph(
       y: PAD_T + row * LANE_H,
       color: lineStyle(lane).color,
       kind,
-      shape: blob(STATION_R, rng(`circle:${id}`)),
-      halo: blob(STATION_R + 11, rng(`halo:${id}`), 7),
+      ...remember(shapeCache, id, () => ({
+        shape: blob(STATION_R, rng(`circle:${id}`)),
+        halo: blob(STATION_R + 11, rng(`halo:${id}`), 7),
+      })),
       label: wrapLabel(commit.message),
       flags: [],
     };
@@ -452,6 +540,8 @@ export function layoutGraph(
           ghost: true,
           order: child.col,
           lane: child.lane,
+          from: Math.max(0, child.col - 1),
+          to: child.col,
         });
         return;
       }
@@ -493,8 +583,14 @@ export function layoutGraph(
 
   // How far each branch line reaches along its row, so crossings can be found.
   const extent: [number, number][] = chains.map((chain) => {
-    const xs = chain.hashes.map((h) => byHash.get(h)?.x ?? 0);
-    return [Math.min(...xs), Math.max(...xs)];
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const h of chain.hashes) {
+      const x = byHash.get(h)?.x ?? 0;
+      if (x < lo) lo = x;
+      if (x > hi) hi = x;
+    }
+    return [lo, hi];
   });
   for (const s of specs) {
     if (s.kind === "along") continue;
@@ -522,6 +618,8 @@ export function layoutGraph(
         ghost: false,
         order: s.child.col,
         lane: s.lane,
+        from: Math.min(s.parent.col, s.child.col),
+        to: Math.max(s.parent.col, s.child.col),
       });
       continue;
     }
@@ -532,7 +630,10 @@ export function layoutGraph(
       ghost: false,
       order: s.child.col,
       lane: s.lane,
+      from: Math.min(s.parent.col, s.child.col),
+      to: Math.max(s.parent.col, s.child.col),
     });
+    const bridgeCol = Math.floor((s.xv - PAD_L) / COL_W);
     const lo = Math.min(s.parent.row, s.child.row) + 1;
     const hi = Math.max(s.parent.row, s.child.row) - 1;
     for (let row = lo; row <= hi; row++) {
@@ -544,6 +645,7 @@ export function layoutGraph(
           color: s.color,
           order: s.child.col,
           lane: s.lane,
+          col: bridgeCol,
         });
       }
     }
@@ -563,10 +665,12 @@ export function layoutGraph(
     }
     pending.set(hash, list);
   };
+  const chainNamed = new Map<string, Chain>();
+  for (const chain of chains) if (!chainNamed.has(chain.name)) chainNamed.set(chain.name, chain);
   for (const b of ordered) {
     const node = byHash.get(b.commitHash);
     if (!node) continue;
-    const own = chains.find((c) => c.name === b.name);
+    const own = chainNamed.get(b.name);
     addFlag(b.commitHash, b.name, lineStyle(own ? own.index : node.lane).color, b.isHead);
   }
   for (const chain of chains) {
@@ -595,6 +699,7 @@ export function layoutGraph(
       color: style.color,
       on: style.on,
       isHead: chain.isHead,
+      named: chain.index < branchChains || chain.isHead || chain.hashes[0] === head,
       y: PAD_T + chain.row * LANE_H,
       tip: chain.hashes[0],
     };
@@ -642,6 +747,85 @@ export function drawInWindow(focusCol: number, lastCol: number, viewWidth: numbe
 export function drawDelay(win: DrawWindow, col: number): number | null {
   if (col < win.from || col > win.to) return null;
   return (col - win.from) * win.step;
+}
+
+/** How far past its start a draw-in can still be joined part way (the longest one runs 0.55s). */
+export const DRAW_TAIL_MS = 600;
+
+/**
+ * The animation delay for something whose draw-in was due to start at `start` (ms, on the same
+ * clock as `now`), or null when it has none or it finished long ago. A negative delay joins a
+ * draw-in already under way, so a line that is culled and redrawn mid-intro does not restart.
+ */
+export function drawDelayAt(start: number | undefined, now: number, lag = 0): number | null {
+  if (start === undefined) return null;
+  const delay = Math.round(start + lag - now);
+  return delay < -DRAW_TAIL_MS ? null : delay;
+}
+
+/* ---------- branch legend ---------- */
+/** Up to this many lines, the legend lists them all; past it, merged lines fold away. */
+export const LEGEND_ALL = 12;
+
+/**
+ * The legend rows to show: every line on a small map; on a big one, the lines branches still
+ * point at, then the first `shownMerged` lines inferred from merged, deleted branches.
+ */
+export function legendRows(lanes: Lane[], shownMerged: number): { rows: Lane[]; hidden: number } {
+  if (lanes.length <= LEGEND_ALL) return { rows: lanes, hidden: 0 };
+  const named = lanes.filter((l) => l.named);
+  const merged = lanes.filter((l) => !l.named);
+  const shown = Math.max(0, Math.min(merged.length, shownMerged));
+  return { rows: [...named, ...merged.slice(0, shown)], hidden: merged.length - shown };
+}
+
+/* ---------- drawing only what is on screen ---------- */
+/** A run of columns, inclusive at both ends. `to < from` is empty. */
+export interface ColumnRange {
+  from: number;
+  to: number;
+}
+
+/** Columns per block: the drawn range moves a block at a time, not on every frame of a pan. */
+export const CULL_BLOCK = 16;
+
+/**
+ * The columns worth drawing when the map is scrolled `left` px across a `viewW`-px view at
+ * `zoom`, with `pad` px of empty sheet before the drawing. The on-screen columns (plus one
+ * either side, for lettering and turns that reach past them) are rounded out to whole blocks
+ * and one more block is kept on each side, so a pan redraws only every few hundred pixels.
+ */
+export function visibleColumns(
+  left: number,
+  viewW: number,
+  zoom: number,
+  pad: number,
+  lastCol: number,
+  block = CULL_BLOCK,
+): ColumnRange {
+  if (lastCol < 0) return { from: 0, to: -1 };
+  const z = Math.max(0.01, zoom);
+  const first = Math.floor((left / z - pad - PAD_L) / COL_W) - 1;
+  const last = Math.ceil(((left + Math.max(0, viewW)) / z - pad - PAD_L) / COL_W) + 1;
+  // Scrolled out past either end of the history, this still keeps a column or so in range.
+  const from = Math.min(lastCol, Math.max(0, (Math.floor(first / block) - 1) * block));
+  const to = Math.max(from, Math.min(lastCol, (Math.floor(last / block) + 2) * block - 1));
+  return { from, to };
+}
+
+export const sameRange = (a: ColumnRange, b: ColumnRange) => a.from === b.from && a.to === b.to;
+
+/** The part of a layout inside `range`: nodes there, and lines and hops that reach into it. */
+export function cullLayout(
+  layout: Pick<GraphLayout, "nodes" | "edges" | "bridges">,
+  range: ColumnRange,
+): { nodes: GraphNode[]; edges: GraphEdge[]; bridges: Bridge[] } {
+  if (range.to < range.from) return { nodes: [], edges: [], bridges: [] };
+  // Nodes are in column order (node i is in column i), so they are a straight slice.
+  const nodes = layout.nodes.slice(Math.max(0, range.from), range.to + 1);
+  const edges = layout.edges.filter((e) => e.to >= range.from && e.from <= range.to);
+  const bridges = layout.bridges.filter((b) => b.col + 1 >= range.from && b.col <= range.to);
+  return { nodes, edges, bridges };
 }
 
 /* ---------- landing mark ---------- */

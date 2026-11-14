@@ -1,5 +1,9 @@
 import {
+  memo,
+  useCallback,
+  useDeferredValue,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -13,8 +17,10 @@ import { errorMessage, listRepoFiles, readRepoFile, writeRepoFile, type ChronosG
 import {
   buildDiffRows,
   changeStarts,
+  describeChange,
   diffStats,
   editMarks,
+  lineCount,
   lineToRow,
   rowMap,
   rowToLine,
@@ -62,6 +68,15 @@ interface Props {
   onSelect: (hash: string | null) => void;
   onCompare: (compare: DiffCompare | null) => void;
   onClose: () => void;
+  /** Called when the editor gets unsaved edits and again when it has none (after Save, or false on unmount). */
+  onDirtyChange?: (dirty: boolean) => void;
+}
+
+/** A callback with a fixed identity that always runs the latest `fn` (for memoised children). */
+function useStableHandler<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
+  const ref = useRef(fn);
+  ref.current = fn;
+  return useCallback((...args: A) => ref.current(...args), []);
 }
 
 type TreeNode = { name: string; path: string; kind: "dir" | "file"; children?: TreeNode[] };
@@ -155,6 +170,7 @@ export function CodeEditor({
   onSelect,
   onCompare,
   onClose,
+  onDirtyChange,
 }: Props) {
   const [files, setFiles] = useState<string[]>([]);
   const [changed, setChanged] = useState<DiffPath[]>([]);
@@ -181,6 +197,14 @@ export function CodeEditor({
   const savedTimer = useRef<number | undefined>(undefined);
   const flashTimer = useRef<number | undefined>(undefined);
   const jumpAt = useRef(-1);
+  // The change the arrows last jumped to (a row in diffRows), for the "2/5" beside the counts,
+  // and what the status line said about it.
+  const [jumpRow, setJumpRow] = useState(-1);
+  const [changeNote, setChangeNote] = useState("");
+  const noteFlip = useRef(false);
+  // Esc was just pressed in the plain editor, so the next Tab leaves it instead of indenting.
+  const [tabLeaves, setTabLeaves] = useState(false);
+  const keysHint = useId();
   const [flash, setFlash] = useState<{ from: number; to: number; n: number } | null>(null);
   const loaded = useRef<string | null>(null);
   const diffFile = useRef<string | null>(null);
@@ -201,10 +225,29 @@ export function CodeEditor({
   const treePaths = diffing ? changed.map((c) => c.path) : files;
   const visible = useMemo(() => matchFiles(treePaths, query), [treePaths, query]);
   const tree = useMemo(() => buildTree(visible), [visible]);
-  const lines = Math.max(1, source.split("\n").length);
+  const lines = useMemo(() => lineCount(source), [source]);
+  // The gutter is one text block, rebuilt only when the number of lines changes.
+  const gutter = useMemo(() => Array.from({ length: lines }, (_, i) => i + 1).join("\n"), [lines]);
 
   const activeChange = changed.find((c) => c.path === active);
-  const diffRows = useMemo(() => (diffing ? buildDiffRows(leftText, rightText) : []), [diffing, leftText, rightText]);
+  // Typing diffs a deferred copy of the text, so the textarea keeps up with the keys and the
+  // marks catch up a moment later; a new file or comparison is diffed straight away.
+  // `base` (the text as loaded or saved) changes on every load, so a freshly loaded file
+  // never shows a deferred copy of the previous one, even when the left sides match
+  // (two added files both have no left side).
+  const diffInput = useMemo(
+    () => ({ left: leftText, right: rightText, file: active, base: savedRight }),
+    [leftText, rightText, active, savedRight],
+  );
+  const typedInput = useDeferredValue(diffInput);
+  const diffSource =
+    typedInput.left === leftText && typedInput.file === active && typedInput.base === savedRight
+      ? typedInput
+      : diffInput;
+  const diffRows = useMemo(
+    () => (diffing ? buildDiffRows(diffSource.left, diffSource.right) : []),
+    [diffing, diffSource],
+  );
   const beforeLines = useMemo(() => rowsToSide(diffRows, "before"), [diffRows]);
   const starts = useMemo(() => changeStarts(diffRows), [diffRows]);
   const stats = useMemo(() => diffStats(diffRows), [diffRows]);
@@ -212,17 +255,42 @@ export function CodeEditor({
   const marks = useMemo(() => editMarks(diffRows), [diffRows]);
   // The jumped-to change, in working-tree lines, so the editable pane glows with the other side.
   // (An edit can shorten the rows while the glow is still showing; then it just stops.)
-  const flashLines =
-    flash && flash.to < map.lineOfRow.length
-      ? { from: map.lineOfRow[flash.from], to: map.lineOfRow[flash.to], n: flash.n }
-      : null;
+  const flashLines = useMemo(
+    () =>
+      flash && flash.to < map.lineOfRow.length
+        ? { from: map.lineOfRow[flash.from], to: map.lineOfRow[flash.to], n: flash.n }
+        : null,
+    [flash, map],
+  );
+  const changeIndex = jumpRow === -1 ? -1 : starts.indexOf(jumpRow);
   const saveState = !active ? null : saving ? "saving" : dirty ? "dirty" : notice ? "saved" : null;
 
   // A new file or comparison starts the change keys from the top again.
   useEffect(() => {
     jumpAt.current = -1;
+    setJumpRow(-1);
+    setChangeNote("");
     setFlash(null);
   }, [active, compare]);
+
+  // Tell the app when there are unsaved edits, and that there are none once this closes.
+  const dirtyReported = useRef(false);
+  const reportDirty = useStableHandler((value: boolean) => onDirtyChange?.(value));
+  useEffect(() => {
+    if (dirty === dirtyReported.current) return;
+    dirtyReported.current = dirty;
+    reportDirty(dirty);
+  }, [dirty, reportDirty]);
+  useEffect(
+    () => () => {
+      dirtyReported.current = false;
+      reportDirty(false);
+    },
+    [reportDirty],
+  );
+
+  // The commit map is memoised; give it a click handler that never changes identity.
+  const pickCommit = useStableHandler((hash: string) => onSelect(hash));
   useEffect(
     () => () => {
       window.clearTimeout(savedTimer.current);
@@ -437,7 +505,17 @@ export function CodeEditor({
     diffFile.current = null;
   }
 
+  /**
+   * Tab types an indent here, so it can't move focus on: Esc then Tab leaves the editor
+   * (the hint in the bar says so), and Shift+Tab always goes back.
+   */
   function onEditorKey(e: KeyboardEvent<HTMLTextAreaElement>) {
+    const leaving = tabLeaves;
+    if (e.key === "Escape") {
+      setTabLeaves(true);
+      return;
+    }
+    if (leaving && e.key !== "Shift") setTabLeaves(false);
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
       e.preventDefault();
       void save();
@@ -445,14 +523,17 @@ export function CodeEditor({
       e.preventDefault();
       search.current?.focus();
       search.current?.select();
-    } else if (e.key === "Tab") {
+    } else if (e.key === "Tab" && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey && !leaving) {
       e.preventDefault();
       const el = e.currentTarget;
-      const { selectionStart: a, selectionEnd: b } = el;
-      setSource(`${source.slice(0, a)}  ${source.slice(b)}`);
-      requestAnimationFrame(() => {
-        el.selectionStart = el.selectionEnd = a + 2;
-      });
+      // insertText keeps the indent on the textarea's own undo stack; fall back to setting the value.
+      if (!document.execCommand?.("insertText", false, "  ")) {
+        const { selectionStart: a, selectionEnd: b } = el;
+        setSource(`${source.slice(0, a)}  ${source.slice(b)}`);
+        requestAnimationFrame(() => {
+          el.selectionStart = el.selectionEnd = a + 2;
+        });
+      }
     }
   }
 
@@ -510,11 +591,18 @@ export function CodeEditor({
 
   /** Scroll both panes to the previous or next run of changed lines and flash it. */
   function goToChange(dir: 1 | -1) {
-    const at = stepChange(starts, jumpAt.current, dir);
+    const from = jumpAt.current;
+    const at = stepChange(starts, from, dir);
     const left = leftPane.current;
     const row = at == null ? undefined : left?.children[at];
     if (at == null || !left || !row) return;
     jumpAt.current = at;
+    setJumpRow(at);
+    // Focus stays on the key that was pressed, so say where the jump landed. A trailing
+    // space on every other jump makes a repeated message ("the only change") speak again.
+    // (Counted here, not from the flash, which is cleared a second after each jump.)
+    noteFlip.current = !noteFlip.current;
+    setChangeNote(`${describeChange(starts, from, at, dir, map.lineOfRow[at])}${noteFlip.current ? "\u00a0" : ""}`);
     let to = at;
     while (to < diffRows.length && diffRows[to].kind !== "context") to++;
 
@@ -555,6 +643,10 @@ export function CodeEditor({
     e.preventDefault();
     goToChange(e.key === "ArrowDown" ? 1 : -1);
   }
+
+  // Fixed identities, so the memoised read-only pane re-renders only when its rows change.
+  const onLeftScroll = useStableHandler((e: UIEvent<HTMLElement>) => syncScroll("left", e));
+  const onLeftKey = useStableHandler(onChangeKeys);
 
   function onDiffEditorKey(e: KeyboardEvent<HTMLTextAreaElement>) {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
@@ -634,7 +726,7 @@ export function CodeEditor({
   }
 
   return (
-    <div className="editor" aria-label={diffing ? "Diff editor" : "Code editor"}>
+    <div className="editor" role="region" aria-label={diffing ? "Diff editor" : "Code editor"}>
       <aside className="file-tree" aria-label="Files" style={{ width: treeWidth }}>
         <div className="file-tree-head">
           <span>{diffing ? "Changed" : "Files"}</span>
@@ -717,17 +809,31 @@ export function CodeEditor({
           <span className="details-sr-only" role="status">
             {saving ? "Saving" : notice ? `${active ?? "File"} saved` : ""}
           </span>
+          <span className="details-sr-only" role="status">
+            {diffing ? changeNote : ""}
+          </span>
+          {!diffing && active ? (
+            <span id={keysHint} className={`editor-keys quiet${tabLeaves ? " is-armed" : ""}`}>
+              {tabLeaves ? "Tab now leaves the editor" : "Esc, then Tab, leaves"}
+            </span>
+          ) : null}
           {diffing && active && !loading ? (
             <span className="diff-nav">
               <span className="counts" title={`${stats.added} lines added, ${stats.removed} removed`}>
                 <span className="add">+{stats.added}</span> <span className="del">−{stats.removed}</span>
               </span>
+              {changeIndex !== -1 ? (
+                <span key={changeIndex} className="change-pos quiet" title="The change the arrows last jumped to">
+                  {changeIndex + 1}/{starts.length}
+                </span>
+              ) : null}
               <button
                 type="button"
                 className="btn"
                 disabled={starts.length === 0}
                 onClick={() => goToChange(-1)}
                 aria-label="Previous change"
+                aria-keyshortcuts="Alt+ArrowUp"
                 title="Previous change (Alt+Up)"
               >
                 ↑
@@ -738,6 +844,7 @@ export function CodeEditor({
                 disabled={starts.length === 0}
                 onClick={() => goToChange(1)}
                 aria-label="Next change"
+                aria-keyshortcuts="Alt+ArrowDown"
                 title="Next change (Alt+Down)"
               >
                 ↓
@@ -799,14 +906,14 @@ export function CodeEditor({
           ) : !active ? (
             <p className="editor-placeholder">{diffing ? "Pick a changed file." : "Pick a file from the tree."}</p>
           ) : diffing && compare ? (
-            <div className="side-diff" aria-label="Side by side diff">
+            <div className="side-diff" role="group" aria-label="Side by side diff">
               <DiffPane
                 title={`${compare.baseLabel}${activeChange?.oldPath ? ` · ${activeChange.oldPath}` : ""} · read only`}
                 lines={beforeLines}
                 flash={flash}
                 paneRef={leftPane}
-                onScroll={(e) => syncScroll("left", e)}
-                onKeyDown={onChangeKeys}
+                onScroll={onLeftScroll}
+                onKeyDown={onLeftKey}
               />
               <div className="side-pane">
                 <div className="side-pane-head">
@@ -832,9 +939,7 @@ export function CodeEditor({
           ) : (
             <div className="code-edit">
               <div className="code-gutters" aria-hidden="true">
-                {Array.from({ length: lines }, (_, i) => (
-                  <span key={i}>{i + 1}</span>
-                ))}
+                {gutter}
               </div>
               <textarea
                 ref={area}
@@ -844,20 +949,23 @@ export function CodeEditor({
                 spellCheck={false}
                 wrap="off"
                 aria-label={active}
+                aria-describedby={keysHint}
                 onChange={(e) => setSource(e.currentTarget.value)}
                 onKeyDown={onEditorKey}
+                onBlur={() => setTabLeaves(false)}
               />
             </div>
           )}
         </div>
 
-        <MiniMap layout={layout} selected={selected} head={graph.head} onSelect={onSelect} />
+        <MiniMap layout={layout} selected={selected} head={graph.head} onSelect={pickCommit} />
       </div>
     </div>
   );
 }
 
-function DiffPane({
+/** The read-only side. Memoised: typing on the other side re-renders it only once the diff changes. */
+const DiffPane = memo(function DiffPane({
   title,
   lines,
   flash,
@@ -877,7 +985,14 @@ function DiffPane({
     <div className="side-pane">
       <div className="side-pane-head">{title}</div>
       {/* Focusable so the read-only side can be scrolled and stepped with the keyboard. */}
-      <pre ref={paneRef} className="side-pane-code" tabIndex={0} onScroll={onScroll} onKeyDown={onKeyDown}>
+      <pre
+        ref={paneRef}
+        className="side-pane-code"
+        tabIndex={0}
+        aria-label={title}
+        onScroll={onScroll}
+        onKeyDown={onKeyDown}
+      >
         {lines.length === 0 ? (
           <div className="side-line empty">
             <span className="side-num" />
@@ -887,20 +1002,40 @@ function DiffPane({
           lines.map((line, i) => {
             const lit = !!flash && i >= flash.from && i < flash.to;
             return (
-              <div
+              <SideRow
                 key={lit ? `${line.key}-j${flash.n}` : line.key}
-                className={`side-line ${line.kind}${lit ? " is-jump" : ""}`}
-              >
-                <span className="side-num">{line.number ?? ""}</span>
-                <code>{line.text || " "}</code>
-              </div>
+                kind={line.kind}
+                number={line.number}
+                text={line.text}
+                lit={lit}
+              />
             );
           })
         )}
       </pre>
     </div>
   );
-}
+});
+
+/** One row of the read-only pane; rows whose content is unchanged skip re-rendering. */
+const SideRow = memo(function SideRow({
+  kind,
+  number,
+  text,
+  lit,
+}: {
+  kind: SideLine["kind"];
+  number: number | null;
+  text: string;
+  lit: boolean;
+}) {
+  return (
+    <div className={`side-line ${kind}${lit ? " is-jump" : ""}`}>
+      <span className="side-num">{number ?? ""}</span>
+      <code>{text || " "}</code>
+    </div>
+  );
+});
 
 /**
  * Highlights drawn behind the editable pane (a textarea can't colour its own lines):
@@ -908,7 +1043,7 @@ function DiffPane({
  * Positioned in lines, so it lines up with the textarea's text as long as both use
  * the same font and line height; syncScroll moves it with the text.
  */
-function EditMarks({
+const EditMarks = memo(function EditMarks({
   layerRef,
   marks,
   flash,
@@ -936,4 +1071,4 @@ function EditMarks({
       ) : null}
     </div>
   );
-}
+});

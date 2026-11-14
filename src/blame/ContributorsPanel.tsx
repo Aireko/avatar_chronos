@@ -30,8 +30,9 @@ type Scope = { kind: "file" } | { kind: "symbol"; index: number } | { kind: "lin
 
 /** Contributor rows ease in one after another; past this many they share the last delay. */
 const MAX_STAGGER = 6;
-/** How long "Copied" stays on the copy button. */
-const COPIED_MS = 1600;
+/** How long "Copied" stays on the copy button: the same hold as the commit ticket's copy
+ *  stamp, the editor's "Saved" and the AI panel. */
+const COPIED_MS = 1400;
 
 export default function ContributorsPanel({ repoPath, filePaths }: ContributorsPanelProps) {
   const [filePath, setFilePath] = useState("");

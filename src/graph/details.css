@@ -219,6 +219,56 @@
 /* A file that is the same in the commit and the working tree (opened from the ticket). */
 .file-tree .tree-status.is-same { color: var(--soft); }
 
+/* The line numbers are one block of text (one number per line), not an element per line. */
+.code-edit .code-gutters { white-space: pre; }
+
+/* Where the keyboard is: the plain editor and the editable pane only show a caret
+   otherwise. A dashed pen line inside the edge, like the read-only pane's. */
+.editor-body:has(> .code-edit .code-input:focus-visible) { outline: 2.5px dashed var(--pen-2); outline-offset: -3px; }
+.side-edit:has(> .side-pane-edit:focus-visible) { outline: 2.5px dashed var(--pen-2); outline-offset: -3px; }
+
+/* "Esc, then Tab, leaves" shows in the bar while the plain editor has the keyboard,
+   since Tab there types an indent. */
+.editor-bar .editor-keys { display: none; flex: none; font-size: 14px; white-space: nowrap; }
+.editor-main:has(.code-input:focus) .editor-bar .editor-keys { display: inline; animation: details-late 0.15s ease-out backwards; }
+.editor-bar .editor-keys.is-armed { color: var(--ink); text-decoration: underline wavy var(--highlight); text-underline-offset: 4px; }
+
+/* Which change the arrows last jumped to, e.g. "2/5", pencilled beside the counts. */
+.diff-nav .change-pos { min-width: 30px; font-size: 14px; text-align: center; animation: details-late 0.15s ease-out backwards; }
+
+/* ============ commit map in the editor (MiniMap.tsx) ============ */
+
+/* "Map" is the move handle: drag it, or focus it and use the arrow keys (Shift resizes). */
+.mini-map .mini-map-bar { align-items: center; }
+.mini-map .mini-map-grip { flex: none; margin-left: -6px; padding: 0 6px 1px; border-radius: 6px; cursor: grab; }
+.mini-map .mini-map-grip:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: 1px; }
+.mini-map .mini-map-hint { flex: 1; min-width: 0; text-align: right; }
+.mini-map .mini-map-hint-keys { display: none; }
+.mini-map .mini-map-grip:focus-visible ~ .mini-map-hint .mini-map-hint-pointer { display: none; }
+.mini-map .mini-map-grip:focus-visible ~ .mini-map-hint .mini-map-hint-keys { display: inline; color: var(--ink); }
+/* Folds the map down to its bar, off the code underneath, and back. */
+.mini-map .mini-map-fold {
+  flex: none;
+  width: 26px;
+  height: 22px;
+  padding: 0 0 2px;
+  border: 2px solid var(--ink);
+  border-radius: var(--sketch);
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.08s;
+}
+.mini-map .mini-map-fold:hover { background: var(--highlight); }
+.mini-map .mini-map-fold:active { transform: translateY(1px); }
+.mini-map .mini-map-fold:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: 2px; }
+.mini-map.is-folded .mini-map-bar { border-bottom: 0; }
+/* Unfolding drops the map back in under its bar. */
+.mini-map .mini-map-view { animation: details-drop 0.16s ease-out backwards; }
+
 /* ============ terminal dock ============ */
 
 .term .term-line { animation: details-settle 0.14s ease-out backwards; }
@@ -380,6 +430,9 @@
   .term-running,
   .ctx-panel,
   .side-edit-mark.is-jump,
+  .editor-main:has(.code-input:focus) .editor-bar .editor-keys,
+  .diff-nav .change-pos,
+  .mini-map .mini-map-view,
   .reload-note.is-entering,
   .reload-note.is-leaving,
   .reload-tick path { animation: none; }
@@ -394,7 +447,9 @@
   .editor .tree-resizer,
   .term .term-close,
   .term .term-prompt::after,
+  .mini-map .mini-map-fold,
   .ctx-chip { transition: none; }
+  .mini-map .mini-map-fold:active,
   .file-tree .tree-row:active,
   .ticket button.file-row:active:not(:disabled) { transform: none; }
   /* Without the fade, the jumped-to change still holds a plain highlight while it is marked. */

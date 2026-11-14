@@ -5,8 +5,9 @@ import { aiErrorMessage, aiService, isAiError } from "./aiService";
 import type { AiError, AiStatus, GenerateResponse, GenerationStats, PullEvent } from "./types";
 import "./AiPanel.css";
 
-/** How long "Copied" stays on the copy button (as in the People panel). */
-const COPIED_MS = 1600;
+/** How long "Copied" stays on the copy button: the same hold as the commit ticket's copy
+ *  stamp and the editor's "Saved" (CommitDetails, CodeEditor) and the People panel. */
+const COPIED_MS = 1400;
 
 function asAiError(error: unknown): AiError {
   return isAiError(error) ? error : { kind: "internal", message: aiErrorMessage(error) };

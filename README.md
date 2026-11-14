@@ -23,6 +23,16 @@ React (src/)  --invoke()-->  Tauri commands (src-tauri/src/lib.rs)
 | `src-tauri/src/lib.rs` | Tauri commands exposed to the frontend |
 | `src/backend.ts` | Typed TypeScript wrappers around `invoke()` |
 | `src/App.tsx` | Demo UI: greets a name and draws an identicon, both computed in C |
+| `src-tauri/src/ai/` | Local AI service: Ollama client, Qwen 3.5 model rules, config, errors and the `ai_*` Tauri commands |
+| `src/ai/aiService.ts` | The single frontend entry point for local AI (typed wrappers around the `ai_*` commands) |
+| `src/ai/types.ts` | TypeScript mirrors of the AI request, response, event and error shapes |
+| `src/ai/AiPanel.tsx` | Minimal test panel for the AI integration: connection, model, download, streaming prompt |
+| `docs/ollama.md` | Setup and developer guide for Ollama + Qwen 3.5 |
+| `src-tauri/src/review/` | PR Bug Check: `gh` CLI access, diff parsing and chunking, the review engine, report store, auto-review watcher and the `bug_check_*` Tauri commands |
+| `src/bugcheck/bugCheckService.ts` | The single frontend entry point for PR Bug Check (typed wrappers around the `bug_check_*` commands and watcher events) |
+| `src/bugcheck/types.ts` | TypeScript mirrors of the PR Bug Check report, finding, event, watcher and error shapes |
+| `src/bugcheck/BugCheckPanel.tsx` | The PR Bug Check panel: open PRs, run and cancel checks, findings, posting, auto review |
+| `docs/pr-bug-check.md` | User and developer guide for PR Bug Check |
 
 ## Prerequisites
 
@@ -36,7 +46,7 @@ React (src/)  --invoke()-->  Tauri commands (src-tauri/src/lib.rs)
 ## Develop
 
 ```bash
-npm install
+npm ci --ignore-scripts
 npm run tauri:dev
 ```
 
@@ -58,17 +68,59 @@ npm test
 
 `npm test` runs `cargo test`, which calls the C backend through the same Rust bindings the app uses.
 
-The C tests need only a C compiler. Run them from the repository root:
+The index compiles the Tree-sitter C runtime and grammars from the installed npm
+packages. The Node bindings are unused. Run the C tests from the repository root
+with Git and a C compiler on PATH:
 
 ```bash
-cc -std=c11 -Wall -Wextra -Ibackend/include backend/src/*.c backend/tests/test_avatar.c -o test_avatar && ./test_avatar
+npm ci --ignore-scripts
+sh backend/tests/test_index_revision.sh
 ```
 
-On Windows, use an "x64 Native Tools Command Prompt for VS":
+On Windows, run the C test script in WSL with a Linux C compiler.
 
-```bat
-cl /W4 /Ibackend\include backend\src\*.c backend\tests\test_avatar.c /Fe:test_avatar.exe && test_avatar.exe
+## Repository index
+
+`index_build_revision` reads a pinned Git revision. The tree contains the project
+root, tracked source directories, supported files, and parsed symbols with their
+lexical parents. Supported extensions cover C, Rust, JavaScript, TypeScript, and
+TSX. Working-tree edits are outside the selected commit.
+
+`index_map_calls` projects direct callsites between any two scopes. Resolution
+uses unique syntactic names in the indexed language. Imports, dynamic dispatch,
+and function pointers require additional semantic analysis. Partial parse coverage
+is reported alongside the relationships that could be extracted.
+
+`index_compare_revisions` matches symbols by exact path and qualified name and
+compares their pinned bytes. `index_collect_context` supplies phase two with
+the target source, direct call evidence, and available snippets. Keep the index
+alive while consuming that evidence.
+
+## Local AI (Ollama + Qwen 3.5)
+
+AI features run locally through [Ollama](https://ollama.com) with a Qwen 3.5 model, so by default (loopback only) prompts and code never leave the machine, and no API key is needed. Rust makes every Ollama request; the frontend calls it through `src/ai/aiService.ts`.
+
+Quick start: install Ollama, pull the default model, then start the app and use the test panel:
+
+```bash
+ollama pull qwen3.5:9b
+npm run tauri:dev
 ```
+
+See [docs/ollama.md](docs/ollama.md) for installation per OS, choosing a model for your RAM/VRAM, configuration (`OLLAMA_BASE_URL`, `OLLAMA_MODEL`, ...), tests, usage from TypeScript and Rust, and troubleshooting.
+
+## PR Bug Check
+
+PR Bug Check reviews GitHub pull requests for logic bugs, state leaks, unit mismatches, security, concurrency and error-handling bugs with the local Qwen 3.5 model. It shows each finding with an explanation and a suggested fix, and posts the findings you select as inline review comments. Run it per PR from the **PR Bug Check** panel, or turn on auto review to check, while the app runs, open PRs that have no up-to-date check: at first every open PR not checked yet (up to 50), then PRs that are opened or get new commits (posting stays manual unless you turn on auto-post, which never posts the same finding on a PR twice).
+
+PR code is analysed only on this machine; GitHub is reached only through the [GitHub CLI](https://cli.github.com), and only the comments you post are sent to GitHub. It needs the Ollama setup above plus a logged-in `gh`:
+
+```bash
+gh auth login
+npm run tauri:dev
+```
+
+See [docs/pr-bug-check.md](docs/pr-bug-check.md) for how checks and auto review work, what is sent where, posting, limitations, troubleshooting, tests (including a real read-only test) and reuse from TypeScript and Rust.
 
 ## Adding a C function
 

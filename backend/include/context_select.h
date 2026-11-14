@@ -1,7 +1,7 @@
 #ifndef CHRONOS_CONTEXT_SELECT_H
 #define CHRONOS_CONTEXT_SELECT_H
 
-#include "graph.h"
+#include "mapper.h"
 
 #ifdef __cplusplus
 extern "C" {

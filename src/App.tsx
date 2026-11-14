@@ -1,3 +1,4 @@
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import "@fontsource/patrick-hand/400.css";
 import { backendVersion, errorMessage, exportGraph, type ChronosGraph } from "./backend";
@@ -24,6 +25,7 @@ function App() {
     () => (graph ? layoutGraph(graph.commits, graph.branches, graph.head, ids.current) : null),
     [graph],
   );
+
   const selectedNode = selected && layout ? layout.byHash.get(selected) : undefined;
   const currentBranch = graph?.branches.find((b) => b.isHead)?.name ?? null;
 
@@ -44,16 +46,21 @@ function App() {
   function applyGraph(next: ChronosGraph) {
     ids.current = carryIds(graph?.commits ?? [], ids.current, next.commits);
     setGraph(next);
-    setSelected((current) => (current && next.commits.some((c) => c.hash === current) ? current : null));
+    setSelected((current) =>
+      current && next.commits.some((c) => c.hash === current) ? current : null,
+    );
   }
 
   async function load(target: string) {
     const repo = target.trim();
     if (!repo) return;
+
     setLoading(true);
     setError("");
+
     try {
       const { graph: next } = await exportGraph(repo);
+
       if (graph && next.repoPath === graph.repoPath) {
         applyGraph(next);
       } else {
@@ -79,28 +86,36 @@ function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement) return;
+
       if (e.key === "Escape") {
         if (panel) setPanel(null);
         else setSelected(null);
         return;
       }
+
       if (!layout || !selected) return;
+
       const node = layout.byHash.get(selected);
       if (!node) return;
+
       let next: string | undefined;
+
       if (e.key === "ArrowLeft") {
         const parent = node.commit.parents[0];
         if (parent && layout.byHash.has(parent)) next = parent;
       }
+
       if (e.key === "ArrowRight") {
         const kids = layout.childrenOf.get(selected) ?? [];
         next = kids.find((h) => layout.byHash.get(h)?.lane === node.lane) ?? kids[0];
       }
+
       if (next) {
         setSelected(next);
         if (panel) setPanel({ mode: "details", id: Date.now() });
       }
     };
+
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [layout, selected, panel]);
@@ -109,6 +124,7 @@ function App() {
     <div className="app" data-theme={theme}>
       <header className="toolbar">
         <span className="app-name">Chronos</span>
+
         <form
           className="open-form"
           onSubmit={(e) => {
@@ -124,16 +140,24 @@ function App() {
             aria-label="Repository folder path"
             spellCheck={false}
           />
+
           <button className="btn primary" type="submit" disabled={loading || !path.trim()}>
             Open
           </button>
         </form>
-        <button className="btn" disabled={loading || !graph} onClick={() => graph && void load(graph.repoPath)}>
+
+        <button
+          className="btn"
+          disabled={loading || !graph}
+          onClick={() => graph && void load(graph.repoPath)}
+        >
           Reload
         </button>
+
         <button className="btn" onClick={() => setTheme(theme === "paper" ? "board" : "paper")}>
           {theme === "paper" ? "Blackboard" : "Paper"}
         </button>
+
         {loading && <div className="progress" />}
       </header>
 
@@ -195,6 +219,7 @@ function App() {
         ) : (
           <span className="status-path">No repository open</span>
         )}
+
         <span className={connected === false ? "status-bad" : ""}>
           {connected === false ? "Backend not connected" : version}
         </span>

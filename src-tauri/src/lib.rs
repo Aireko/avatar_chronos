@@ -1,8 +1,12 @@
+pub mod ai;
+pub mod review;
 mod ffi;
 
 use ffi::BackendError;
 use serde::Serialize;
-use tauri::Manager;
+use std::sync::Arc;
+
+use tauri::{Emitter, Manager};
 
 // Git work can take seconds, so every command runs the C call on a blocking
 // thread and the UI stays responsive.
@@ -99,15 +103,86 @@ async fn analyze_merge(
     .map_err(join_error)?
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BlamePayload {
+    blame_json: String,
+}
+
+/// Who wrote each line of `file_path` (relative to the repository root) at
+/// `revision` (default HEAD), plus the functions found in the file.
+#[tauri::command]
+async fn blame_file(
+    repo_path: String,
+    file_path: String,
+    revision: Option<String>,
+) -> Result<BlamePayload, BackendError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let blame_json = ffi::blame(&repo_path, &file_path, revision.as_deref().unwrap_or(""))?;
+        Ok(BlamePayload { blame_json })
+    })
+    .await
+    .map_err(join_error)?
+}
+
+/// Builds the PR Bug Check state: reports under <app data>/pr-bug-check,
+/// watcher events emitted app-wide, and auto mode resumed if it was on.
+fn create_bug_check(app: &tauri::AppHandle) -> review::BugCheck {
+    let ai = app.state::<ai::AiService>().inner().clone();
+    let root = match app.path().app_data_dir() {
+        Ok(dir) => dir.join(review::store::STORE_DIR_NAME),
+        Err(err) => {
+            eprintln!("[pr-bug-check] no app data directory ({err}); using the temp directory");
+            std::env::temp_dir().join("avatar").join(review::store::STORE_DIR_NAME)
+        }
+    };
+    let handle = app.clone();
+    let emit: review::Emitter = Arc::new(move |event: review::WatcherEvent| {
+        let _ = handle.emit(review::WATCHER_EVENT, event);
+    });
+    let bug_check = review::BugCheck::new(ai, root, emit);
+    bug_check.watcher.resume();
+    bug_check
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // Local Qwen 3.5 inference through Ollama (see ai/). Reads the OLLAMA_*
+        // variables and never panics: an invalid config is reported by ai_status
+        // and makes the other ai_* commands reject.
+        .manage(ai::AiService::from_env())
+        // PR Bug Check (see review/): needs the app data directory for reports
+        // and an AppHandle to emit auto mode events, so it is created here.
+        .setup(|app| {
+            app.manage(create_bug_check(app.handle()));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             backend_version,
             export_graph,
             run_git_command,
-            analyze_merge
+            analyze_merge,
+            blame_file,
+            ai::commands::ai_status,
+            ai::commands::ai_check_connection,
+            ai::commands::ai_list_models,
+            ai::commands::ai_get_model_info,
+            ai::commands::ai_select_model,
+            ai::commands::ai_pull_model,
+            ai::commands::ai_generate,
+            ai::commands::ai_generate_stream,
+            ai::commands::ai_cancel,
+            review::commands::bug_check_gh_status,
+            review::commands::bug_check_list_prs,
+            review::commands::bug_check_run,
+            review::commands::bug_check_cancel,
+            review::commands::bug_check_get_report,
+            review::commands::bug_check_post,
+            review::commands::bug_check_watch_get,
+            review::commands::bug_check_watch_start,
+            review::commands::bug_check_watch_stop,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

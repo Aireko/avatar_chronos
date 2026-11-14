@@ -47,6 +47,22 @@ CHRONOS_API int chronos_analyze_merge(const char* repo_path,
                                       const char* target_branch,
                                       const char* output_json_path);
 
+/* Who wrote each line of one file at `revision` (NULL or "" means HEAD), from
+ * `git blame --porcelain -w -M`. `file_path` is relative to the repository
+ * root. On success sets *out_json to a heap-allocated JSON string (free it with
+ * chronos_free_string()):
+ *   { repoPath, path, revision, totalLines,
+ *     authors:  [{ name, email, lines, commits, lastTime, lastCommit, lastSummary }],  most lines first
+ *     commits:  [{ hash, author, email, time, summary, lines }],                       newest first
+ *     ranges:   [{ start, end, commit }],     consecutive lines last changed by one commit
+ *     symbols:  [{ name, kind, startLine, endLine }] }   functions/classes detected in the file
+ * Authors are grouped by email (case-insensitive), or by name when there is no
+ * email. Lines are 1-based and inclusive. */
+CHRONOS_API int chronos_blame(const char* repo_path,
+                              const char* file_path,
+                              const char* revision,
+                              char** out_json);
+
 /* Thread-local description of the last failure ("" if none). */
 CHRONOS_API const char* chronos_last_error(void);
 

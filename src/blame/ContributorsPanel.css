@@ -1,0 +1,164 @@
+/* Plain, self-contained styles for the "Who worked on this?" panel. Matches the AI panel. */
+.people-panel {
+  max-width: 760px;
+  width: calc(100% - 32px);
+  margin: 2em auto 0;
+  padding: 1em 1.25em;
+  text-align: left;
+  border: 1px solid #d0d0d0;
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+
+.people-panel h2 {
+  margin: 0 0 0.25em;
+  text-align: left;
+}
+
+.people-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5em;
+  margin: 0.75em 0;
+}
+
+.people-grow {
+  flex: 1;
+  min-width: 14em;
+}
+
+.people-narrow {
+  width: 8em;
+}
+
+.people-num {
+  width: 5em;
+}
+
+.people-panel select {
+  max-width: 100%;
+  padding: 0.5em;
+  border-radius: 8px;
+  font: inherit;
+}
+
+.people-muted {
+  color: #6b6b6b;
+  font-size: 0.9em;
+}
+
+.people-notice {
+  padding: 0.5em 0.75em;
+  border-left: 4px solid #2e7d32;
+  background-color: #e8f5e9;
+}
+
+.people-warn {
+  color: #8a5a00;
+  font-size: 0.9em;
+}
+
+.people-question {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25em;
+  margin: 0.75em 0;
+}
+
+.people-question textarea {
+  font: inherit;
+  padding: 0.5em;
+  border-radius: 8px;
+  border: 1px solid #d0d0d0;
+  resize: vertical;
+}
+
+.people-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.people-person {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25em;
+  padding: 0.75em 0;
+  border-top: 1px solid #e0e0e0;
+}
+
+.people-who {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5em;
+}
+
+.people-tag {
+  padding: 0 0.4em;
+  border-radius: 4px;
+  background: #e0e0e0;
+  font-size: 0.8em;
+}
+
+.people-share {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  font-size: 0.9em;
+}
+
+.people-bar {
+  display: inline-block;
+  width: 8em;
+  height: 0.5em;
+  border-radius: 999px;
+  background: #e0e0e0;
+  overflow: hidden;
+}
+
+.people-bar > span {
+  display: block;
+  height: 100%;
+  background: #396cd8;
+}
+
+.people-actions {
+  display: flex;
+  gap: 0.5em;
+  margin-top: 0.25em;
+}
+
+.people-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (prefers-color-scheme: dark) {
+  .people-panel,
+  .people-question textarea {
+    border-color: #555;
+  }
+  .people-person {
+    border-top-color: #444;
+  }
+  .people-muted {
+    color: #a0a0a0;
+  }
+  .people-notice {
+    background-color: #1b3a1e;
+  }
+  .people-warn {
+    color: #f3c46b;
+  }
+  .people-bar,
+  .people-tag {
+    background: #444;
+  }
+  .people-panel select,
+  .people-question textarea {
+    color: #fff;
+    background-color: #0f0f0f98;
+  }
+}

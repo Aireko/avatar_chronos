@@ -115,6 +115,8 @@ interface Draft {
   id: string;
   edgeIds: string[];
   kind: LaidEdgeKind;
+  from: string;
+  to: string;
   a: Box;
   b: Box;
   self: boolean;
@@ -267,16 +269,11 @@ export function layoutCallTree(tree: CallTreeOk): CallTreeLayout {
       id: edge.id,
       edgeIds: [edge.id],
       kind: isTree ? "tree" : "back",
-<<<<<<< HEAD
+      from: edge.from,
+      to: edge.to,
       a: { key: fromNode.id, cx: from.cx, cy: from.cy },
       b: { key: toNode.id, cx: to.cx, cy: to.cy },
       self: edge.from === edge.to,
-=======
-      from: edge.from,
-      to: edge.to,
-      path,
-      mid,
->>>>>>> origin/main
       callCount: edge.callCount,
       col: Math.min(from.col, to.col),
     });
@@ -284,29 +281,17 @@ export function layoutCallTree(tree: CallTreeOk): CallTreeLayout {
   for (const ghost of ghosts) {
     const from = at.get(ghost.fromId);
     if (!from) continue;
-<<<<<<< HEAD
     drafts.push({
-      id: ghost.id,
-      edgeIds: ghost.edgeIds,
-      kind: "ghost",
-      a: { key: ghost.fromId, cx: from.cx, cy: from.cy },
-      b: { key: ghost.id, cx: ghost.cx, cy: ghost.cy },
-      self: false,
-      callCount: ghost.callCount,
-      col: from.col,
-=======
-    const { path, mid } = curve(from.cx, from.cy, ghost.cx, ghost.cy, false);
-    edges.push({
       id: ghost.id,
       edgeIds: ghost.edgeIds,
       kind: "ghost",
       from: ghost.fromId,
       to: ghost.id,
-      path,
-      mid,
+      a: { key: ghost.fromId, cx: from.cx, cy: from.cy },
+      b: { key: ghost.id, cx: ghost.cx, cy: ghost.cy },
+      self: false,
       callCount: ghost.callCount,
-      loops: false,
->>>>>>> origin/main
+      col: from.col,
     });
   }
 
@@ -334,6 +319,8 @@ export function layoutCallTree(tree: CallTreeOk): CallTreeLayout {
     id: draft.id,
     edgeIds: draft.edgeIds,
     kind: draft.kind,
+    from: draft.from,
+    to: draft.to,
     ...curve(
       draft.a.cx,
       draft.a.cy + (offsets.get(`${draft.id}|a`) ?? 0),

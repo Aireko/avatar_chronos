@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
 import type { CallTreeEdge, CallTreeNode, CallTreeOk } from "../backend";
-<<<<<<< HEAD
-import { exactName, fit, HEAD_LEN, layoutCallTree, numberLines, NODE_H, NODE_W, supportsCallGraph } from "./callTree";
-=======
 import {
   CALLS_EDGE_MS,
   CALLS_LEAD,
@@ -12,13 +9,13 @@ import {
   callDrawPlan,
   exactName,
   fit,
+  HEAD_LEN,
   layoutCallTree,
   numberLines,
   NODE_H,
   NODE_W,
   supportsCallGraph,
 } from "./callTree";
->>>>>>> origin/main
 
 const revision = { repositoryId: "repo", commitSha: "0".repeat(40) };
 

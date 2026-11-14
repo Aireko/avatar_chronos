@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 import {
   useEffect,
   useMemo,
@@ -8,10 +7,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-=======
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Presence } from "../tools/Presence";
->>>>>>> origin/main
 import {
   callTree,
   errorMessage,
@@ -56,11 +52,10 @@ interface Target {
   name: string;
 }
 
-/** `gen` counts the maps drawn so far: each new one is remounted so its draw-in plays again. */
 type Load =
   | { phase: "loading" }
   | { phase: "error"; message: string }
-  | { phase: "done"; tree: CallTree; gen: number };
+  | { phase: "done"; tree: CallTree };
 
 type Pick = { kind: "node"; id: string } | { kind: "edges"; ids: string[] } | null;
 
@@ -81,13 +76,6 @@ const ZOOM_STEP = 0.12;
 const ZOOM_MS = 200;
 /** A drag shorter than this is a click, not a pan. */
 const DRAG_SLOP = 5;
-
-// The draw-in reveals the map one column at a time from the left: a box lands, then the lines
-// leaving it are drawn, then their arrowheads. The whole reveal takes about the same time however
-// many columns there are.
-const COLUMN_MS = 120;
-const REVEAL_MS = 720;
-const LINE_LAG = 150;
 
 const clampZoom = (z: number) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(z * 100) / 100));
 const MAX_SHOWN_SITES = 8;
@@ -123,7 +111,6 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
   const [shown, setShown] = useState<Shown>({ phase: "idle" });
   const canvas = useRef<HTMLDivElement>(null);
   const svgEl = useRef<SVGSVGElement>(null);
-  const generation = useRef(0);
   const drag = useRef({ moved: false });
   // `zoom` is what React last drew; `goal` is where a gliding zoom is heading (shown on the keys).
   const [zoom, setZoom] = useState(1);
@@ -143,7 +130,7 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
     callTree(repoPath, target.path, target.name, { revision, maxDepth: depth })
       .then(
         (tree) => {
-          if (!stale) setLoad({ phase: "done", tree, gen: ++generation.current });
+          if (!stale) setLoad({ phase: "done", tree });
         },
         (e: unknown) => {
           if (!stale) setLoad({ phase: "error", message: errorMessage(e) });
@@ -506,10 +493,6 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
   const pickedNode = pick?.kind === "node" ? nodes.get(pick.id) : undefined;
 
   const edgeSelected = (ids: string[]) => ids.some((id) => pickedEdges.includes(id));
-  const gen = load.phase === "done" ? load.gen : 0;
-  const step = Math.floor(Math.min(COLUMN_MS, REVEAL_MS / Math.max(1, layout.lastCol)));
-  /** When something in column `col` starts to draw in (the CSS reads it as `--d`). */
-  const delay = (col: number, lag: number) => ({ "--d": `${col * step + lag}ms` }) as CSSProperties;
 
   function pickGhost(ghost: LaidGhost) {
     setPick({ kind: "edges", ids: ghost.edgeIds });
@@ -538,12 +521,9 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
         )}
       </div>
 
-<<<<<<< HEAD
       <div className="calls-stage">
         <div className="calls-canvas" ref={canvas} onPointerDown={onPointerDown}>
-          {/* A new map remounts, so its draw-in plays; picking something does not replay it. */}
           <svg
-            key={gen}
             ref={svgEl}
             className="calls-svg"
             width={layout.width * zoom}
@@ -553,76 +533,16 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
             aria-label={`Callers and callees of ${title}`}
           >
             {layout.callerHeadX !== null && (
-              <text className="calls-head draw" x={layout.callerHeadX} y={30} textAnchor="middle" style={delay(0, 0)}>
+              <text className={`calls-head${freshMap ? " draw" : ""}`} x={layout.callerHeadX} y={30} textAnchor="middle">
                 Called by
               </text>
             )}
             {layout.calleeHeadX !== null && (
-              <text
-                className="calls-head draw"
-                x={layout.calleeHeadX}
-                y={30}
-                textAnchor="middle"
-                style={delay(layout.lastCol > 0 ? Math.max(1, layout.lastCol - 1) : 0, 0)}
-=======
-      <div className="calls-canvas" ref={canvas}>
-        <svg
-          className="calls-svg"
-          width={layout.width}
-          height={layout.height}
-          viewBox={`0 0 ${layout.width} ${layout.height}`}
-          role="group"
-          aria-label={`Callers and callees of ${title}`}
-        >
-          <defs>
-            <marker id="calls-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto">
-              <path className="calls-arrow-ink" d="M 0 1 L 10 5 L 0 9 z" />
-            </marker>
-            <marker id="calls-arrow-soft" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto">
-              <path className="calls-arrow-soft" d="M 0 1 L 10 5 L 0 9 z" />
-            </marker>
-            <marker id="calls-arrow-pen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto">
-              <path className="calls-arrow-pen" d="M 0 1 L 10 5 L 0 9 z" />
-            </marker>
-          </defs>
-
-          {layout.callerHeadX !== null && (
-            <text className={`calls-head${freshMap ? " draw" : ""}`} x={layout.callerHeadX} y={30} textAnchor="middle">
-              Called by
-            </text>
-          )}
-          {layout.calleeHeadX !== null && (
-            <text className={`calls-head${freshMap ? " draw" : ""}`} x={layout.calleeHeadX} y={30} textAnchor="middle">
-              Calls
-            </text>
-          )}
-
-          {layout.edges.map((line) => {
-            const selected = edgeSelected(line.edgeIds);
-            const marker = selected ? "calls-arrow-pen" : line.kind === "tree" ? "calls-arrow" : "calls-arrow-soft";
-            const first = edges.get(line.edgeIds[0]);
-            const label = first
-              ? `${nodes.get(first.from)?.name ?? "?"} calls ${first.to ? (nodes.get(first.to)?.name ?? "?") : first.calleeText}`
-              : "call";
-            const select = () => setPick({ kind: "edges", ids: line.edgeIds });
-            const draw = plan.lines.get(line.id);
-            return (
-              <g
-                key={line.id}
-                className={`calls-edge ${line.kind}${selected ? " picked" : ""}${draw ? " draw" : ""}${draw?.inward ? " is-inward" : ""}`}
-                style={drawDelay(draw?.delay)}
-                role="button"
-                tabIndex={0}
-                aria-label={`${label}${line.callCount > 1 ? `, ${line.callCount} calls` : ""}. Show the call site`}
-                onClick={select}
-                onKeyDown={activate(select)}
->>>>>>> origin/main
-              >
+              <text className={`calls-head${freshMap ? " draw" : ""}`} x={layout.calleeHeadX} y={30} textAnchor="middle">
                 Calls
               </text>
             )}
 
-<<<<<<< HEAD
             {layout.edges.map((line) => {
               const selected = edgeSelected(line.edgeIds);
               const first = edges.get(line.edgeIds[0]);
@@ -630,11 +550,12 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
                 ? `${nodes.get(first.from)?.name ?? "?"} calls ${first.to ? (nodes.get(first.to)?.name ?? "?") : first.calleeText}`
                 : "call";
               const select = () => setPick({ kind: "edges", ids: line.edgeIds });
+              const draw = plan.lines.get(line.id);
               return (
                 <g
                   key={line.id}
-                  className={`calls-edge ${line.kind}${selected ? " picked" : ""} draw`}
-                  style={delay(line.col, LINE_LAG)}
+                  className={`calls-edge ${line.kind}${selected ? " picked" : ""}${draw ? " draw" : ""}${draw?.inward ? " is-inward" : ""}`}
+                  style={drawDelay(draw?.delay)}
                   role="button"
                   tabIndex={0}
                   aria-label={`${label}${line.callCount > 1 ? `, ${line.callCount} calls` : ""}. Show the call site`}
@@ -642,7 +563,7 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
                   onKeyDown={activate(select)}
                 >
                   <path className="calls-hit" d={line.path} />
-                  <path className="calls-line" d={line.path} pathLength={line.kind === "tree" ? 1 : undefined} />
+                  <path className="calls-line" d={line.path} />
                   {/* The head is its own shape, aimed along the last stretch of the line. */}
                   <g transform={`translate(${line.tip.x} ${line.tip.y}) rotate(${line.angle})`}>
                     <path className="calls-arrowhead" d={HEAD_PATH} />
@@ -667,8 +588,8 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
               return (
                 <g
                   key={ghost.id}
-                  className={`calls-ghost${selected ? " picked" : ""} draw`}
-                  style={delay(ghost.col, 0)}
+                  className={`calls-ghost${selected ? " picked" : ""}${plan.boxes.has(ghost.id) ? " draw" : ""}`}
+                  style={drawDelay(plan.boxes.get(ghost.id))}
                   transform={`translate(${ghost.cx - NODE_W / 2} ${ghost.cy - NODE_H / 2})`}
                   role="button"
                   tabIndex={0}
@@ -677,7 +598,8 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
                   onKeyDown={activate(() => pickGhost(ghost))}
                 >
                   <title>{`${ghost.label}: the indexer could not tie this call to one function (${tag})`}</title>
-                  {/* The inner group carries the draw-in, so it never fights the box's own position. */}
+                  <rect className="calls-pad" width={NODE_W} height={NODE_H} rx={10} />
+                  {/* The box lands and tilts in here: the outer group's transform places it. */}
                   <g className="calls-body">
                     <rect className="calls-box" width={NODE_W} height={NODE_H} rx={10} />
                     <text className="calls-ghost-name" x={12} y={21}>
@@ -692,7 +614,7 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
               );
             })}
 
-            {layout.nodes.map(({ node, cx, cy, col }) => {
+            {layout.nodes.map(({ node, cx, cy }) => {
               const isRoot = node.side === "root";
               const selected = pickedNode?.id === node.id;
               const outerX = node.side === "caller" ? 0 : NODE_W;
@@ -700,8 +622,8 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
               return (
                 <g
                   key={node.id}
-                  className={`calls-node ${node.side}${selected ? " picked" : ""} draw`}
-                  style={delay(col, 0)}
+                  className={`calls-node ${node.side}${selected ? " picked" : ""}${plan.boxes.has(node.id) ? " draw" : ""}`}
+                  style={drawDelay(plan.boxes.get(node.id))}
                   transform={`translate(${cx - NODE_W / 2} ${cy - NODE_H / 2})`}
                   role="button"
                   tabIndex={0}
@@ -714,6 +636,8 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
                   onKeyDown={activate(choose)}
                 >
                   <title>{`${node.qualifiedName} (${node.filePath}:${node.startLine})`}</title>
+                  <rect className="calls-pad" width={NODE_W} height={NODE_H} rx={10} />
+                  {/* The box lands and tilts in here: the outer group's transform places it. */}
                   <g className="calls-body">
                     <rect className="calls-box" width={NODE_W} height={NODE_H} rx={10} />
                     <text className="calls-name" x={12} y={21}>
@@ -779,90 +703,6 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
             Fit
           </button>
         </div>
-=======
-          {layout.ghosts.map((ghost) => {
-            const selected = edgeSelected(ghost.edgeIds);
-            const tag =
-              ghost.state === "ambiguous"
-                ? `ambiguous · ${ghost.candidates} matches`
-                : ghost.state === "mixed"
-                  ? "unresolved or ambiguous"
-                  : "unresolved";
-            return (
-              <g
-                key={ghost.id}
-                className={`calls-ghost${selected ? " picked" : ""}${plan.boxes.has(ghost.id) ? " draw" : ""}`}
-                style={drawDelay(plan.boxes.get(ghost.id))}
-                transform={`translate(${ghost.cx - NODE_W / 2} ${ghost.cy - NODE_H / 2})`}
-                role="button"
-                tabIndex={0}
-                aria-label={`${ghost.label}, ${tag}. Show the call site`}
-                onClick={() => pickGhost(ghost)}
-                onKeyDown={activate(() => pickGhost(ghost))}
-              >
-                <title>{`${ghost.label}: the indexer could not tie this call to one function (${tag})`}</title>
-                <rect className="calls-pad" width={NODE_W} height={NODE_H} rx={10} />
-                {/* The box lands and tilts in here: the outer group's transform places it. */}
-                <g className="calls-body">
-                  <rect className="calls-box" width={NODE_W} height={NODE_H} rx={10} />
-                  <text className="calls-ghost-name" x={12} y={21}>
-                    {fit(ghost.label, 24)}
-                    {ghost.callCount > 1 ? ` ×${ghost.callCount}` : ""}
-                  </text>
-                  <text className="calls-file" x={12} y={39}>
-                    {tag}
-                  </text>
-                </g>
-              </g>
-            );
-          })}
-
-          {layout.nodes.map(({ node, cx, cy }) => {
-            const isRoot = node.side === "root";
-            const selected = pickedNode?.id === node.id;
-            const outerX = node.side === "caller" ? 0 : NODE_W;
-            const choose = () => setPick({ kind: "node", id: node.id });
-            return (
-              <g
-                key={node.id}
-                className={`calls-node ${node.side}${selected ? " picked" : ""}${plan.boxes.has(node.id) ? " draw" : ""}`}
-                style={drawDelay(plan.boxes.get(node.id))}
-                transform={`translate(${cx - NODE_W / 2} ${cy - NODE_H / 2})`}
-                role="button"
-                tabIndex={0}
-                aria-current={isRoot ? "true" : undefined}
-                aria-label={`${node.qualifiedName}, ${node.kind} in ${node.filePath}${isRoot ? ", the function you chose" : ""}${node.hasMore ? ", has more neighbours not shown" : ""}`}
-                onClick={choose}
-                onDoubleClick={() => {
-                  if (!isRoot) centre(node);
-                }}
-                onKeyDown={activate(choose)}
-              >
-                <title>{`${node.qualifiedName} (${node.filePath}:${node.startLine})`}</title>
-                <rect className="calls-pad" width={NODE_W} height={NODE_H} rx={10} />
-                {/* The box lands and tilts in here: the outer group's transform places it. */}
-                <g className="calls-body">
-                  <rect className="calls-box" width={NODE_W} height={NODE_H} rx={10} />
-                  <text className="calls-name" x={12} y={21}>
-                    {fit(node.qualifiedName, 24)}
-                  </text>
-                  <text className="calls-file" x={12} y={39}>
-                    {fit(`${baseName(node.filePath)}:${node.startLine}`, 30)}
-                  </text>
-                  {node.hasMore && (
-                    <g className="calls-more" transform={`translate(${outerX} ${NODE_H / 2})`}>
-                      <circle r={10} />
-                      <text textAnchor="middle" y={4}>
-                        …
-                      </text>
-                    </g>
-                  )}
-                </g>
-              </g>
-            );
-          })}
-        </svg>
->>>>>>> origin/main
       </div>
 
       {/* The details roll down under the map and back up (roll-down / roll-up). */}

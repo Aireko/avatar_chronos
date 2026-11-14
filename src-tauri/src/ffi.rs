@@ -26,6 +26,35 @@ unsafe extern "C" {
         revision: *const c_char,
         out_json: *mut *mut c_char,
     ) -> c_int;
+    fn chronos_compile_views(
+        repo_path: *const c_char,
+        revision: *const c_char,
+        mode: *const c_char,
+        path: *const c_char,
+        qualified_name: *const c_char,
+        max_items: usize,
+        max_source_bytes: usize,
+        out_json: *mut *mut c_char,
+    ) -> c_int;
+    fn chronos_compile_multi_views(
+        repo_path: *const c_char,
+        revision: *const c_char,
+        mode: *const c_char,
+        paths: *const *const c_char,
+        qualified_names: *const *const c_char,
+        target_count: usize,
+        max_items: usize,
+        max_source_bytes: usize,
+        out_json: *mut *mut c_char,
+    ) -> c_int;
+    fn chronos_read_source(
+        repo_path: *const c_char,
+        revision: *const c_char,
+        file_path: *const c_char,
+        start_byte: usize,
+        end_byte: usize,
+        out_json: *mut *mut c_char,
+    ) -> c_int;
     fn chronos_last_error() -> *const c_char;
     fn chronos_free_string(s: *mut c_char);
     fn chronos_version() -> *const c_char;
@@ -158,6 +187,134 @@ pub fn blame(repo_path: &str, file_path: &str, revision: &str) -> Result<String,
     }
     // SAFETY: `out` is a NUL-terminated string allocated by the backend; we copy
     // it and release it with the matching free function exactly once.
+    let json = unsafe { string_from_c(out) };
+    unsafe { chronos_free_string(out) };
+    Ok(json)
+}
+
+/// Compiles the agent brief and UI graph for one revision. Returns the C
+/// backend's JSON envelope containing both documents.
+pub fn compile_views(
+    repo_path: &str,
+    revision: &str,
+    mode: &str,
+    path: &str,
+    qualified_name: &str,
+    max_items: usize,
+    max_source_bytes: usize,
+) -> Result<String, BackendError> {
+    let repo = c_string(repo_path, "repo path")?;
+    let rev = c_string(revision, "revision")?;
+    let mode = c_string(mode, "mode")?;
+    let path = c_string(path, "path")?;
+    let qualified = c_string(qualified_name, "qualified name")?;
+    let _guard = lock();
+    let mut out: *mut c_char = std::ptr::null_mut();
+    // SAFETY: input strings are valid for the call; `out` is writable.
+    let status = unsafe {
+        chronos_compile_views(
+            repo.as_ptr(),
+            rev.as_ptr(),
+            mode.as_ptr(),
+            path.as_ptr(),
+            qualified.as_ptr(),
+            max_items,
+            max_source_bytes,
+            &mut out,
+        )
+    };
+    if status < 0 {
+        return Err(BackendError::from_status(status));
+    }
+    if out.is_null() {
+        return Err(BackendError::new(-4, "the C backend returned no context views"));
+    }
+    // SAFETY: `out` is a backend-allocated NUL-terminated string.
+    let json = unsafe { string_from_c(out) };
+    unsafe { chronos_free_string(out) };
+    Ok(json)
+}
+
+/// Compiles multiple task targets into one combined brief and graph.
+pub fn compile_multi_views(
+    repo_path: &str,
+    revision: &str,
+    mode: &str,
+    targets: &[(String, String)],
+    max_items: usize,
+    max_source_bytes: usize,
+) -> Result<String, BackendError> {
+    let repo = c_string(repo_path, "repo path")?;
+    let rev = c_string(revision, "revision")?;
+    let mode = c_string(mode, "mode")?;
+    let mut paths = Vec::with_capacity(targets.len());
+    let mut qualified = Vec::with_capacity(targets.len());
+    for (path, name) in targets {
+        paths.push(c_string(path, "path")?);
+        qualified.push(c_string(name, "qualified name")?);
+    }
+    let path_ptrs: Vec<*const c_char> = paths.iter().map(|value| value.as_ptr()).collect();
+    let qualified_ptrs: Vec<*const c_char> =
+        qualified.iter().map(|value| value.as_ptr()).collect();
+    let _guard = lock();
+    let mut out: *mut c_char = std::ptr::null_mut();
+    // SAFETY: the string arrays and their pointers are valid for the call.
+    let status = unsafe {
+        chronos_compile_multi_views(
+            repo.as_ptr(),
+            rev.as_ptr(),
+            mode.as_ptr(),
+            path_ptrs.as_ptr(),
+            qualified_ptrs.as_ptr(),
+            targets.len(),
+            max_items,
+            max_source_bytes,
+            &mut out,
+        )
+    };
+    if status < 0 {
+        return Err(BackendError::from_status(status));
+    }
+    if out.is_null() {
+        return Err(BackendError::new(-4, "the C backend returned no context views"));
+    }
+    // SAFETY: `out` is a backend-allocated NUL-terminated string.
+    let json = unsafe { string_from_c(out) };
+    unsafe { chronos_free_string(out) };
+    Ok(json)
+}
+
+/// Reads pinned source bytes for one evidence location.
+pub fn read_source(
+    repo_path: &str,
+    revision: &str,
+    file_path: &str,
+    start_byte: usize,
+    end_byte: usize,
+) -> Result<String, BackendError> {
+    let repo = c_string(repo_path, "repo path")?;
+    let rev = c_string(revision, "revision")?;
+    let file = c_string(file_path, "file path")?;
+    let _guard = lock();
+    let mut out: *mut c_char = std::ptr::null_mut();
+    // SAFETY: input strings are valid for the call; `out` is writable.
+    let status = unsafe {
+        chronos_read_source(
+            repo.as_ptr(),
+            rev.as_ptr(),
+            file.as_ptr(),
+            start_byte,
+            end_byte,
+            &mut out,
+        )
+    };
+    if status < 0 {
+        return Err(BackendError::from_status(status));
+    }
+    if out.is_null() {
+        return Err(BackendError::new(-4, "the C backend returned no source"));
+    }
+    // SAFETY: `out` is a backend-allocated NUL-terminated string.
     let json = unsafe { string_from_c(out) };
     unsafe { chronos_free_string(out) };
     Ok(json)

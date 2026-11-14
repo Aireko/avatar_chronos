@@ -23,6 +23,8 @@
 #include "git_process.h"
 #include "avatar_util.h"
 #include "parser_internal.h"
+#include "context_views.h"
+#include "index.h"
 
 /* Internal short names for the public AVATAR_* codes in avatar.h. */
 #define CHRONOS_OK                  AVATAR_OK
@@ -2038,11 +2040,6 @@ static void copy_name(char* dst, size_t cap, const char* src)
     dst[n] = '\0';
 }
 
-static int is_blank(const char* s)
-{
-    return *skip_ws(s) == '\0';
-}
-
 enum { SCAN_CODE, SCAN_COMMENT, SCAN_TEMPLATE };
 
 typedef struct {
@@ -2574,6 +2571,489 @@ int chronos_blame(const char* repo_path, const char* file_path, const char* revi
     sb_free(&spec);
     blame_free(&b);
     free(oid);
+    free(path);
+    free(top);
+    return rc;
+}
+
+static const GraphSymbol* find_views_symbol(const RepositoryIndex* index,
+                                            const char* path,
+                                            const char* qualified_name,
+                                            int* ambiguous)
+{
+    size_t count = 0;
+    const IndexScope* scopes = index_scopes(index, &count);
+    const GraphSymbol* found = NULL;
+    *ambiguous = 0;
+    for (size_t i = 0; i < count; ++i) {
+        if (scopes[i].kind != INDEX_SYMBOL || !scopes[i].symbol) continue;
+        const GraphSymbol* symbol = scopes[i].symbol;
+        if (symbol->form != PARSER_DEFINITION) continue;
+        if (strcmp(symbol->location.file_path, path) != 0 ||
+            strcmp(symbol->qualified_name, qualified_name) != 0) continue;
+        if (found) {
+            *ambiguous = 1;
+            return NULL;
+        }
+        found = symbol;
+    }
+    return found;
+}
+
+static void json_revision(sbuf_t* b, const RevisionRef* revision)
+{
+    sb_puts(b, "{\"repositoryId\":");
+    json_str(b, revision->repository_id);
+    sb_puts(b, ",\"commitSha\":");
+    json_str(b, revision->commit_sha);
+    sb_putc(b, '}');
+}
+
+static void json_ref(sbuf_t* b, const SymbolVersionRef* ref)
+{
+    if (!ref) { sb_puts(b, "null"); return; }
+    sb_puts(b, "{\"revision\":");
+    json_revision(b, &ref->revision);
+    sb_puts(b, ",\"id\":");
+    json_str(b, ref->id);
+    sb_putc(b, '}');
+}
+
+static void json_location(sbuf_t* b, const SourceLocation* location)
+{
+    if (!location) { sb_puts(b, "null"); return; }
+    sb_puts(b, "{\"revision\":");
+    json_revision(b, &location->revision);
+    sb_puts(b, ",\"filePath\":");
+    json_str(b, location->file_path);
+    sb_puts(b, ",\"range\":{\"startByte\":");
+    sb_put_i64(b, (long long)location->range.start_byte);
+    sb_puts(b, ",\"endByte\":");
+    sb_put_i64(b, (long long)location->range.end_byte);
+    sb_puts(b, ",\"startLine\":");
+    sb_put_i64(b, (long long)location->range.start_line);
+    sb_puts(b, ",\"endLine\":");
+    sb_put_i64(b, (long long)location->range.end_line);
+    sb_puts(b, "}}");
+}
+
+static void json_number(sbuf_t* b, double value)
+{
+    char digits[64];
+    (void)snprintf(digits, sizeof digits, "%.6f", value);
+    sb_puts(b, digits);
+}
+
+static void json_flow_set(sbuf_t* b, const ContextFlowSet* flows)
+{
+    sb_putc(b, '[');
+    for (size_t i = 0; i < flows->count; ++i) {
+        const ContextFlow* flow = &flows->flows[i];
+        if (i) sb_putc(b, ',');
+        sb_puts(b, "{\"id\":");
+        json_str(b, flow->id);
+        sb_puts(b, ",\"seed\":");
+        json_ref(b, &flow->seed->ref);
+        sb_puts(b, ",\"relevance\":");
+        json_number(b, flow->relevance);
+        sb_puts(b, ",\"nodes\":[");
+        for (size_t j = 0; j < flow->node_count; ++j) {
+            const ContextFlowNode* node = &flow->nodes[j];
+            if (j) sb_putc(b, ',');
+            sb_puts(b, "{\"symbol\":");
+            json_ref(b, &node->symbol->ref);
+            sb_puts(b, ",\"name\":");
+            json_str(b, node->symbol->name);
+            sb_puts(b, ",\"hop\":");
+            sb_put_i64(b, (long long)node->hop);
+            sb_puts(b, ",\"relevance\":");
+            json_number(b, node->relevance);
+            sb_puts(b, ",\"fanIn\":");
+            sb_put_i64(b, (long long)node->fan_in);
+            sb_puts(b, ",\"isSeed\":");
+            sb_puts(b, node->is_seed ? "true" : "false");
+            sb_puts(b, ",\"viaIncoming\":");
+            sb_puts(b, node->via_incoming ? "true" : "false");
+            sb_puts(b, ",\"crossedModule\":");
+            sb_puts(b, node->crossed_module ? "true" : "false");
+            sb_putc(b, '}');
+        }
+        sb_puts(b, "],\"edges\":[");
+        for (size_t j = 0; j < flow->edge_count; ++j) {
+            const ContextFlowEdge* edge = &flow->edges[j];
+            if (j) sb_putc(b, ',');
+            sb_puts(b, "{\"evidenceId\":");
+            json_str(b, edge->evidence_id);
+            sb_puts(b, ",\"from\":");
+            sb_put_i64(b, (long long)edge->from);
+            sb_puts(b, ",\"to\":");
+            sb_put_i64(b, (long long)edge->to);
+            sb_puts(b, ",\"forward\":");
+            sb_puts(b, edge->forward ? "true" : "false");
+            sb_putc(b, '}');
+        }
+        sb_puts(b, "]}");
+    }
+    sb_putc(b, ']');
+}
+
+static const char* bridge_kind_name(ContextBridgeKind kind)
+{
+    switch (kind) {
+    case CONTEXT_BRIDGE_INVOKE: return "invoke";
+    case CONTEXT_BRIDGE_REGISTRATION: return "registration";
+    case CONTEXT_BRIDGE_DISPATCH: return "dispatch";
+    case CONTEXT_BRIDGE_FFI: return "ffi";
+    default: return "unknown";
+    }
+}
+
+static void json_bridge_set(sbuf_t* b, const ContextBridgeSet* bridges)
+{
+    sb_putc(b, '[');
+    for (size_t i = 0; i < bridges->count; ++i) {
+        const ContextBridgeEdge* edge = &bridges->edges[i];
+        if (i) sb_putc(b, ',');
+        sb_puts(b, "{\"kind\":");
+        json_str(b, bridge_kind_name(edge->kind));
+        sb_puts(b, ",\"label\":");
+        json_str(b, edge->label);
+        sb_puts(b, ",\"from\":");
+        json_ref(b, edge->from);
+        sb_puts(b, ",\"to\":");
+        json_ref(b, edge->to);
+        sb_puts(b, ",\"evidenceId\":");
+        json_str(b, edge->evidence_id);
+        sb_puts(b, ",\"evidence\":");
+        json_location(b, &edge->evidence);
+        sb_putc(b, '}');
+    }
+    sb_putc(b, ']');
+}
+
+#define MAX_VIEW_TARGETS 64
+
+static int compile_views_from_index(const RepositoryIndex* index,
+                                    ContextFlowMode mode,
+                                    const ContextFlowSeed* seeds,
+                                    size_t seed_count,
+                                    size_t max_items,
+                                    size_t max_source_bytes,
+                                    char** out_json)
+{
+    ContextViews views;
+    ContextFlowRequest flow;
+    ContextViewsRequest request;
+    char* brief_json = NULL;
+    char* graph_json = NULL;
+    sbuf_t result = {0};
+    int rc, views_status;
+
+    memset(&views, 0, sizeof views);
+    memset(&flow, 0, sizeof flow);
+    *out_json = NULL;
+    flow.mode = mode;
+    flow.seeds = seeds;
+    flow.seed_count = seed_count;
+    flow.max_hops = 3;
+    flow.max_flows = 8;
+    flow.max_nodes = 8;
+    request = (ContextViewsRequest){&flow, {max_items, max_source_bytes}};
+
+    views_status = context_build_views(index, &request, &views);
+    if (views_status < 0) {
+        set_error("view build failed (status %d)", views_status);
+        rc = views_status;
+        goto done;
+    }
+
+    int brief_len = context_brief_write_json(&views.brief, NULL, 0);
+    int graph_len = context_graph_write_json(&views.graph, NULL, 0);
+    if (brief_len < 0 || graph_len < 0) {
+        rc = brief_len < 0 ? brief_len : graph_len;
+        set_error("context JSON sizing failed (status %d)", rc);
+        goto done;
+    }
+    brief_json = (char*)malloc((size_t)brief_len + 1);
+    graph_json = (char*)malloc((size_t)graph_len + 1);
+    if (!brief_json || !graph_json) {
+        rc = CHRONOS_ERR_NOMEM;
+        set_error("out of memory");
+        goto done;
+    }
+    if (context_brief_write_json(&views.brief, brief_json, (size_t)brief_len + 1) != brief_len ||
+        context_graph_write_json(&views.graph, graph_json, (size_t)graph_len + 1) != graph_len) {
+        rc = CHRONOS_ERR_IO;
+        set_error("context JSON serialization failed");
+        goto done;
+    }
+
+    sb_puts(&result, "{\"schemaVersion\":1,\"repositoryId\":");
+    json_str(&result, index_revision(index)->repository_id);
+    sb_puts(&result, ",\"revision\":{\"repositoryId\":");
+    json_str(&result, index_revision(index)->repository_id);
+    sb_puts(&result, ",\"commitSha\":");
+    json_str(&result, index_revision(index)->commit_sha);
+    sb_puts(&result, "},\"targetCount\":");
+    sb_put_i64(&result, (long long)seed_count);
+    sb_puts(&result, ",\"brief\":");
+    sb_putn(&result, brief_json, (size_t)brief_len);
+    sb_puts(&result, ",\"graph\":");
+    sb_putn(&result, graph_json, (size_t)graph_len);
+    sb_puts(&result, ",\"flows\":");
+    json_flow_set(&result, &views.flows);
+    sb_puts(&result, ",\"bridges\":");
+    json_bridge_set(&result, &views.bridges);
+    sb_puts(&result, "}");
+    if (result.oom || !result.data) {
+        rc = CHRONOS_ERR_NOMEM;
+        set_error("out of memory");
+        goto done;
+    }
+    *out_json = result.data;
+    result.data = NULL;
+    rc = views_status == CHRONOS_PARTIAL ? CHRONOS_PARTIAL : CHRONOS_OK;
+
+done:
+    sb_free(&result);
+    free(brief_json);
+    free(graph_json);
+    context_views_free(&views);
+    return rc;
+}
+
+int chronos_compile_views(const char* repo_path,
+                          const char* revision,
+                          const char* mode,
+                          const char* path,
+                          const char* qualified_name,
+                          size_t max_items,
+                          size_t max_source_bytes,
+                          char** out_json)
+{
+    char* top = NULL;
+    RepositoryIndex* index = NULL;
+    ContextFlowSeed seed;
+    ContextFlowMode flow_mode;
+    int rc;
+
+    clear_error();
+    memset(&seed, 0, sizeof seed);
+    if (!out_json) { set_error("out_json is required"); return CHRONOS_ERR_ARGS; }
+    *out_json = NULL;
+    if (!revision || !*revision) revision = "HEAD";
+    if (!validate_revision(revision)) return CHRONOS_ERR_ARGS;
+    if (!mode || !*mode) mode = "onboarding";
+
+    if (strcmp(mode, "onboarding") == 0) {
+        flow_mode = CONTEXT_FLOW_ONBOARDING;
+    } else if (strcmp(mode, "task") == 0 || strcmp(mode, "review") == 0) {
+        flow_mode = CONTEXT_FLOW_TASK;
+        if (!path || !*path || !qualified_name || !*qualified_name) {
+            set_error("task mode requires path and qualified_name");
+            return CHRONOS_ERR_ARGS;
+        }
+    } else {
+        set_error("mode must be onboarding or task");
+        return CHRONOS_ERR_ARGS;
+    }
+
+    rc = resolve_repo(repo_path, &top);
+    if (rc != CHRONOS_OK) return rc;
+    {
+        GitRepository repo = {top, top};
+        rc = index_build_revision(&repo, revision, &index);
+    }
+    if (rc < 0) {
+        set_error("index build failed (status %d)", rc);
+        free(top);
+        return rc;
+    }
+
+    if (flow_mode == CONTEXT_FLOW_TASK) {
+        int ambiguous = 0;
+        const GraphSymbol* target = find_views_symbol(index, path, qualified_name, &ambiguous);
+        if (!target) {
+            set_error(ambiguous ? "target symbol is ambiguous" : "target symbol not found");
+            index_free(index);
+            free(top);
+            return CHRONOS_ERR_ARGS;
+        }
+        seed = (ContextFlowSeed){CONTEXT_FLOW_SEED_SYMBOL, &target->ref, NULL};
+    }
+    rc = compile_views_from_index(index, flow_mode,
+                                  flow_mode == CONTEXT_FLOW_TASK ? &seed : NULL,
+                                  flow_mode == CONTEXT_FLOW_TASK ? 1 : 0,
+                                  max_items, max_source_bytes, out_json);
+    index_free(index);
+    free(top);
+    return rc;
+}
+
+int chronos_compile_multi_views(const char* repo_path,
+                                const char* revision,
+                                const char* mode,
+                                const char* const* paths,
+                                const char* const* qualified_names,
+                                size_t target_count,
+                                size_t max_items,
+                                size_t max_source_bytes,
+                                char** out_json)
+{
+    char* top = NULL;
+    RepositoryIndex* index = NULL;
+    ContextFlowSeed* seeds = NULL;
+    ContextFlowMode flow_mode;
+    int rc;
+
+    clear_error();
+    if (!out_json) { set_error("out_json is required"); return CHRONOS_ERR_ARGS; }
+    *out_json = NULL;
+    if (!revision || !*revision) revision = "HEAD";
+    if (!validate_revision(revision)) return CHRONOS_ERR_ARGS;
+    if (!mode || !*mode) mode = "onboarding";
+
+    if (strcmp(mode, "onboarding") == 0) {
+        flow_mode = CONTEXT_FLOW_ONBOARDING;
+        target_count = 0;
+    } else if (strcmp(mode, "task") == 0 || strcmp(mode, "review") == 0) {
+        flow_mode = CONTEXT_FLOW_TASK;
+        if (target_count == 0 || target_count > MAX_VIEW_TARGETS ||
+            !paths || !qualified_names) {
+            set_error("task mode requires 1..%d path/qualified targets", MAX_VIEW_TARGETS);
+            return CHRONOS_ERR_ARGS;
+        }
+    } else {
+        set_error("mode must be onboarding or task");
+        return CHRONOS_ERR_ARGS;
+    }
+
+    rc = resolve_repo(repo_path, &top);
+    if (rc != CHRONOS_OK) return rc;
+    {
+        GitRepository repo = {top, top};
+        rc = index_build_revision(&repo, revision, &index);
+    }
+    if (rc < 0) {
+        set_error("index build failed (status %d)", rc);
+        free(top);
+        return rc;
+    }
+
+    if (flow_mode == CONTEXT_FLOW_TASK) {
+        seeds = (ContextFlowSeed*)calloc(target_count, sizeof *seeds);
+        if (!seeds) {
+            index_free(index);
+            free(top);
+            return CHRONOS_ERR_NOMEM;
+        }
+        for (size_t i = 0; i < target_count; ++i) {
+            if (!paths[i] || !*paths[i] || !qualified_names[i] || !*qualified_names[i]) {
+                set_error("target %zu requires path and qualified_name", i + 1);
+                free(seeds);
+                index_free(index);
+                free(top);
+                return CHRONOS_ERR_ARGS;
+            }
+            int ambiguous = 0;
+            const GraphSymbol* target = find_views_symbol(index, paths[i], qualified_names[i],
+                                                          &ambiguous);
+            if (!target) {
+                set_error(ambiguous ? "target %zu is ambiguous" : "target %zu not found", i + 1);
+                free(seeds);
+                index_free(index);
+                free(top);
+                return CHRONOS_ERR_ARGS;
+            }
+            seeds[i] = (ContextFlowSeed){CONTEXT_FLOW_SEED_SYMBOL, &target->ref, NULL};
+        }
+    }
+
+    rc = compile_views_from_index(index, flow_mode, seeds, target_count,
+                                  max_items, max_source_bytes, out_json);
+    free(seeds);
+    index_free(index);
+    free(top);
+    return rc;
+}
+
+int chronos_read_source(const char* repo_path,
+                        const char* revision,
+                        const char* file_path,
+                        size_t start_byte,
+                        size_t end_byte,
+                        char** out_json)
+{
+    char* top = NULL;
+    char* path = NULL;
+    GitRepository repo;
+    RevisionRef resolved;
+    GitBlob blob;
+    sbuf_t j = {0};
+    int rc;
+
+    clear_error();
+    memset(&resolved, 0, sizeof resolved);
+    memset(&blob, 0, sizeof blob);
+    if (!out_json) { set_error("out_json is required"); return CHRONOS_ERR_ARGS; }
+    *out_json = NULL;
+    if (!revision || !*revision) revision = "HEAD";
+    if (!validate_revision(revision)) return CHRONOS_ERR_ARGS;
+    path = normalize_repo_file(file_path);
+    if (!path) return CHRONOS_ERR_ARGS;
+    if (start_byte > end_byte) {
+        set_error("start_byte is after end_byte");
+        free(path);
+        return CHRONOS_ERR_ARGS;
+    }
+
+    rc = resolve_repo(repo_path, &top);
+    if (rc != CHRONOS_OK) {
+        free(path);
+        return rc;
+    }
+    repo = (GitRepository){top, top};
+    rc = git_resolve_revision(&repo, revision, &resolved);
+    if (rc == CHRONOS_OK) rc = git_read_blob(&repo, &resolved, path, &blob);
+    if (rc < 0) {
+        if (rc == CHRONOS_NOT_FOUND) set_error("file not found at revision: %s", path);
+        else set_error("cannot read source (status %d)", rc);
+        goto done;
+    }
+    if (end_byte > blob.byte_count) {
+        set_error("range is outside the file");
+        rc = CHRONOS_ERR_ARGS;
+        goto done;
+    }
+
+    sb_puts(&j, "{\"repositoryId\":");
+    json_str(&j, resolved.repository_id);
+    sb_puts(&j, ",\"commitSha\":");
+    json_str(&j, resolved.commit_sha);
+    sb_puts(&j, ",\"filePath\":");
+    json_str(&j, path);
+    sb_puts(&j, ",\"startByte\":");
+    sb_put_i64(&j, (long long)start_byte);
+    sb_puts(&j, ",\"endByte\":");
+    sb_put_i64(&j, (long long)end_byte);
+    sb_puts(&j, ",\"source\":");
+    const char* source_bytes = blob.bytes
+        ? (const char*)blob.bytes + start_byte : "";
+    json_strn(&j, source_bytes, end_byte - start_byte);
+    sb_putc(&j, '}');
+    if (j.oom || !j.data) {
+        rc = CHRONOS_ERR_NOMEM;
+        set_error("out of memory");
+        goto done;
+    }
+    *out_json = j.data;
+    j.data = NULL;
+    rc = CHRONOS_OK;
+
+done:
+    sb_free(&j);
+    git_blob_free(&blob);
+    git_revision_free(&resolved);
     free(path);
     free(top);
     return rc;

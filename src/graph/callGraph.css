@@ -70,17 +70,43 @@
   display: none;
 }
 
-.calls-canvas {
+/* The stage holds the scrolling canvas and, above it, the zoom keys. */
+.calls-stage {
+  position: relative;
   flex: 1 1 60%;
+  min-width: 0;
   min-height: 180px;
+  display: flex;
+}
+.calls-canvas {
+  flex: 1;
+  min-width: 0;
   overflow: auto;
+  cursor: grab;
+  user-select: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--soft) transparent;
   background-image:
     linear-gradient(var(--grid) 1px, transparent 1px),
     linear-gradient(90deg, var(--grid) 1px, transparent 1px);
   background-size: 28px 28px;
 }
+.calls-canvas.dragging {
+  cursor: grabbing;
+}
 .calls-svg {
   display: block;
+}
+/* Same keys as the history map, kept clear of the scroll bars. */
+.calls-zoom {
+  position: absolute;
+  right: 22px;
+  bottom: 22px;
+  z-index: 2;
+}
+.calls-zoom .zoom-btn:nth-child(4) {
+  font-size: 12px;
+  letter-spacing: 0;
 }
 
 .calls-head {
@@ -167,6 +193,9 @@
   stroke-width: 2;
   stroke-linecap: round;
 }
+.calls-edge.tree .calls-line {
+  stroke-dasharray: 1; /* with pathLength=1: one dash as long as the line, so it can be drawn in */
+}
 .calls-edge.back .calls-line,
 .calls-edge.ghost .calls-line {
   stroke: var(--soft);
@@ -200,13 +229,15 @@
   stroke-width: 4px;
   pointer-events: none;
 }
-.calls-arrow-ink {
+.calls-arrowhead {
   fill: var(--ink);
 }
-.calls-arrow-soft {
+.calls-edge.back .calls-arrowhead,
+.calls-edge.ghost .calls-arrowhead {
   fill: var(--soft);
 }
-.calls-arrow-pen {
+.calls-edge.picked .calls-arrowhead,
+.calls-edge:focus-visible .calls-arrowhead {
   fill: var(--pen-2);
 }
 
@@ -309,8 +340,69 @@
   user-select: none;
 }
 
+/* ---------- draw-in ----------
+   Column by column from the left: a box slides in, the lines leaving it are drawn, then their
+   arrowheads and counts appear. Each piece reads its start time from --d. */
+@keyframes calls-line-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes calls-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes calls-box-in {
+  from {
+    opacity: 0;
+    transform: translateX(-22px);
+  }
+}
+@keyframes calls-head-in {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+}
+.calls-node.draw .calls-body,
+.calls-ghost.draw .calls-body {
+  animation: calls-box-in 0.34s cubic-bezier(0.2, 0.9, 0.25, 1.1) backwards;
+  animation-delay: var(--d, 0ms);
+}
+.calls-edge.tree.draw .calls-line {
+  animation: calls-line-draw 0.5s ease-out backwards;
+  animation-delay: var(--d, 0ms);
+}
+.calls-edge.back.draw .calls-line,
+.calls-edge.ghost.draw .calls-line {
+  animation: calls-fade-in 0.4s ease-out backwards;
+  animation-delay: var(--d, 0ms);
+}
+.calls-edge.draw .calls-arrowhead {
+  animation: calls-head-in 0.2s ease-out backwards;
+  animation-delay: calc(var(--d, 0ms) + 380ms);
+}
+.calls-edge.draw .calls-count,
+.calls-head.draw {
+  animation: calls-fade-in 0.3s ease-out backwards;
+  animation-delay: calc(var(--d, 0ms) + 380ms);
+}
+.calls-head.draw {
+  animation-delay: var(--d, 0ms);
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .calls-dot {
+  .calls-dot,
+  .calls-node.draw .calls-body,
+  .calls-ghost.draw .calls-body,
+  .calls-edge.draw .calls-line,
+  .calls-edge.draw .calls-arrowhead,
+  .calls-edge.draw .calls-count,
+  .calls-head.draw {
     animation: none;
   }
 }

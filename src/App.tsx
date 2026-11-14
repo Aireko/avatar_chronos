@@ -1702,6 +1702,8 @@ function App() {
             ref={contextKey}
             type="button"
             className="status-view"
+            hidden
+            style={{ display: "none" }}
             aria-label="Context compiler"
             aria-pressed={showContext}
             onClick={toggleContext}

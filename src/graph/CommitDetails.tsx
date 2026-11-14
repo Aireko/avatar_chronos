@@ -11,6 +11,7 @@ interface Props {
   start: "details" | "diff" | "rebase";
   onGraphChange: (graph: ChronosGraph) => void;
   onSelect: (hash: string) => void;
+  onOpenSideDiff: () => void;
   onClose: () => void;
 }
 
@@ -18,7 +19,18 @@ type Action = "rebase" | "diff" | "abort";
 
 const STATUS_NAME: Record<string, string> = { A: "Added", M: "Changed", D: "Deleted", R: "Renamed", C: "Copied" };
 
-export function CommitDetails({ repoPath, graph, layout, commit, lane, start, onGraphChange, onSelect, onClose }: Props) {
+export function CommitDetails({
+  repoPath,
+  graph,
+  layout,
+  commit,
+  lane,
+  start,
+  onGraphChange,
+  onSelect,
+  onOpenSideDiff,
+  onClose,
+}: Props) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState<Action | null>(null);
   const [outcome, setOutcome] = useState<{ action: Action; result: GitCommandResult } | null>(null);
@@ -187,17 +199,17 @@ export function CommitDetails({ repoPath, graph, layout, commit, lane, start, on
             </div>
           ) : (
             <>
+              <button className="key plain tall" disabled={busy !== null || isHead} onClick={onOpenSideDiff}>
+                <strong>View in editor</strong>
+                <span>{isHead ? "Nothing newer to compare" : "Side-by-side comparison"}</span>
+              </button>
               <button
-                className="key amber tall"
+                className="key plain tall"
                 disabled={busy !== null || !currentBranch || isHead}
                 onClick={() => setConfirming(true)}
               >
                 <strong>Rebase</strong>
                 <span>{rebaseNote}</span>
-              </button>
-              <button className="key plain tall" disabled={busy !== null || isHead} onClick={showDiff}>
-                <strong>Diff</strong>
-                <span>{isHead ? "Nothing newer to compare" : `What ${branchLabel} changed since`}</span>
               </button>
             </>
           )}

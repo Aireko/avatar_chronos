@@ -1,6 +1,20 @@
 import { describe, expect, it } from "vitest";
 import type { CallTreeEdge, CallTreeNode, CallTreeOk } from "../backend";
-import { exactName, fit, layoutCallTree, numberLines, NODE_H, NODE_W, supportsCallGraph } from "./callTree";
+import {
+  CALLS_EDGE_MS,
+  CALLS_LEAD,
+  CALLS_MAX_DELAY,
+  CALLS_MAX_STAGGER,
+  CALLS_STEP,
+  callDrawPlan,
+  exactName,
+  fit,
+  layoutCallTree,
+  numberLines,
+  NODE_H,
+  NODE_W,
+  supportsCallGraph,
+} from "./callTree";
 
 const revision = { repositoryId: "repo", commitSha: "0".repeat(40) };
 
@@ -161,5 +175,95 @@ describe("helpers", () => {
     expect(lines.map((l) => l.hit)).toEqual([false, true, false]);
     expect(clipped).toBe(0);
     expect(numberLines("1\n2\n3", 1, [], 2).clipped).toBe(1);
+  });
+});
+
+describe("callDrawPlan", () => {
+  const layout = layoutCallTree(sample());
+  const plan = callDrawPlan(layout);
+  const box = (id: string) => plan.boxes.get(id)!;
+  const line = (id: string) => plan.lines.get(id)!;
+
+  it("lands the chosen function first and keeps every delay within the cap", () => {
+    expect(box("n0")).toBe(0);
+    expect(plan.boxes.size).toBe(layout.nodes.length + layout.ghosts.length);
+    expect(plan.lines.size).toBe(layout.edges.length);
+    for (const ms of plan.boxes.values()) {
+      expect(ms).toBeGreaterThanOrEqual(0);
+      expect(ms).toBeLessThanOrEqual(CALLS_MAX_DELAY);
+    }
+    for (const { delay } of plan.lines.values()) {
+      expect(delay).toBeGreaterThanOrEqual(0);
+      expect(delay).toBeLessThanOrEqual(CALLS_MAX_DELAY);
+    }
+  });
+
+  it("unrolls level by level: a line starts after the box it grows from, and its box lands as it arrives", () => {
+    expect(line("e0").delay).toBe(CALLS_LEAD);
+    expect(box("n1")).toBe(Math.round(CALLS_LEAD + CALLS_EDGE_MS * 0.7));
+    expect(line("e2").delay).toBeGreaterThan(box("n1"));
+    expect(box("n3")).toBeGreaterThan(line("e2").delay);
+    expect(line("e7").delay).toBeGreaterThan(box("n4"));
+    expect(box("n6")).toBeGreaterThan(box("n4"));
+    // Lines of one level start one small step apart.
+    expect(line("e4").delay - line("e0").delay).toBe(CALLS_STEP);
+  });
+
+  it("draws a caller's line from its arrow end, out from the chosen function", () => {
+    expect(line("e0").inward).toBe(true);
+    expect(line("e2").inward).toBe(true);
+    expect(line("e4").inward).toBe(false);
+    expect(line("e7").inward).toBe(false);
+    for (const ghost of layout.ghosts) expect(line(ghost.id).inward).toBe(false);
+  });
+
+  it("fades lines back to a box already drawn in once both ends are there", () => {
+    expect(line("e1").delay).toBeGreaterThan(box("n2"));
+    expect(line("e6").delay).toBeGreaterThan(box("n4"));
+    expect(line("e3").delay).toBeGreaterThan(box("n0"));
+  });
+
+  it("leaves the levels already on the page alone when Reach goes up", () => {
+    const more = callDrawPlan(layout, 1);
+    expect([...more.boxes.keys()].sort()).toEqual(["n3", "n6"]);
+    expect([...more.lines.keys()].sort()).toEqual(["e2", "e7"]);
+    // The new level starts at once, from boxes that are already there.
+    expect(more.lines.get("e2")?.delay).toBe(0);
+    expect(more.boxes.get("n3")).toBe(Math.round(CALLS_EDGE_MS * 0.7));
+    expect(callDrawPlan(layout, 2).boxes.size).toBe(0);
+    expect(callDrawPlan(layout, 2).lines.size).toBe(0);
+  });
+
+  it("caps the stagger on a wide level and the delay on a deep one", () => {
+    const wide = layoutCallTree({
+      ...sample(),
+      root: "r",
+      nodes: [
+        node("r", "root", "root", 0, null),
+        ...Array.from({ length: 12 }, (_, i) => node(`c${i}`, `c${i}`, "callee", 1, "r")),
+      ],
+      edges: Array.from({ length: 12 }, (_, i) => edge(`w${i}`, "r", `c${i}`, "callee")),
+    });
+    const w = callDrawPlan(wide);
+    const last = CALLS_LEAD + CALLS_MAX_STAGGER * CALLS_STEP;
+    expect(w.lines.get("w6")?.delay).toBe(last);
+    expect(w.lines.get("w11")?.delay).toBe(last);
+
+    const chain = Array.from({ length: 8 }, (_, i) => node(`d${i}`, `d${i}`, i === 0 ? "root" : "callee", i, i === 0 ? null : `d${i - 1}`));
+    const deep = layoutCallTree({
+      ...sample(),
+      root: "d0",
+      nodes: chain,
+      edges: chain.slice(1).map((n, i) => edge(`k${i}`, `d${i}`, n.id, "callee")),
+    });
+    const d = callDrawPlan(deep);
+    let previous = -1;
+    for (const n of chain) {
+      const at = d.boxes.get(n.id)!;
+      expect(at).toBeGreaterThanOrEqual(previous);
+      expect(at).toBeLessThanOrEqual(CALLS_MAX_DELAY);
+      previous = at;
+    }
+    expect(d.boxes.get("d7")).toBe(CALLS_MAX_DELAY);
   });
 });

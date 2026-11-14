@@ -98,10 +98,6 @@
   overflow: auto;
   cursor: grab;
   user-select: none;
-  /* Room to scroll the lowest boxes clear of the dock keys in the stage's bottom-left
-     corner (three 36px keys, two 8px gaps and the 16px inset), as the editor's file tree
-     makes (tools.css). */
-  padding-bottom: 140px;
   background-image:
     linear-gradient(var(--grid) 1px, transparent 1px),
     linear-gradient(90deg, var(--grid) 1px, transparent 1px);

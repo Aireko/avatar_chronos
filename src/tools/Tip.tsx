@@ -8,7 +8,7 @@ interface Props {
   /** Which way it hangs: below the key (the toolbar) or above it (the status bar). */
   side?: "below" | "above";
   /** Which edge of the key it lines up with, so it stays inside the window near an edge. */
-  align?: "center" | "end";
+  align?: "center" | "start" | "end";
 }
 
 export function Tip({ children, side = "below", align = "center" }: Props) {

@@ -101,6 +101,42 @@ export function SearchIcon() {
   );
 }
 
+// ---- The status bar's view keys: smaller, to sit in its 30px line. ----
+
+/** A sheet with a dog-ear and a pair of brackets: the code editor. */
+export function EditorIcon() {
+  return (
+    <svg {...common} width={16} height={16}>
+      <path d="M6.2 3.4h8.1l4.3 4.4-.1 12.1c0 .5-.4.9-.9.9H6.3c-.5 0-.9-.4-.9-.9l.1-15.6c0-.5.3-.9.7-.9z" />
+      <path d="M14.1 3.6v4.4h4.4" />
+      <path d="M10.2 11.9 8.3 14.1l2 2" />
+      <path d="M13.9 11.9l2 2.2-2.1 2" />
+    </svg>
+  );
+}
+
+/** A little screen with a prompt and a cursor: the terminal. */
+export function TerminalIcon() {
+  return (
+    <svg {...common} width={16} height={16}>
+      <path d="M3.4 5.4c5.7-.4 11.4-.4 17.2.1l-.2 13c-5.6.3-11.2.3-16.8 0z" />
+      <path d="M7.2 9.5l2.9 2.5-2.9 2.6" />
+      <path d="M12.6 15.2c1.4-.1 2.8-.1 4.2 0" />
+    </svg>
+  );
+}
+
+/** Two sheets gathered into one: the context compiler. */
+export function ContextIcon() {
+  return (
+    <svg {...common} width={16} height={16}>
+      <path d="M8.4 3.5h9.9c.5 0 .9.4.9.9l-.1 11.7" />
+      <path d="M5.5 6.6h10c.5 0 .9.4.9.9l-.1 12c0 .5-.4.8-.9.8H5.6c-.5 0-.9-.4-.9-.9l.1-11.9c0-.5.3-.9.7-.9z" />
+      <path d="M7.7 11h6M7.7 14.1c2.1-.1 4.2-.1 6.2 0M7.7 17.2h3.7" />
+    </svg>
+  );
+}
+
 /** A small chevron, drawn like the rest (for the recent-repositories dropdown). */
 export function ChevronIcon() {
   return (

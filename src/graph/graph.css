@@ -277,6 +277,9 @@ html[data-theme="board"],
   white-space: nowrap;
 }
 .status-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A long branch name is cut short (its full name is the title) rather than pushing the
+   theme key off the bar. */
+.status-head { max-width: 32ch; overflow: hidden; text-overflow: ellipsis; }
 .status-bad { color: var(--bad); }
 
 /* ============ the drawing ============ */
@@ -849,13 +852,6 @@ html[data-theme="board"],
 }
 
 /* ============ code editor + terminal (added on graph_changes) ============ */
-.dock-toggles {
-  position: absolute; left: 16px; bottom: 16px; z-index: 25;
-  display: flex; flex-direction: column; gap: 8px; pointer-events: none;
-}
-.dock-key { pointer-events: auto; min-width: 140px; text-align: left; }
-.stage:has(.term) .dock-toggles { bottom: calc(210px + 16px); }
-
 .editor { position: absolute; inset: 0; display: flex; background: var(--paper); }
 .file-tree { flex: none; display: flex; flex-direction: column; min-width: 0; background: var(--wash); }
 .file-tree-head {

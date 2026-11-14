@@ -1,5 +1,18 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { errorMessage, runGitCommand, type ChronosGraph, type Commit, type GitCommandResult } from "../backend";
+import {
+  errorMessage,
+  exportGraph,
+  functionVersions,
+  rebaseFile,
+  rebaseFunction,
+  runGitCommand,
+  type ChronosGraph,
+  type Commit,
+  type GitCommandResult,
+  type ScopedActionResult,
+} from "../backend";
+import { functionDiffText } from "./functionDiff";
+import { scopeNoun, scopeTarget, type Scope } from "./scope";
 import { formatAge, truncate, type GraphLayout, type Lane } from "./layout";
 
 interface Props {
@@ -9,8 +22,13 @@ interface Props {
   commit: Commit;
   lane: Lane;
   start: "details" | "diff" | "rebase";
+  scope: Scope;
+  pathAtCommit?: string;
+  removed?: boolean;
+  currentBranch: string | null;
   onGraphChange: (graph: ChronosGraph) => void;
   onSelect: (hash: string) => void;
+  onOpenSideDiff: () => void;
   onClose: () => void;
 }
 
@@ -18,7 +36,37 @@ type Action = "rebase" | "diff" | "abort";
 
 const STATUS_NAME: Record<string, string> = { A: "Added", M: "Changed", D: "Deleted", R: "Renamed", C: "Copied" };
 
-export function CommitDetails({ repoPath, graph, layout, commit, lane, start, onGraphChange, onSelect, onClose }: Props) {
+function asResult(r: ScopedActionResult): GitCommandResult {
+  return {
+    ok: r.ok,
+    exitCode: r.ok ? 0 : 1,
+    command: "",
+    stdout: r.stdout,
+    stderr: r.stderr,
+    stdoutTruncated: false,
+    graphStatus: 0,
+    graphPath: null,
+    graphError: null,
+    error: r.error,
+  };
+}
+
+export function CommitDetails({
+  repoPath,
+  graph,
+  layout,
+  commit,
+  lane,
+  start,
+  scope,
+  pathAtCommit,
+  removed,
+  currentBranch,
+  onGraphChange,
+  onSelect,
+  onOpenSideDiff,
+  onClose,
+}: Props) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState<Action | null>(null);
   const [outcome, setOutcome] = useState<{ action: Action; result: GitCommandResult } | null>(null);
@@ -26,9 +74,13 @@ export function CommitDetails({ repoPath, graph, layout, commit, lane, start, on
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
 
-  const currentBranch = graph.branches.find((b) => b.isHead)?.name ?? null;
   const branchLabel = currentBranch ?? "your checkout";
   const isHead = commit.hash === graph.head;
+  const scoped = scope.kind !== "project";
+  const noun = scopeNoun(scope);
+  const target = scoped ? scopeTarget(scope) : branchLabel;
+  const pathThen = pathAtCommit ?? (scope.kind === "project" ? "" : scope.path);
+  const canRebase = scoped ? !isHead && !removed : !!currentBranch && !isHead;
   const otherBranches = graph.branches.filter((b) => b.commitHash === commit.hash && b.name !== lane.name);
   const tags = commit.refs.filter((r) => r.startsWith("tag: ")).map((r) => r.slice(5));
   const children = layout.childrenOf.get(commit.hash) ?? [];
@@ -59,12 +111,49 @@ export function CommitDetails({ repoPath, graph, layout, commit, lane, start, on
   async function rebase() {
     setConfirming(false);
     setDiff(null);
-    await act("rebase", `rebase ${commit.hash}`);
+    if (scope.kind === "project") {
+      await act("rebase", `rebase ${commit.hash}`);
+      return;
+    }
+    setBusy("rebase");
+    setError("");
+    try {
+      const run =
+        scope.kind === "file"
+          ? await rebaseFile(repoPath, commit.hash, pathThen, scope.path)
+          : await rebaseFunction(repoPath, commit.hash, pathThen, scope.path, scope.name);
+      if (run.ok) onGraphChange((await exportGraph(repoPath)).graph);
+      setOutcome({ action: "rebase", result: asResult(run) });
+    } catch (e) {
+      setError(errorMessage(e));
+      setOutcome(null);
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function showDiff() {
     setOutcome(null);
-    setDiff(await runGit("diff", `diff --stat --patch -M ${commit.hash}...HEAD`));
+    if (scope.kind === "project") {
+      setDiff(await runGit("diff", `diff --stat --patch -M ${commit.hash}...HEAD`));
+      return;
+    }
+    if (scope.kind === "file") {
+      const paths = [...new Set([scope.path, pathThen])].map((p) => `"${p.replace(/"/g, '\\"')}"`).join(" ");
+      setDiff(await runGit("diff", `diff --stat --patch -M ${commit.hash} HEAD -- ${paths}`));
+      return;
+    }
+    setBusy("diff");
+    setError("");
+    try {
+      const v = await functionVersions(repoPath, commit.hash, pathThen, scope.path, scope.name);
+      const text = functionDiffText(scope.path, scope.name, v.before, v.after, v.beforeStart, v.afterStart);
+      setDiff(asResult({ ok: true, stdout: text, stderr: "", error: null }));
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function copyHash() {
@@ -83,7 +172,7 @@ export function CommitDetails({ repoPath, graph, layout, commit, lane, start, on
     if (started.current) return;
     started.current = true;
     if (start === "diff" && !isHead) void showDiff();
-    if (start === "rebase" && currentBranch && !isHead) setConfirming(true);
+    if (start === "rebase" && canRebase) setConfirming(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -92,15 +181,21 @@ export function CommitDetails({ repoPath, graph, layout, commit, lane, start, on
   let outcomeTitle = "";
   if (outcome) {
     if (outcome.action === "abort") outcomeTitle = outcome.result.ok ? "Rebase aborted" : "Could not abort the rebase";
-    else if (outcome.result.ok) outcomeTitle = `Rebased ${branchLabel}`;
+    else if (outcome.result.ok) outcomeTitle = `Rebased ${target}`;
     else outcomeTitle = stuck ? "Rebase stopped on a conflict" : "Rebase did not run";
   }
 
   const rebaseNote = isHead
-    ? `${branchLabel} is already here`
-    : currentBranch
-      ? `Move ${currentBranch} onto this commit`
-      : "Check out a branch first";
+    ? scoped
+      ? "This is already the latest version"
+      : `${branchLabel} is already here`
+    : scoped
+      ? removed
+        ? "It was deleted here"
+        : `Put ${target} back to this commit`
+      : currentBranch
+        ? `Move ${currentBranch} onto this commit`
+        : "Check out a branch first";
 
   return (
     <aside
@@ -172,32 +267,40 @@ export function CommitDetails({ repoPath, graph, layout, commit, lane, start, on
         <div className="actions">
           {confirming ? (
             <div className="confirm">
-              <p>
-                Rebase <strong>{currentBranch}</strong> onto this commit? Its own commits are replayed on top, which
-                rewrites the history of {currentBranch}.
-              </p>
+              {scoped ? (
+                <p>
+                  Put <strong>{target}</strong> back to how it was at this commit? A new commit is added to{" "}
+                  {branchLabel} that changes only {scope.kind === "file" ? "this file" : "this function"}. Every other
+                  file{scope.kind === "function" ? " and the rest of this file" : ""} stays exactly as it is.
+                </p>
+              ) : (
+                <p>
+                  Rebase <strong>{currentBranch}</strong> onto this commit? Its own commits are replayed on top, which
+                  rewrites the history of {currentBranch}.
+                </p>
+              )}
               <div className="confirm-keys">
                 <button className="key plain" onClick={() => setConfirming(false)}>
                   Cancel
                 </button>
                 <button className="key amber" onClick={rebase}>
-                  Rebase {currentBranch}
+                  Rebase {scoped ? noun : currentBranch}
                 </button>
               </div>
             </div>
           ) : (
             <>
+              <button className="key plain tall" disabled={busy !== null || isHead} onClick={onOpenSideDiff}>
+                <strong>View in editor</strong>
+                <span>{isHead ? "Nothing newer to compare" : "Side-by-side comparison"}</span>
+              </button>
               <button
-                className="key amber tall"
-                disabled={busy !== null || !currentBranch || isHead}
+                className="key plain tall"
+                disabled={busy !== null || !canRebase}
                 onClick={() => setConfirming(true)}
               >
                 <strong>Rebase</strong>
                 <span>{rebaseNote}</span>
-              </button>
-              <button className="key plain tall" disabled={busy !== null || isHead} onClick={showDiff}>
-                <strong>Diff</strong>
-                <span>{isHead ? "Nothing newer to compare" : `What ${branchLabel} changed since`}</span>
               </button>
             </>
           )}
@@ -229,7 +332,7 @@ export function CommitDetails({ repoPath, graph, layout, commit, lane, start, on
             </section>
           )}
 
-          {diff && <DiffPanel result={diff} branch={branchLabel} />}
+          {diff && <DiffPanel result={diff} branch={target} />}
 
           <section>
             <h3 className="section-title">

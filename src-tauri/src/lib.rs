@@ -1,9 +1,12 @@
 pub mod ai;
 pub mod review;
 mod ffi;
+mod history;
 
 use ffi::BackendError;
 use serde::{Deserialize, Serialize};
+use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 
 use tauri::{Emitter, Manager};
@@ -44,6 +47,88 @@ fn read_graph(path: &str) -> Result<String, BackendError> {
 
 fn join_error(e: tauri::Error) -> BackendError {
     BackendError::new(-100, format!("background task failed: {e}"))
+}
+
+fn io_err(e: impl ToString) -> BackendError {
+    BackendError::new(-3, e.to_string())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShellResult {
+    ok: bool,
+    exit_code: i32,
+    command: String,
+    cwd: String,
+    stdout: String,
+    stderr: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FilePayload {
+    path: String,
+    content: String,
+}
+
+/// Resolve `relative` under `repo_path` and reject escapes outside the repo.
+fn resolve_repo_file(repo_path: &str, relative: &str) -> Result<PathBuf, BackendError> {
+    let repo = PathBuf::from(repo_path)
+        .canonicalize()
+        .map_err(|e| io_err(format!("cannot open repository {repo_path}: {e}")))?;
+    let rel = Path::new(relative);
+    if rel.is_absolute() {
+        return Err(BackendError::new(-5, "absolute paths are not allowed"));
+    }
+    for part in rel.components() {
+        if matches!(part, Component::ParentDir | Component::RootDir | Component::Prefix(_)) {
+            return Err(BackendError::new(-5, "path escapes the repository"));
+        }
+    }
+    let full = repo.join(rel);
+    if let Ok(canon) = full.canonicalize() {
+        if !canon.starts_with(&repo) {
+            return Err(BackendError::new(-5, "path escapes the repository"));
+        }
+        return Ok(canon);
+    }
+    if let Some(parent) = full.parent() {
+        let parent = if parent.exists() {
+            parent
+                .canonicalize()
+                .map_err(|e| io_err(format!("cannot resolve {}: {e}", parent.display())))?
+        } else {
+            parent.to_path_buf()
+        };
+        if !parent.starts_with(&repo) && parent != repo {
+            return Err(BackendError::new(-5, "path escapes the repository"));
+        }
+    }
+    Ok(full)
+}
+
+fn list_files_under(repo: &Path, dir: &Path, out: &mut Vec<String>) -> Result<(), BackendError> {
+    let entries = std::fs::read_dir(dir).map_err(|e| io_err(format!("cannot list {}: {e}", dir.display())))?;
+    for entry in entries {
+        let entry = entry.map_err(io_err)?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == ".git" || name == "node_modules" || name == "target" || name.starts_with('.') {
+            continue;
+        }
+        if path.is_dir() {
+            list_files_under(repo, &path, out)?;
+        } else if path.is_file() {
+            let rel = path
+                .strip_prefix(repo)
+                .map_err(|_| BackendError::new(-5, "path escapes the repository"))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            out.push(rel);
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -139,6 +224,92 @@ async fn blame_file(
     tauri::async_runtime::spawn_blocking(move || {
         let blame_json = ffi::blame(&repo_path, &file_path, revision.as_deref().unwrap_or(""))?;
         Ok(BlamePayload { blame_json })
+    })
+    .await
+    .map_err(join_error)?
+}
+
+#[tauri::command]
+async fn list_repo_files(repo_path: String) -> Result<Vec<String>, BackendError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repo = PathBuf::from(&repo_path)
+            .canonicalize()
+            .map_err(|e| io_err(format!("cannot open repository {repo_path}: {e}")))?;
+        let mut files = Vec::new();
+        list_files_under(&repo, &repo, &mut files)?;
+        files.sort();
+        Ok(files)
+    })
+    .await
+    .map_err(join_error)?
+}
+
+#[tauri::command]
+async fn read_repo_file(repo_path: String, relative_path: String) -> Result<FilePayload, BackendError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = resolve_repo_file(&repo_path, &relative_path)?;
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| io_err(format!("cannot read {}: {e}", path.display())))?;
+        Ok(FilePayload {
+            path: relative_path.replace('\\', "/"),
+            content,
+        })
+    })
+    .await
+    .map_err(join_error)?
+}
+
+#[tauri::command]
+async fn write_repo_file(repo_path: String, relative_path: String, content: String) -> Result<(), BackendError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = resolve_repo_file(&repo_path, &relative_path)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| io_err(format!("cannot create {}: {e}", parent.display())))?;
+        }
+        std::fs::write(&path, content.as_bytes())
+            .map_err(|e| io_err(format!("cannot write {}: {e}", path.display())))?;
+        Ok(())
+    })
+    .await
+    .map_err(join_error)?
+}
+
+#[tauri::command]
+async fn run_shell_command(cwd: String, command: String) -> Result<ShellResult, BackendError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let trimmed = command.trim();
+        if trimmed.is_empty() {
+            return Err(BackendError::new(-1, "empty command"));
+        }
+        let dir = PathBuf::from(&cwd)
+            .canonicalize()
+            .map_err(|e| io_err(format!("cannot open working directory {cwd}: {e}")))?;
+        if !dir.is_dir() {
+            return Err(BackendError::new(-1, format!("{} is not a directory", dir.display())));
+        }
+
+        #[cfg(windows)]
+        let output = Command::new("cmd")
+            .args(["/C", trimmed])
+            .current_dir(&dir)
+            .output();
+        #[cfg(not(windows))]
+        let output = Command::new("sh")
+            .args(["-lc", trimmed])
+            .current_dir(&dir)
+            .output();
+
+        let output = output.map_err(|e| BackendError::new(-6, format!("failed to spawn shell: {e}")))?;
+        let exit_code = output.status.code().unwrap_or(-1);
+        Ok(ShellResult {
+            ok: output.status.success(),
+            exit_code,
+            command: trimmed.to_string(),
+            cwd: dir.to_string_lossy().into_owned(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
     })
     .await
     .map_err(join_error)?
@@ -267,6 +438,14 @@ pub fn run() {
             run_git_command,
             analyze_merge,
             blame_file,
+            list_repo_files,
+            read_repo_file,
+            write_repo_file,
+            run_shell_command,
+            history::list_files,
+            history::function_versions,
+            history::rebase_file,
+            history::rebase_function,
             compile_views,
             compile_multi_views,
             read_source,

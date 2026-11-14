@@ -1,7 +1,7 @@
 #ifndef CHRONOS_CONTEXT_PAGE_H
 #define CHRONOS_CONTEXT_PAGE_H
 
-#include "context_compiler.h"
+#include "context_views.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -88,6 +88,20 @@ int context_page_request_limits(const ContextPageRequest *request, ContextPageLi
  *  edges:{status,items,total,nextOffset},
  *  evidence:{status,items,total,nextOffset}, counts:{children,edges}}
  */
+
+typedef struct ContextSession ContextSession;
+
+/* Builds the index-backed views once. Takes ownership of index on success;
+ * on failure the caller still owns it. */
+int context_session_open(RepositoryIndex *index, const ContextViewsRequest *request,
+                         ContextSession **out);
+int context_session_brief(const ContextSession *session, char *out, size_t out_size);
+int context_session_page(const ContextSession *session, const ContextPageRequest *request,
+                         ContextPage *out);
+int context_session_source(const ContextSession *session, const char *evidence_id,
+                           ContextSource *out);
+void context_page_free(ContextPage *page);
+void context_session_close(ContextSession *session);
 
 #ifdef __cplusplus
 }

@@ -1,0 +1,129 @@
+/* ============ the graph dock: find bar and author highlight chip ============
+   Pinned to the top right of the map, on the same layer as the legend and zoom
+   keys (.map-chrome, 20), so a closing editor (21) or side panel (22) passes over
+   it. Presence exit durations: find bar 140ms, chip 140ms. */
+
+.graph-dock {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: calc(100% - 32px);
+  pointer-events: none;
+}
+.graph-dock > * { pointer-events: auto; }
+.find-row { display: flex; align-items: center; justify-content: flex-end; gap: 8px; max-width: 100%; pointer-events: none; }
+.find-row > * { pointer-events: auto; }
+.find-toggle { flex: none; }
+
+/* ---------- find bar ---------- */
+.find-pop { min-width: 0; transform-origin: 100% 50%; }
+.find-pop.is-entering { animation: find-in 0.2s cubic-bezier(0.2, 0.9, 0.25, 1.15) backwards; }
+.find-pop.is-leaving { pointer-events: none; animation: find-out 0.14s ease-in forwards; }
+@keyframes find-in { from { opacity: 0; transform: translateX(14px) rotate(0.6deg) scale(0.98); } }
+@keyframes find-out { to { opacity: 0; transform: translateX(10px) rotate(0.4deg) scale(0.98); } }
+
+.find-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 6px 5px 10px;
+  border: 2.5px solid var(--ink);
+  border-radius: var(--sketch);
+  background: var(--paper);
+  box-shadow: 4px 5px 0 var(--grid-strong);
+}
+.find-glyph { display: inline-flex; flex: none; color: var(--soft); }
+.find-input { flex: 1 1 260px; width: 260px; min-width: 90px; height: 32px; padding: 0 12px; transition: background-color 0.15s ease, border-color 0.15s ease; }
+.find-input:focus-visible { border-color: var(--pen-2); }
+.find-count {
+  flex: none;
+  min-width: 72px;
+  color: var(--soft);
+  font-size: 15px;
+  text-align: center;
+  white-space: nowrap;
+}
+.find-count-tick { display: inline-block; animation: find-tick 0.2s ease-out backwards; }
+.find-count.is-none { color: var(--bad); }
+@keyframes find-tick { from { opacity: 0; transform: translateY(4px); } }
+.find-step { flex: none; width: 34px; height: 32px; padding: 0; font-size: 18px; line-height: 1; }
+.find-close { flex: none; }
+
+/* ---------- find marks on the map ----------
+   A highlighter blob under each matching commit (CommitGraph draws them as one overlay
+   between the lines and the stations). Lighter than the selection's halo in paper; the
+   board's highlighter is already see-through chalk, so there the blob gets a dashed
+   chalk ring as well, to stay visible against the dark board. */
+.find-marks { pointer-events: none; }
+.find-mark {
+  fill: var(--highlight);
+  opacity: 0.45;
+  transition: transform 0.8s cubic-bezier(0.45, 0, 0.2, 1), opacity 0.18s ease;
+  animation: find-mark-in 0.2s ease-out backwards;
+}
+.app[data-theme="board"] .find-mark {
+  opacity: 1;
+  fill-opacity: 0.75;
+  stroke: var(--warn);
+  stroke-width: 2;
+  stroke-dasharray: 4 5;
+  stroke-linejoin: round;
+}
+@keyframes find-mark-in { from { opacity: 0; } }
+
+/* ---------- "Highlighting <name>" ---------- */
+.chip-pop.is-entering { animation: highlight-chip-in 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards; }
+.chip-pop.is-leaving { pointer-events: none; animation: highlight-chip-out 0.14s ease-in forwards; }
+@keyframes highlight-chip-in { from { opacity: 0; transform: translateX(6px) scale(0.96); } }
+@keyframes highlight-chip-out { to { opacity: 0; transform: translateX(6px) scale(0.96); } }
+
+.highlight-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(340px, 100%);
+  padding: 3px 4px 3px 12px;
+  border: 2px dashed var(--pen-2);
+  border-radius: var(--sketch);
+  background: var(--paper);
+  font-size: 16px;
+}
+.highlight-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The name gets a highlighter stroke, like the halo on the map. */
+.highlight-name { padding: 0 2px; background: linear-gradient(transparent 52%, var(--highlight) 52%, var(--highlight) 92%, transparent 92%); }
+.highlight-clear {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  padding: 0;
+  border: 2px solid var(--ink);
+  border-radius: var(--sketch);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--hand);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: transform 0.15s ease, background-color 0.15s ease;
+}
+.highlight-clear:hover { background: var(--wash); transform: rotate(8deg); }
+.highlight-clear:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .find-pop.is-entering,
+  .find-pop.is-leaving,
+  .find-count-tick,
+  .find-mark,
+  .chip-pop.is-entering,
+  .chip-pop.is-leaving { animation: none; }
+  .find-input,
+  .find-mark,
+  .highlight-clear { transition: none; }
+  .highlight-clear:hover { transform: none; }
+}

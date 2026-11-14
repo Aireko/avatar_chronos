@@ -31,6 +31,12 @@ interface Props {
   onSelect: (hash: string) => void;
   onOpenSideDiff: () => void;
   onClose: () => void;
+  /** The author whose commits the map is highlighting, if any. */
+  highlightedAuthor?: string | null;
+  /** Highlight this author's commits on the map, or null to stop. */
+  onHighlightAuthor?: (author: string | null) => void;
+  /** Ask the local AI to explain this commit. */
+  onExplain?: () => void;
 }
 
 type Action = "rebase" | "diff" | "abort";
@@ -67,6 +73,9 @@ export function CommitDetails({
   onSelect,
   onOpenSideDiff,
   onClose,
+  highlightedAuthor = null,
+  onHighlightAuthor,
+  onExplain,
 }: Props) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState<Action | null>(null);
@@ -260,7 +269,28 @@ export function CommitDetails({
 
         <dl className="facts">
           <dt>Author</dt>
-          <dd>{commit.author}</dd>
+          <dd>
+            {onHighlightAuthor ? (
+              <button
+                type="button"
+                className={`author-link${highlightedAuthor === commit.author ? " is-on" : ""}`}
+                aria-pressed={highlightedAuthor === commit.author}
+                // The name alone doesn't say what pressing it does; aria-pressed gives on/off.
+                aria-label={`Highlight ${commit.author}'s commits on the map`}
+
+                title={
+                  highlightedAuthor === commit.author
+                    ? "Stop highlighting their commits"
+                    : "Highlight their commits on the map"
+                }
+                onClick={() => onHighlightAuthor(highlightedAuthor === commit.author ? null : commit.author)}
+              >
+                {commit.author}
+              </button>
+            ) : (
+              commit.author
+            )}
+          </dd>
           <dt>Committed</dt>
           <dd>
             {when} <span className="quiet">({formatAge(commit.timestamp)})</span>
@@ -349,6 +379,12 @@ export function CommitDetails({
                 <strong>Rebase</strong>
                 <span>{rebaseNote}</span>
               </button>
+              {onExplain && (
+                <button className="key plain tall explain-key" disabled={busy !== null} onClick={onExplain}>
+                  <strong>Explain this commit</strong>
+                  <span>A plain-language summary from the local AI</span>
+                </button>
+              )}
             </>
           )}
         </div>

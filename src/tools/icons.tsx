@@ -90,6 +90,26 @@ export function PeopleIcon() {
   );
 }
 
+/** A wobbly magnifying glass for "Find a commit". */
+export function SearchIcon() {
+  return (
+    <svg {...common}>
+      <path d="M10.6 4.2c3.6-.1 6.3 2.6 6.3 6.1.1 3.5-2.7 6.3-6.2 6.3-3.6.1-6.4-2.7-6.4-6.2 0-3.4 2.8-6.2 6.3-6.2z" />
+      <path d="M15.3 15.1l5.1 5.2" />
+      <path d="M7.6 9.3c.4-1.3 1.4-2.1 2.7-2.3" />
+    </svg>
+  );
+}
+
+/** A small chevron, drawn like the rest (for the recent-repositories dropdown). */
+export function ChevronIcon() {
+  return (
+    <svg {...common} width={16} height={16}>
+      <path d="M6.2 9.4c2 1.9 3.9 3.8 5.9 5.6 1.9-2 3.8-3.8 5.8-5.7" />
+    </svg>
+  );
+}
+
 /** A hand-drawn warning sign for the error banner. */
 export function WarnIcon() {
   return (

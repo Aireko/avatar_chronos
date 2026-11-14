@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { clamp, trackDrag } from "./drag";
+import { clamp, prefersReducedMotion, trackDrag } from "./drag";
 import type { GraphLayout } from "./layout";
 
 interface Props {
@@ -25,7 +25,7 @@ export function MiniMap({ layout, selected, head, onSelect }: Props) {
     el.scrollTo({
       left: node.x * SCALE - el.clientWidth / 2,
       top: node.y * SCALE - el.clientHeight / 2,
-      behavior: "smooth",
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
     });
   }, [selected, head, layout, size]);
 
@@ -122,6 +122,8 @@ export function MiniMap({ layout, selected, head, onSelect }: Props) {
                 }}
               >
                 <circle className="mini-hit" r={28} />
+                <circle className="mini-halo" r={27} />
+                {node.commit.hash === head && <circle className="mini-head" r={22} />}
                 <circle className="mini-ball" r={14} />
               </g>
             ))}

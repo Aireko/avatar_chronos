@@ -261,6 +261,8 @@ body { overflow: hidden; background: #fbfbf8; }
   cursor: pointer;
 }
 .legend-toggle:hover { filter: brightness(0.97); }
+/* The legend clips its corners, so focus rings are drawn inside. */
+.legend-toggle:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: -5px; }
 .legend-list {
   list-style: none;
   margin: 0;
@@ -277,6 +279,31 @@ body { overflow: hidden; background: #fbfbf8; }
   gap: 8px;
   min-height: 26px;
 }
+/* Each branch is a key: pointing at it fades the other lines, clicking pans to its tip. */
+.legend-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% + 8px);
+  min-width: 0;
+  min-height: 26px;
+  margin: 0 -4px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.14s ease;
+}
+.legend-pick:hover { background: var(--wash); }
+.legend-pick:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: -2px; }
+.legend-pick .legend-swatch { transition: transform 0.16s cubic-bezier(0.2, 0.9, 0.25, 1.3); }
+.legend-pick:hover .legend-swatch,
+.legend-pick:focus-visible .legend-swatch { transform: scale(1.25) rotate(-8deg); }
+.legend-pick:active .legend-swatch { transform: scale(0.9); }
 .legend-swatch {
   width: 14px;
   height: 14px;
@@ -308,6 +335,9 @@ body { overflow: hidden; background: #fbfbf8; }
   font-size: 12px;
   letter-spacing: 0;
 }
+/* The zoom readout ticks over to each new value. */
+.zoom-level { display: inline-block; animation: zoom-tick 0.16s ease-out; }
+@keyframes zoom-tick { from { opacity: 0.2; transform: translateY(3px); } }
 
 /* pen lines */
 .tube-casing,
@@ -316,33 +346,65 @@ body { overflow: hidden; background: #fbfbf8; }
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-dasharray: 1;
-  animation: line-draw 0.55s ease-out backwards;
-  transition: d 0.8s cubic-bezier(0.45, 0, 0.2, 1);
+  transition: d 0.8s cubic-bezier(0.45, 0, 0.2, 1), opacity 0.18s ease;
 }
 @keyframes line-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
 .tube-casing { stroke: var(--paper); stroke-width: 13; }
 .tube { stroke-width: 5; }
-.tube-ghost { fill: none; stroke-width: 4; stroke-linecap: round; stroke-dasharray: 0.04 0.1; opacity: 0.55; }
+.tube-ghost {
+  fill: none; stroke-width: 4; stroke-linecap: round; stroke-dasharray: 0.04 0.1; opacity: 0.55;
+  transition: opacity 0.18s ease;
+}
 
-.bridge { animation: fade-in 0.2s ease-out backwards; }
 .bridge-gap { stroke: var(--paper); stroke-width: 17; }
-.bridge-line { stroke-width: 5; }
+.bridge-line { stroke-width: 5; transition: opacity 0.18s ease; }
 @keyframes fade-in { from { opacity: 0; } }
 
+/* The draw-in. Only what is on screen when a map opens gets the .draw class (plus anything
+   that appears later), so a history of thousands of commits still animates a dozen columns:
+   the pen draws each line, then its circle lands, then its lettering fades in. */
+.tube-casing.draw,
+.tube.draw { animation: line-draw 0.55s ease-out backwards; }
+.tube-ghost.draw { animation: fade-in 0.4s ease-out backwards; }
+.bridge.draw { animation: fade-in 0.2s ease-out backwards; }
+.node.draw .station { animation: station-in 0.28s cubic-bezier(0.2, 0.9, 0.25, 1.25) backwards; animation-delay: var(--d, 0ms); }
+.node.draw .map-label,
+.node.draw .flag,
+.node.draw .head-note text { animation: fade-in 0.26s ease-out backwards; animation-delay: calc(var(--d, 0ms) + 90ms); }
+.node.draw .head-note path,
+.node.draw .flag-underline { stroke-dasharray: 1; animation: line-draw 0.24s ease-out backwards; animation-delay: calc(var(--d, 0ms) + 180ms); }
+@keyframes station-in { from { opacity: 0; transform: scale(0.35) rotate(-40deg); } }
+
 /* commit circles */
-.node { cursor: pointer; outline: none; transition: transform 0.8s cubic-bezier(0.45, 0, 0.2, 1); }
+.node {
+  cursor: pointer;
+  outline: none;
+  transition: transform 0.8s cubic-bezier(0.45, 0, 0.2, 1), opacity 0.18s ease;
+}
 .node-hit { fill: transparent; }
-.station { transition: transform 0.14s ease-out; animation: fade-in 0.25s ease-out backwards; }
+.station { transition: transform 0.14s ease-out; }
 .node:hover .station { transform: scale(1.14) rotate(8deg); }
+.node:active .station { transform: scale(0.92) rotate(-4deg); transition-duration: 0.06s; }
 .ring { fill: var(--paper); stroke: var(--line); stroke-width: 4.5; stroke-linejoin: round; }
 .ring-core { fill: var(--line); }
-.halo { fill: var(--highlight); opacity: 0; transition: opacity 0.15s; }
-.node.selected .halo,
-.node:focus-visible .halo { opacity: 1; }
+/* The highlighter blob scribbles in around the chosen commit, a little past full size and back. */
+.halo {
+  fill: var(--highlight);
+  opacity: 0;
+  transform: scale(0.45) rotate(-30deg);
+  transition: opacity 0.15s ease-out, transform 0.24s cubic-bezier(0.2, 0.9, 0.25, 1.35);
+}
+.node.selected .halo { opacity: 1; transform: none; }
+/* Keyboard focus gets the app's dashed pen ring, so it never looks like a selection. */
+.node:focus-visible .node-hit { stroke: var(--pen-2); stroke-width: 2.5; stroke-dasharray: 5 4; }
 
 /* lettering on the drawing */
-.map-label { fill: var(--ink); font-family: var(--hand); font-size: 16px; text-anchor: middle; opacity: 0.78; }
+.map-label {
+  fill: var(--ink); font-family: var(--hand); font-size: 16px; text-anchor: middle; opacity: 0.78;
+  transition: opacity 0.15s ease;
+}
 .node:hover .map-label,
+.node:focus-visible .map-label,
 .node.selected .map-label { opacity: 1; }
 .flag { pointer-events: none; }
 .flag text { font-family: var(--hand); font-size: 19px; text-anchor: middle; }
@@ -362,7 +424,18 @@ body { overflow: hidden; background: #fbfbf8; }
   background: var(--paper);
   border: 2px solid var(--ink);
   border-radius: var(--sketch);
-  animation: fade-in 0.12s ease-out;
+  /* Pops up out of the commit below it, and drops back into it on close (exitMs 120). */
+  transform-origin: 50% 100%;
+  animation: menu-in 0.18s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards;
+}
+.menu-layer.is-leaving .menu { pointer-events: none; animation: menu-out 0.12s ease-in forwards; }
+/* Same function list as .menu's resting transform (plus a scale), so the frames interpolate cleanly. */
+@keyframes menu-in {
+  from { opacity: 0; transform: translate(-50%, calc(-100% + 8px)) rotate(-3deg) scale(0.9); }
+  to { transform: translate(-50%, -100%) rotate(-1deg) scale(1); }
+}
+@keyframes menu-out {
+  to { opacity: 0; transform: translate(-50%, calc(-100% + 6px)) rotate(-0.5deg) scale(0.94); }
 }
 .menu button {
   height: 30px;
@@ -374,7 +447,9 @@ body { overflow: hidden; background: #fbfbf8; }
   font: inherit;
   cursor: pointer;
 }
+.menu button { transition: background-color 0.12s ease, transform 0.08s; }
 .menu button:hover:not(:disabled) { background: var(--highlight); }
+.menu button:active:not(:disabled) { transform: translateY(1px) rotate(-0.6deg); }
 .menu button:disabled { color: var(--soft); opacity: 0.6; cursor: default; }
 
 /* ============ details panel ============ */
@@ -557,6 +632,12 @@ body { overflow: hidden; background: #fbfbf8; }
 @media (prefers-reduced-motion: reduce) {
   .tube-casing, .tube, .bridge, .station, .menu, .progress, .working-dot { animation: none; }
   .node, .tube-casing, .tube, .station, .btn, .key { transition: none; }
+  /* the graph's draw-in, selection, action bar, legend and zoom readout */
+  .tube.draw, .tube-casing.draw, .bridge.draw, .tube-ghost.draw, .node.draw .station, .node.draw .map-label, .node.draw .flag,
+  .node.draw .head-note text, .node.draw .head-note path, .node.draw .flag-underline,
+  .menu-layer.is-leaving .menu, .zoom-level { animation: none; }
+  .tube-ghost, .bridge-line, .halo, .map-label, .menu button,
+  .legend-pick, .legend-pick .legend-swatch { transition: none; }
 }
 
 /* ============ code editor + terminal (added on graph_changes) ============ */
@@ -688,6 +769,22 @@ body { overflow: hidden; background: #fbfbf8; }
 .mini-ball { fill: var(--line, var(--ink)); stroke: var(--ink); stroke-width: 3; }
 .mini-node.selected .mini-ball { stroke: var(--highlight); stroke-width: 6; }
 .mini-node:focus-visible .mini-ball { stroke: var(--pen-2); stroke-width: 5; }
+/* Same feedback as the big map: a nudge on hover, a squish on press, a highlighter blob
+   that grows in behind the chosen commit, and a dashed pen ring around head. */
+.mini-ball { transition: transform 0.14s ease-out, stroke 0.15s ease, stroke-width 0.15s ease; }
+.mini-node:hover .mini-ball { transform: scale(1.2); }
+.mini-node:active .mini-ball { transform: scale(0.9); transition-duration: 0.06s; }
+.mini-halo {
+  fill: var(--highlight);
+  opacity: 0;
+  transform: scale(0.4);
+  transition: opacity 0.15s ease-out, transform 0.24s cubic-bezier(0.2, 0.9, 0.25, 1.35);
+}
+.mini-node.selected .mini-halo { opacity: 1; transform: none; }
+.mini-head { fill: none; stroke: var(--ink); stroke-width: 4; stroke-dasharray: 7 6; stroke-linecap: round; }
+@media (prefers-reduced-motion: reduce) {
+  .mini-ball, .mini-halo { transition: none; }
+}
 
 .term {
   position: relative; z-index: 15; flex: none; height: 210px; display: flex; flex-direction: column;

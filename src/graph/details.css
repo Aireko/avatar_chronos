@@ -1,0 +1,264 @@
+/* ============ commit ticket, code editor, terminal: motion, states and polish ============
+   Same hand-drawn family as graph.css, which holds the base layout of these views.
+   Selectors here are scoped one level deeper so they win without !important.
+   Every animation and transition is switched off under prefers-reduced-motion
+   at the bottom of this file. */
+
+/* Shared motion: content settling onto the page, and a rubber stamp. */
+@keyframes details-settle { from { opacity: 0; transform: translateY(6px); } }
+@keyframes details-drop { from { opacity: 0; transform: translateY(-4px); } }
+@keyframes details-row-in { from { opacity: 0; transform: translateX(8px); } }
+@keyframes details-stamp { from { opacity: 0; transform: scale(1.3) rotate(-8deg); } }
+@keyframes details-late { from { opacity: 0; } }
+@keyframes details-flash { from { background-color: var(--highlight); } }
+
+/* Text for screen readers only (live status lines). */
+.details-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ============ commit ticket ============ */
+
+/* Stepping to another commit (Comes after / Followed by, or the arrow keys) remounts
+   the ticket; its contents settle in instead of snapping. */
+.ticket .ticket-scroll { animation: details-settle 0.2s ease-out backwards; }
+
+/* Changed files deal in one after another; the stagger stops after ten rows. */
+.ticket .files li {
+  animation: details-row-in 0.2s ease-out backwards;
+  animation-delay: calc(min(var(--i, 0), 10) * 16ms + 60ms);
+}
+
+/* Copying the commit ID stamps "Copied" where the short hash was. */
+.ticket .copy-stamp {
+  display: inline-block;
+  color: var(--ok);
+  font-family: var(--hand);
+  font-size: 16px;
+  text-decoration: none;
+  animation: details-stamp 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards;
+}
+
+/* The rebase question unfolds where the two keys were. */
+.ticket .confirm { animation: details-drop 0.18s ease-out backwards; }
+
+/* Results (working line, outcome, comparison) settle in under the keys. */
+.ticket-body > .working,
+.ticket-body > .notice,
+.ticket-body > .diff { animation: details-settle 0.2s ease-out backwards; }
+
+/* Each file in the comparison folds open and shut; the caret shows which. */
+.ticket .diff-file summary { list-style: none; transition: background-color 0.15s ease; }
+.ticket .diff-file summary::-webkit-details-marker { display: none; }
+.ticket .diff-file summary:hover { background: var(--grid-strong); }
+.ticket .diff-file summary:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: -4px; }
+.diff-caret { flex: none; display: inline-block; width: 12px; color: var(--soft); font-size: 12px; transition: transform 0.18s ease; }
+.diff-file[open] > summary .diff-caret { transform: rotate(90deg); }
+.ticket .diff-file[open] > .diff-code { animation: details-drop 0.18s ease-out backwards; }
+
+/* Diff lines take their wash from the theme's ok/bad inks, with a margin rule. */
+.diff-code .d-add { background: color-mix(in srgb, var(--ok) 16%, transparent); box-shadow: inset 3px 0 var(--ok); }
+.diff-code .d-del { background: color-mix(in srgb, var(--bad) 16%, transparent); box-shadow: inset 3px 0 var(--bad); }
+.diff-code .d-hunk { background: var(--wash); }
+
+/* ============ code editor ============ */
+
+/* Folder carets turn rather than swap glyphs, and opened folders drop their files in. */
+.file-tree .tree-chevron { display: inline-block; transition: transform 0.15s ease; }
+.file-tree .tree-folder[aria-expanded="true"] .tree-chevron { transform: rotate(90deg); }
+.file-tree .tree-children { animation: details-drop 0.16s ease-out backwards; }
+.file-tree .tree-row { transition: background-color 0.15s ease, border-color 0.15s ease; }
+.file-tree .tree-row:active { transform: translateY(1px); }
+.file-tree .tree-row:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: 0; }
+.file-tree .file-search-input:focus-visible { background: var(--wash); border-style: dashed; }
+.file-tree .file-search-clear:hover { color: var(--ink); }
+.file-tree .file-search-clear:focus-visible { outline: 2px dashed var(--pen-2); outline-offset: 1px; }
+
+/* The tree resizer can be dragged or moved with the arrow keys. */
+.editor .tree-resizer { transition: opacity 0.15s ease; touch-action: none; }
+.editor .tree-resizer:focus-visible { outline: none; opacity: 1; background: var(--pen-2); }
+
+/* Edited / saving / saved sit beside the path so a long path can't hide them. */
+.editor-state {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px 1px;
+  border: 2px solid currentColor;
+  border-radius: var(--sketch);
+  font-size: 15px;
+  white-space: nowrap;
+}
+.editor-state::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.editor-state.is-dirty { color: var(--warn); border-style: dashed; animation: details-late 0.15s ease-out backwards; }
+.editor-state.is-saving { color: var(--soft); border-style: dashed; }
+.editor-state.is-saving::before { animation: pulse 0.9s ease-in-out infinite; }
+.editor-state.is-saved { color: var(--ok); animation: details-stamp 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards; }
+
+/* "Loading…" waits a moment before showing, so quick reads don't flash it. */
+.editor .is-loading { animation: details-late 0.2s ease-out 0.15s backwards; }
+
+/* A newly opened file or comparison settles onto the sheet. */
+.editor-body > .code-edit,
+.editor-body > .side-diff { animation: details-settle 0.18s ease-out backwards; }
+.editor-body > .editor-banner { animation: details-drop 0.18s ease-out backwards; }
+
+/* Side-by-side: change counts and the previous / next change keys. */
+.diff-nav { flex: none; display: flex; align-items: center; gap: 6px; }
+.diff-nav .counts { margin-right: 4px; font-size: 15px; }
+.diff-nav .btn { width: 34px; height: 32px; padding: 0; font-size: 17px; line-height: 1; }
+
+/* Changed rows take the theme's ok/bad inks with a margin rule, like the ticket's diff. */
+.side-pane-code .side-line.added { background: color-mix(in srgb, var(--ok) 16%, transparent); box-shadow: inset 3px 0 var(--ok); }
+.side-pane-code .side-line.removed { background: color-mix(in srgb, var(--bad) 16%, transparent); box-shadow: inset 3px 0 var(--bad); }
+.side-pane-code .side-line.empty {
+  opacity: 1;
+  background-image: repeating-linear-gradient(-45deg, var(--grid) 0 2px, transparent 2px 7px);
+}
+.side-pane-code .side-line.empty code { color: var(--soft); }
+/* The change just jumped to glows highlighter-yellow for a moment. */
+.side-pane-code .side-line.is-jump { animation: details-flash 0.9s ease-out; }
+/* The read-only pane takes focus for Alt+Up/Down and scrolling; show where focus is
+   (the editable pane keeps its caret as its focus cue). */
+.side-diff pre.side-pane-code:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: -3px; }
+
+/* ============ terminal dock ============ */
+
+.term .term-line { animation: details-settle 0.14s ease-out backwards; }
+.term .term-close { transition: background-color 0.15s ease; }
+.term .term-close:hover { background: color-mix(in srgb, currentColor 14%, transparent); }
+.term .term-close:focus-visible { outline: 2px dashed currentColor; outline-offset: 2px; }
+/* The prompt underlines itself while the input has focus. */
+.term .term-prompt { position: relative; }
+.term .term-prompt::after {
+  content: "";
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 5px;
+  height: 2px;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: 0;
+  transform: scaleX(0.2);
+  transform-origin: left;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.term .term-prompt:focus-within::after { opacity: 0.25; transform: none; }
+/* While a command runs, the $ pulses and the bar says what is running. */
+.term .term-prompt.is-busy .term-dollar { animation: pulse 0.9s ease-in-out infinite; }
+.term .term-prompt.is-busy .term-input { opacity: 0.6; }
+.term-running {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 12px;
+  opacity: 0.7;
+  animation: details-late 0.2s ease-out backwards;
+}
+
+/* ============ context views panel ============ */
+
+.ctx { padding: 0 18px 22px; }
+.ctx-intro { margin: 10px 0 0; color: var(--soft); }
+.ctx-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.ctx .field { flex: 1 1 120px; }
+.ctx .field.ctx-num { flex: none; width: 110px; }
+.ctx select.field { cursor: pointer; }
+.ctx-label { display: flex; flex-direction: column; gap: 2px; color: var(--soft); font-size: 14px; }
+.ctx-tabs { display: flex; gap: 6px; }
+.ctx-tabs .btn[aria-pressed="true"] { background: var(--highlight); }
+.ctx-panel { animation: details-settle 0.2s ease-out backwards; }
+.ctx h4 { margin: 14px 0 4px; font-size: 18px; font-weight: 400; }
+.ctx ul { margin: 4px 0; padding-left: 20px; }
+.ctx li { margin: 3px 0; }
+.ctx-chip {
+  margin: 4px 4px 0 0;
+  padding: 0 8px 1px;
+  border: 2px solid var(--ink);
+  border-radius: var(--sketch);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+.ctx-chip:hover { background: var(--wash); }
+.ctx-chip:focus-visible,
+.ctx-toggle:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: 2px; }
+.ctx-toggle {
+  width: 22px;
+  height: 22px;
+  margin-right: 6px;
+  padding: 0;
+  border: 2px solid var(--ink);
+  border-radius: 50%;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.ctx table { width: 100%; border-collapse: collapse; font-size: 15px; }
+.ctx th { text-align: left; font-weight: 400; color: var(--soft); border-bottom: 2px solid var(--ink); }
+.ctx td { padding: 3px 6px 3px 0; border-bottom: 1.5px dashed var(--grid-strong); vertical-align: top; overflow-wrap: anywhere; }
+.ctx pre {
+  max-height: 320px;
+  overflow: auto;
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--wash);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ticket .ticket-scroll,
+  .ticket .files li,
+  .ticket .copy-stamp,
+  .ticket .confirm,
+  .ticket-body > .working,
+  .ticket-body > .notice,
+  .ticket-body > .diff,
+  .ticket .diff-file[open] > .diff-code,
+  .file-tree .tree-children,
+  .editor-state.is-dirty,
+  .editor-state.is-saving::before,
+  .editor-state.is-saved,
+  .editor .is-loading,
+  .editor-body > .code-edit,
+  .editor-body > .side-diff,
+  .editor-body > .editor-banner,
+  .side-pane-code .side-line.is-jump,
+  .term .term-line,
+  .term .term-prompt.is-busy .term-dollar,
+  .term-running,
+  .ctx-panel { animation: none; }
+  .ticket .diff-file summary,
+  .diff-caret,
+  .file-tree .tree-chevron,
+  .file-tree .tree-row,
+  .editor .tree-resizer,
+  .term .term-close,
+  .term .term-prompt::after,
+  .ctx-chip { transition: none; }
+  .file-tree .tree-row:active { transform: none; }
+  /* Without the fade, the jumped-to change still holds a plain highlight while it is marked. */
+  .side-pane-code .side-line.is-jump { background-color: var(--highlight); }
+}

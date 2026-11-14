@@ -39,6 +39,7 @@ export interface Lane {
   on: string;
   isHead: boolean;
   y: number;
+  tip: string; // hash of the line's newest commit
 }
 
 export type StationKind = "stop" | "interchange" | "origin";
@@ -73,6 +74,7 @@ export interface GraphEdge {
   color: string;
   ghost: boolean; // leads to history older than what is loaded
   order: number; // column of the newer end, used to time the draw-in
+  lane: number; // the branch line whose colour it carries
 }
 
 /** Where a vertical line passes over a row line that belongs to another branch. */
@@ -82,6 +84,7 @@ export interface Bridge {
   y: number;
   color: string;
   order: number;
+  lane: number;
 }
 
 export interface GraphLayout {
@@ -286,6 +289,7 @@ interface Spec {
   child: GraphNode;
   color: string;
   kind: "along" | "fork" | "merge";
+  lane: number; // whose colour the line is drawn in
   xv: number; // x of the vertical run, for lines that change rows
 }
 
@@ -447,6 +451,7 @@ export function layoutGraph(
           color: child.color,
           ghost: true,
           order: child.col,
+          lane: child.lane,
         });
         return;
       }
@@ -459,6 +464,7 @@ export function layoutGraph(
         child,
         color: index > 0 ? parent.color : child.color, // a merged-in line keeps its own colour
         kind: parent.row === child.row ? "along" : index === 0 ? "fork" : "merge",
+        lane: index > 0 ? parent.lane : child.lane,
         xv: 0,
       });
     });
@@ -509,7 +515,14 @@ export function layoutGraph(
   for (const s of specs) {
     const rnd = rng(`line:${s.key}`);
     if (s.kind === "along") {
-      along.push({ key: s.key, d: straight(s.parent, s.child, rnd), color: s.color, ghost: false, order: s.child.col });
+      along.push({
+        key: s.key,
+        d: straight(s.parent, s.child, rnd),
+        color: s.color,
+        ghost: false,
+        order: s.child.col,
+        lane: s.lane,
+      });
       continue;
     }
     crossing.push({
@@ -518,12 +531,20 @@ export function layoutGraph(
       color: s.color,
       ghost: false,
       order: s.child.col,
+      lane: s.lane,
     });
     const lo = Math.min(s.parent.row, s.child.row) + 1;
     const hi = Math.max(s.parent.row, s.child.row) - 1;
     for (let row = lo; row <= hi; row++) {
       if ((rowExtents[row] ?? []).some(([a, b]) => a < s.xv - 1 && b > s.xv + 1)) {
-        bridges.push({ key: `${s.key}@${row}`, x: s.xv, y: PAD_T + row * LANE_H, color: s.color, order: s.child.col });
+        bridges.push({
+          key: `${s.key}@${row}`,
+          x: s.xv,
+          y: PAD_T + row * LANE_H,
+          color: s.color,
+          order: s.child.col,
+          lane: s.lane,
+        });
       }
     }
   }
@@ -575,6 +596,7 @@ export function layoutGraph(
       on: style.on,
       isHead: chain.isHead,
       y: PAD_T + chain.row * LANE_H,
+      tip: chain.hashes[0],
     };
   });
 
@@ -589,4 +611,35 @@ export function layoutGraph(
     byHash,
     childrenOf,
   };
+}
+
+/* ---------- draw-in ---------- */
+/** The columns that are drawn in one after another when a map opens. Everything else is simply there. */
+export interface DrawWindow {
+  from: number;
+  to: number;
+  step: number; // ms between neighbouring columns
+}
+
+const DRAW_SPAN_MAX = 24; // columns either side of the focus, however far out the map is zoomed
+const DRAW_TOTAL_MS = 840; // the whole stagger fits in this, however many columns are on screen
+
+/**
+ * Only the columns around `focusCol` that fit in a `viewWidth`-pixel window are staggered,
+ * so opening a history of thousands of commits still animates a dozen or so.
+ */
+export function drawInWindow(focusCol: number, lastCol: number, viewWidth: number, zoom = 1): DrawWindow {
+  if (lastCol < 0) return { from: 0, to: -1, step: 0 };
+  const focus = Math.min(lastCol, Math.max(0, focusCol));
+  const half = Math.min(DRAW_SPAN_MAX, Math.ceil(viewWidth / (COL_W * Math.max(0.1, zoom)) / 2) + 1);
+  const from = Math.max(0, focus - half);
+  const to = Math.min(lastCol, focus + half);
+  const step = Math.floor(Math.min(70, DRAW_TOTAL_MS / Math.max(1, to - from)));
+  return { from, to, step };
+}
+
+/** Delay for something in column `col`, or null when it lies outside the window and should not animate. */
+export function drawDelay(win: DrawWindow, col: number): number | null {
+  if (col < win.from || col > win.to) return null;
+  return (col - win.from) * win.step;
 }

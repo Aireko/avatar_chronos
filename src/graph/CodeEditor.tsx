@@ -9,11 +9,15 @@ import {
   type UIEvent,
 } from "react";
 import { errorMessage, listRepoFiles, readRepoFile, writeRepoFile, type ChronosGraph } from "../backend";
-import { buildDiffRows, type DiffRow } from "./diffRows";
+import { buildDiffRows, changeStarts, diffStats, stepChange, type DiffRow } from "./diffRows";
 import { clamp, trackDrag } from "./drag";
 import { listChangedPaths, readBlob, type DiffPath } from "./gitBlob";
 import { MiniMap } from "./MiniMap";
 import type { GraphLayout } from "./layout";
+import "./details.css";
+
+const TREE_MIN = 160;
+const TREE_MAX = 520;
 
 /** Open the editor comparing `baseRev` (left) to the working tree (right). */
 export interface DiffCompare {
@@ -143,7 +147,12 @@ export function CodeEditor({
   const search = useRef<HTMLInputElement>(null);
   const leftPane = useRef<HTMLPreElement>(null);
   const rightPane = useRef<HTMLTextAreaElement>(null);
-  const syncing = useRef<"left" | "right" | null>(null);
+  // "jump" while the change keys place both panes themselves.
+  const syncing = useRef<"left" | "right" | "jump" | null>(null);
+  const savedTimer = useRef<number | undefined>(undefined);
+  const flashTimer = useRef<number | undefined>(undefined);
+  const jumpAt = useRef(-1);
+  const [flash, setFlash] = useState<{ from: number; to: number; n: number } | null>(null);
   const loaded = useRef<string | null>(null);
   const diffFile = useRef<string | null>(null);
   const dirtyRightRef = useRef(false);
@@ -165,6 +174,22 @@ export function CodeEditor({
   const activeChange = changed.find((c) => c.path === active);
   const diffRows = useMemo(() => (diffing ? buildDiffRows(leftText, rightText) : []), [diffing, leftText, rightText]);
   const beforeLines = useMemo(() => rowsToSide(diffRows, "before"), [diffRows]);
+  const starts = useMemo(() => changeStarts(diffRows), [diffRows]);
+  const stats = useMemo(() => diffStats(diffRows), [diffRows]);
+  const saveState = !active ? null : saving ? "saving" : dirty ? "dirty" : notice ? "saved" : null;
+
+  // A new file or comparison starts the change keys from the top again.
+  useEffect(() => {
+    jumpAt.current = -1;
+    setFlash(null);
+  }, [active, compare]);
+  useEffect(
+    () => () => {
+      window.clearTimeout(savedTimer.current);
+      window.clearTimeout(flashTimer.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     let alive = true;
@@ -323,7 +348,8 @@ export function CodeEditor({
         setSource(content);
       }
       setNotice("Saved");
-      setTimeout(() => setNotice(""), 1400);
+      window.clearTimeout(savedTimer.current);
+      savedTimer.current = window.setTimeout(() => setNotice(""), 1400);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -379,6 +405,7 @@ export function CodeEditor({
   }
 
   function syncScroll(from: "left" | "right", e: UIEvent<HTMLElement>) {
+    if (syncing.current === "jump") return;
     const other = from === "left" ? rightPane.current : leftPane.current;
     if (!other || syncing.current === (from === "left" ? "right" : "left")) return;
     syncing.current = from;
@@ -389,11 +416,73 @@ export function CodeEditor({
     });
   }
 
+  /** Scroll both panes to the previous or next run of changed lines and flash it. */
+  function goToChange(dir: 1 | -1) {
+    const at = stepChange(starts, jumpAt.current, dir);
+    const left = leftPane.current;
+    const row = at == null ? undefined : left?.children[at];
+    if (at == null || !left || !row) return;
+    jumpAt.current = at;
+    let to = at;
+    while (to < diffRows.length && diffRows[to].kind !== "context") to++;
+
+    syncing.current = "jump";
+    const rowTop = row.getBoundingClientRect().top - left.getBoundingClientRect().top + left.scrollTop;
+    left.scrollTop = Math.max(0, rowTop - left.clientHeight / 3);
+    left.scrollLeft = 0;
+    const right = rightPane.current;
+    if (right) {
+      // The editable pane holds only working-tree lines, so count the rows that have one.
+      let line = 0;
+      for (let k = 0; k < at; k++) if (diffRows[k].kind !== "removed") line++;
+      // Park the caret there too, so typing after focusing the pane edits this change.
+      let offset = 0;
+      for (let k = 0; k < line && offset !== -1; k++) {
+        const nl = right.value.indexOf("\n", offset);
+        offset = nl === -1 ? -1 : nl + 1;
+      }
+      if (offset !== -1) right.setSelectionRange(offset, offset);
+      const lineHeight = parseFloat(getComputedStyle(right).lineHeight) || 18.75;
+      right.scrollTop = Math.max(0, line * lineHeight - right.clientHeight / 3);
+      right.scrollLeft = 0;
+    }
+    // The scroll events from these moves arrive before the second frame; let them pass.
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (syncing.current === "jump") syncing.current = null;
+      }),
+    );
+
+    setFlash((prev) => ({ from: at, to, n: (prev?.n ?? 0) + 1 }));
+    window.clearTimeout(flashTimer.current);
+    flashTimer.current = window.setTimeout(() => setFlash(null), 1000);
+  }
+
+  function onChangeKeys(e: KeyboardEvent<HTMLElement>) {
+    if (!e.altKey || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
+    e.preventDefault();
+    goToChange(e.key === "ArrowDown" ? 1 : -1);
+  }
+
   function onDiffEditorKey(e: KeyboardEvent<HTMLTextAreaElement>) {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
       e.preventDefault();
       void save();
+    } else {
+      onChangeKeys(e);
     }
+  }
+
+  function onResizerKey(e: KeyboardEvent<HTMLDivElement>) {
+    const step = e.shiftKey ? 48 : 16;
+    let next: number | null = null;
+    if (e.key === "ArrowLeft") next = treeWidth - step;
+    else if (e.key === "ArrowRight") next = treeWidth + step;
+    else if (e.key === "Home") next = TREE_MIN;
+    else if (e.key === "End") next = TREE_MAX;
+    if (next == null) return;
+    e.preventDefault();
+    setTreeWidth(clamp(next, TREE_MIN, TREE_MAX));
   }
 
   function renderNodes(nodes: TreeNode[], depth: number): ReactNode {
@@ -417,11 +506,13 @@ export function CodeEditor({
               }
             >
               <span className="tree-chevron" aria-hidden="true">
-                {open ? "▾" : "▸"}
+                ▸
               </span>
               <span className="tree-label">{node.name}</span>
             </button>
-            {open && node.children?.length ? <div>{renderNodes(node.children, depth + 1)}</div> : null}
+            {open && node.children?.length ? (
+              <div className="tree-children">{renderNodes(node.children, depth + 1)}</div>
+            ) : null}
           </div>
         );
       }
@@ -433,6 +524,7 @@ export function CodeEditor({
           className={`tree-row tree-file${node.path === active ? " active" : ""}`}
           style={{ paddingLeft: 8 + depth * 14 + 16 }}
           title={node.path}
+          aria-current={node.path === active ? "true" : undefined}
           onClick={() => void openFile(node.path)}
         >
           {diffing && change ? (
@@ -478,7 +570,7 @@ export function CodeEditor({
         </div>
         <div className="file-tree-scroll">
           {tree.length === 0 ? (
-            <p className="file-tree-empty">
+            <p className={`file-tree-empty${loading ? " is-loading" : ""}`}>
               {loading
                 ? "Loading…"
                 : searching
@@ -498,10 +590,15 @@ export function CodeEditor({
         role="separator"
         aria-orientation="vertical"
         aria-label="Resize file tree"
+        aria-valuenow={treeWidth}
+        aria-valuemin={TREE_MIN}
+        aria-valuemax={TREE_MAX}
+        tabIndex={0}
+        onKeyDown={onResizerKey}
         onPointerDown={(e) => {
           const start = treeWidth;
           trackDrag(e, {
-            onMove: (dx) => setTreeWidth(clamp(start + dx, 160, 520)),
+            onMove: (dx) => setTreeWidth(clamp(start + dx, TREE_MIN, TREE_MAX)),
           });
         }}
       />
@@ -512,19 +609,46 @@ export function CodeEditor({
             {diffing && compare ? (
               <>
                 Diff · {active ?? "—"} · {compare.baseLabel} → {compare.headLabel}
-                {dirty ? <span className="editor-dirty"> · edited</span> : null}
-                {notice ? <span className="editor-saved"> · {notice}</span> : null}
-              </>
-            ) : active ? (
-              <>
-                {active}
-                {dirty ? <span className="editor-dirty"> · edited</span> : null}
-                {notice ? <span className="editor-saved"> · {notice}</span> : null}
               </>
             ) : (
-              "Code editor"
+              (active ?? "Code editor")
             )}
           </span>
+          {saveState ? (
+            <span key={saveState} className={`editor-state is-${saveState}`}>
+              {saveState === "saving" ? "saving" : saveState === "dirty" ? "edited" : "saved"}
+            </span>
+          ) : null}
+          <span className="details-sr-only" role="status">
+            {saving ? "Saving" : notice ? `${active ?? "File"} saved` : ""}
+          </span>
+          {diffing && active && !loading ? (
+            <span className="diff-nav">
+              <span className="counts" title={`${stats.added} lines added, ${stats.removed} removed`}>
+                <span className="add">+{stats.added}</span> <span className="del">−{stats.removed}</span>
+              </span>
+              <button
+                type="button"
+                className="btn"
+                disabled={starts.length === 0}
+                onClick={() => goToChange(-1)}
+                aria-label="Previous change"
+                title="Previous change (Alt+Up)"
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={starts.length === 0}
+                onClick={() => goToChange(1)}
+                aria-label="Next change"
+                title="Next change (Alt+Down)"
+              >
+                ↓
+              </button>
+            </span>
+          ) : null}
           {diffing ? (
             <>
               <button
@@ -570,9 +694,13 @@ export function CodeEditor({
         </header>
 
         <div className={`editor-body${diffing ? " editor-body-diff" : ""}`}>
-          {error && <p className="editor-banner">{error}</p>}
+          {error && (
+            <p className="editor-banner" role="alert">
+              {error}
+            </p>
+          )}
           {loading ? (
-            <p className="editor-placeholder">Loading…</p>
+            <p className="editor-placeholder is-loading">Loading…</p>
           ) : !active ? (
             <p className="editor-placeholder">{diffing ? "Pick a changed file." : "Pick a file from the tree."}</p>
           ) : diffing && compare ? (
@@ -580,8 +708,10 @@ export function CodeEditor({
               <DiffPane
                 title={`${compare.baseLabel}${activeChange?.oldPath ? ` · ${activeChange.oldPath}` : ""} · read only`}
                 lines={beforeLines}
+                flash={flash}
                 paneRef={leftPane}
                 onScroll={(e) => syncScroll("left", e)}
+                onKeyDown={onChangeKeys}
               />
               <div className="side-pane">
                 <div className="side-pane-head">
@@ -632,30 +762,42 @@ export function CodeEditor({
 function DiffPane({
   title,
   lines,
+  flash,
   paneRef,
   onScroll,
+  onKeyDown,
 }: {
   title: string;
   lines: SideLine[];
+  /** Rows [from, to) glow once; `n` restarts the glow on each jump. */
+  flash: { from: number; to: number; n: number } | null;
   paneRef: RefObject<HTMLPreElement | null>;
   onScroll: (e: UIEvent<HTMLElement>) => void;
+  onKeyDown: (e: KeyboardEvent<HTMLElement>) => void;
 }) {
   return (
     <div className="side-pane">
       <div className="side-pane-head">{title}</div>
-      <pre ref={paneRef} className="side-pane-code" onScroll={onScroll}>
+      {/* Focusable so the read-only side can be scrolled and stepped with the keyboard. */}
+      <pre ref={paneRef} className="side-pane-code" tabIndex={0} onScroll={onScroll} onKeyDown={onKeyDown}>
         {lines.length === 0 ? (
           <div className="side-line empty">
             <span className="side-num" />
             <code>(empty)</code>
           </div>
         ) : (
-          lines.map((line) => (
-            <div key={line.key} className={`side-line ${line.kind}`}>
-              <span className="side-num">{line.number ?? ""}</span>
-              <code>{line.text || " "}</code>
-            </div>
-          ))
+          lines.map((line, i) => {
+            const lit = !!flash && i >= flash.from && i < flash.to;
+            return (
+              <div
+                key={lit ? `${line.key}-j${flash.n}` : line.key}
+                className={`side-line ${line.kind}${lit ? " is-jump" : ""}`}
+              >
+                <span className="side-num">{line.number ?? ""}</span>
+                <code>{line.text || " "}</code>
+              </div>
+            );
+          })
         )}
       </pre>
     </div>

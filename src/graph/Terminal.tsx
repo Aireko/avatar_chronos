@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { errorMessage, exportGraph, runShellCommand, type ChronosGraph } from "../backend";
+import "./details.css";
 
 type Line = { kind: "in" | "out" | "err" | "meta"; text: string };
 
@@ -17,15 +18,28 @@ export function Terminal({ repoPath, repoLabel, onGraphChange, onClose }: Props)
     { kind: "meta", text: "Shell commands run in the open repository. Try `ls` or `git status`." },
   ]);
   const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
+  // The command that is running, if any (shown in the bar while it runs).
+  const [running, setRunning] = useState<string | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+  const busy = running !== null;
   const [history, setHistory] = useState<string[]>([]);
   const [histIdx, setHistIdx] = useState(-1);
   const scroller = useRef<HTMLDivElement>(null);
   const field = useRef<HTMLInputElement>(null);
+  // Follow new output only while the view is at the bottom, so reading back isn't yanked away.
+  const pinned = useRef(true);
 
   useEffect(() => {
-    scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
+    const last = lines[lines.length - 1];
+    if (pinned.current || last?.kind === "in") scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
   }, [lines]);
+  // Count the seconds a long command has been running.
+  useEffect(() => {
+    if (!running) return;
+    const started = Date.now();
+    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [running]);
   useEffect(() => {
     field.current?.focus();
   }, []);
@@ -43,7 +57,9 @@ export function Terminal({ repoPath, repoLabel, onGraphChange, onClose }: Props)
     setHistory((prev) => (prev[0] === cmd ? prev : [cmd, ...prev].slice(0, 40)));
     setHistIdx(-1);
     setInput("");
-    setBusy(true);
+    pinned.current = true;
+    setElapsed(0);
+    setRunning(cmd);
     try {
       const result = await runShellCommand(repoPath, cmd);
       const next: Line[] = [];
@@ -63,13 +79,19 @@ export function Terminal({ repoPath, repoLabel, onGraphChange, onClose }: Props)
     } catch (e) {
       setLines((prev) => [...prev, { kind: "err", text: errorMessage(e) }]);
     } finally {
-      setBusy(false);
+      setRunning(null);
       field.current?.focus();
     }
   }
 
   function onKey(e: KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Escape") return onClose();
+    if (e.ctrlKey && e.key.toLowerCase() === "l") {
+      e.preventDefault();
+      if (!busy) setLines([]);
+      return;
+    }
+    if (busy) return;
     if (e.key === "ArrowUp") {
       e.preventDefault();
       const i = Math.min(histIdx + 1, history.length - 1);
@@ -91,6 +113,12 @@ export function Terminal({ repoPath, repoLabel, onGraphChange, onClose }: Props)
         <span className="term-title">
           <span aria-hidden="true">&gt;_</span> Terminal
         </span>
+        {running ? (
+          <span className="term-running" title={running}>
+            running {running}
+            {elapsed > 0 ? ` · ${elapsed}s` : "…"}
+          </span>
+        ) : null}
         <span className="term-path" title={repoPath}>
           {repoLabel}
         </span>
@@ -98,7 +126,18 @@ export function Terminal({ repoPath, repoLabel, onGraphChange, onClose }: Props)
           ×
         </button>
       </header>
-      <div className="term-scroll" ref={scroller}>
+      <div
+        className="term-scroll"
+        ref={scroller}
+        role="log"
+        aria-live="polite"
+        aria-busy={busy}
+        aria-label="Terminal output"
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+        }}
+      >
         {lines.map((line, i) => (
           <pre key={i} className={`term-line ${line.kind}`}>
             {line.text}
@@ -106,7 +145,7 @@ export function Terminal({ repoPath, repoLabel, onGraphChange, onClose }: Props)
         ))}
       </div>
       <form
-        className="term-prompt"
+        className={`term-prompt${busy ? " is-busy" : ""}`}
         onSubmit={(e: FormEvent) => {
           e.preventDefault();
           if (!busy) void run(input);
@@ -119,10 +158,13 @@ export function Terminal({ repoPath, repoLabel, onGraphChange, onClose }: Props)
           ref={field}
           className="term-input"
           value={input}
-          disabled={busy || !repoPath}
+          // Read-only rather than disabled while a command runs, so focus stays in the prompt.
+          readOnly={busy}
+          disabled={!repoPath}
+          aria-busy={busy}
           onChange={(e) => setInput(e.currentTarget.value)}
           onKeyDown={onKey}
-          placeholder={repoPath ? "ls -la" : "Open a repository first"}
+          placeholder={repoPath ? (busy ? "Running…" : "ls -la") : "Open a repository first"}
           spellCheck={false}
           aria-label="Shell command"
         />

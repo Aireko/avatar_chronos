@@ -28,3 +28,25 @@
 .scope-list button:hover { background: var(--wash); }
 .scope-note { margin: 0; font-size: 15px; }
 .scope-bad { color: var(--bad); }
+/* Keyboard focus: the tabs clip their overflow, so the dashed ring sits inside. */
+.scope-tab:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: -5px; }
+.scope-tab.on:focus-visible { outline-color: var(--paper); }
+.scope-back:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: 2px; border-radius: 4px; }
+.scope-list button:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: -3px; background: var(--wash); }
+.scope-back:hover { text-decoration: underline wavy; text-underline-offset: 3px; }
+/* The file or function that is already in view gets a marker stroke. */
+.scope-list button.on { box-shadow: inset 4px 0 0 var(--pen-2); background: var(--wash); }
+.scope-list button { transition: background-color 0.12s ease; }
+
+/* Each picker step (the file list, then that file's functions) slides in from the side. */
+.scope-step { animation: scope-step-in 0.18s ease-out backwards; }
+@keyframes scope-step-in { from { opacity: 0; transform: translateX(10px); } }
+/* "Loading…" waits a beat, so a quick load never flashes it. */
+.scope-loading { animation: scope-wait 0.2s ease-out 0.18s backwards; }
+@keyframes scope-wait { from { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .scope-step,
+  .scope-loading { animation: none; }
+  .scope-list button { transition: none; }
+}

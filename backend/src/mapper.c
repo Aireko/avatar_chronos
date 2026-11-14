@@ -160,11 +160,159 @@ static int call_matches(const ParsedFile *file, const GraphSymbol *node, const c
     return python ? python_matches(file, node, name) : strcmp(file->language, node->language) == 0;
 }
 
+static int text_token_equals(const char *text, size_t length, const char *token)
+{
+    return strlen(token) == length && strncmp(text, token, length) == 0;
+}
+
+/* Match a Java type's package-qualified name against a source path. Source
+ * roots vary, so only the package/type suffix is significant. */
+static int java_type_path(const char *path, const char *qualified)
+{
+    size_t path_length = strlen(path);
+    size_t name_length = strlen(qualified);
+    if (name_length > SIZE_MAX - 5) return 0;
+    size_t suffix_length = name_length + 5; /* ".java" */
+    if (path_length < suffix_length) return 0;
+    const char *suffix = path + path_length - suffix_length;
+    if (suffix != path && suffix[-1] != '/') return 0;
+    for (size_t i = 0; i < name_length; ++i) {
+        char expected = qualified[i] == '.' ? '/' : qualified[i];
+        if (suffix[i] != expected) return 0;
+    }
+    return strcmp(suffix + name_length, ".java") == 0;
+}
+
+static int java_package_type_path(const char *path, const char *package,
+                                  const char *name, size_t name_length)
+{
+    if (package == NULL || name == NULL) return 0;
+    size_t path_length = strlen(path);
+    size_t package_length = strlen(package);
+    if (package_length > SIZE_MAX - name_length - 6) return 0;
+    size_t suffix_length = package_length + name_length + 6; /* '/' + ".java" */
+    if (path_length < suffix_length) return 0;
+    const char *suffix = path + path_length - suffix_length;
+    if (suffix != path && suffix[-1] != '/') return 0;
+    for (size_t i = 0; i < package_length; ++i) {
+        char expected = package[i] == '.' ? '/' : package[i];
+        if (suffix[i] != expected) return 0;
+    }
+    if (suffix[package_length] != '/') return 0;
+    if (strncmp(suffix + package_length + 1, name, name_length) != 0) return 0;
+    return strcmp(suffix + package_length + 1 + name_length, ".java") == 0;
+}
+
+static int java_parent_name_matches(const GraphSymbol *node, const char *receiver,
+                                    size_t receiver_length)
+{
+    const char *qualified = node->qualified_name;
+    const char *last = strrchr(qualified, ':');
+    if (last == NULL || last == qualified) return 0;
+    const char *parent_end = last - 1;
+    const char *parent_start = parent_end;
+    while (parent_start > qualified && parent_start[-1] != ':') --parent_start;
+    return (size_t)(parent_end - parent_start) == receiver_length &&
+           strncmp(parent_start, receiver, receiver_length) == 0;
+}
+
+static const char *java_method_name(const char *call)
+{
+    const char *dot = strrchr(call, '.');
+    return dot ? dot + 1 : call;
+}
+
+static int java_matches_import(const ParsedFile *file, const char *path,
+                               const char *receiver, size_t receiver_length,
+                               const char *method)
+{
+    for (size_t i = 0; i < file->import_count; ++i) {
+        const ParsedImport *item = &file->imports[i];
+        if (item->is_static) {
+            if (item->module == NULL || (!item->is_wildcard && strcmp(item->name, method) != 0))
+                continue;
+            if (java_type_path(path, item->module)) return 1;
+        } else if (item->is_wildcard) {
+            if (item->module != NULL &&
+                java_package_type_path(path, item->module, receiver, receiver_length)) return 1;
+        } else if (item->module != NULL && text_token_equals(receiver, receiver_length, item->name)) {
+            if (java_package_type_path(path, item->module, receiver, receiver_length)) return 1;
+        }
+    }
+    return 0;
+}
+
+static int java_matches(const ParsedFile *file, const GraphSymbol *node,
+                        const char *call, const char *method, int strict)
+{
+    if (strcmp(node->language, "java") != 0 || node->parent == NULL ||
+        strcmp(node->name, method) != 0) return 0;
+    if (!strict) return 1;
+    const char *path = node->location.file_path;
+    if (call == method) {
+        if (strcmp(path, file->file_path) == 0) return 1;
+        return java_matches_import(file, path, NULL, 0, method);
+    }
+    size_t receiver_length = (size_t)(method - call) - 1;
+    const char *receiver = call;
+    if (text_token_equals(receiver, receiver_length, "this") ||
+        text_token_equals(receiver, receiver_length, "super"))
+        return strcmp(path, file->file_path) == 0;
+    if (strcmp(path, file->file_path) == 0 &&
+        java_parent_name_matches(node, receiver, receiver_length)) return 1;
+    if (java_matches_import(file, path, receiver, receiver_length, method)) return 1;
+    if (file->package_name != NULL &&
+        java_package_type_path(path, file->package_name, receiver, receiver_length)) return 1;
+    return strchr(receiver, '.') != NULL && java_type_path(path, receiver);
+}
+
+static int resolve_java_call(const MapperLookup *lookup, GraphCall *call, const ParsedFile *file)
+{
+    const char *method = java_method_name(call->callee_text);
+    if (*method == '\0') return CHRONOS_OK;
+    size_t first = find_name(lookup->short_names, lookup->callable_count, method);
+    size_t last = first;
+    while (last < lookup->callable_count && strcmp(lookup->short_names[last].name, method) == 0)
+        ++last;
+    for (int strict = 1;; --strict) {
+        size_t count = 0;
+        const GraphSymbol *target = NULL;
+        for (size_t i = first; i < last; ++i) {
+            const GraphSymbol *node = lookup->short_names[i].symbol;
+            if (!java_matches(file, node, call->callee_text, method, strict)) continue;
+            ++count;
+            target = node;
+        }
+        if (count == 1) {
+            call->resolution = CALL_RESOLVED;
+            call->callee = &target->ref;
+            return CHRONOS_OK;
+        }
+        if (count > 1) {
+            SymbolVersionRef *candidates = calloc(count, sizeof *candidates);
+            if (candidates == NULL) return CHRONOS_OUT_OF_MEMORY;
+            call->resolution = CALL_AMBIGUOUS;
+            call->candidates = candidates;
+            call->candidate_count = count;
+            size_t next = 0;
+            for (size_t i = first; i < last; ++i) {
+                const GraphSymbol *node = lookup->short_names[i].symbol;
+                if (java_matches(file, node, call->callee_text, method, strict))
+                    candidates[next++] = node->ref;
+            }
+            return CHRONOS_OK;
+        }
+        if (!strict) return CHRONOS_OK;
+    }
+}
+
 int mapper_resolve_call(const MapperLookup *lookup, GraphCall *call, const GraphSymbol *caller,
                         const ParsedFile *file)
 {
     const char *name = call->callee_text;
     int python = strcmp(caller->language, "python") == 0;
+    int java = strcmp(caller->language, "java") == 0;
+    if (java) return resolve_java_call(lookup, call, file);
     if (!python && !direct_name(name)) return CHRONOS_OK;
     int absolute = !python && name[0] == ':' && name[1] == ':';
     if (absolute) name += 2;

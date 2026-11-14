@@ -63,6 +63,33 @@ def relative_module():
 def unbound():
     return helper()
 EOF
+mkdir -p src/com/example/util
+cat > src/com/example/Service.java <<'EOF'
+package com.example;
+
+import com.example.util.Helper;
+import static com.example.util.Util.help;
+
+public class Service {
+    public int run() {
+        return Helper.work() + help();
+    }
+}
+EOF
+cat > src/com/example/util/Helper.java <<'EOF'
+package com.example.util;
+
+public class Helper {
+    public static int work() { return 2; }
+}
+EOF
+cat > src/com/example/util/Util.java <<'EOF'
+package com.example.util;
+
+public class Util {
+    public static int help() { return 3; }
+}
+EOF
 git add .
 git commit -qm base
 
@@ -77,6 +104,20 @@ sed 's/return 1/return 2/' example.py > example.new
 mv example.new example.py
 sed 's/return /return 1 + /' pkg/sub/consumer.py > consumer.new
 mv consumer.new pkg/sub/consumer.py
+cat > src/com/example/Service.java <<'EOF'
+package com.example;
+
+import com.example.util.Helper;
+import static com.example.util.Util.help;
+
+public class Service {
+    public int run() {
+        return Helper.work() + help() + local();
+    }
+
+    private int local() { return 1; }
+}
+EOF
 git commit -qam head
 
 run_twice() {
@@ -100,6 +141,12 @@ for target in symbol_alias module_alias relative_module; do
 done
 run_twice unbound pkg/sub/consumer.py unbound 8 4096
 grep -q '"resolution":"unresolved"' "$work/unbound.1.json"
+run_twice java src/com/example/Service.java Service::run 8 4096
+grep -q '"calleeText":"Helper.work"' "$work/java.1.json"
+grep -q '"calleeText":"help"' "$work/java.1.json"
+grep -q '"resolution":"resolved"' "$work/java.1.json"
+grep -q '"filePath":"src/com/example/util/Helper.java"' "$work/java.1.json"
+grep -q '"filePath":"src/com/example/util/Util.java"' "$work/java.1.json"
 
 grep -q '"calleeText":"helper"' "$work/python.1.json"
 grep -q '"direction":"incoming"' "$work/python.1.json"

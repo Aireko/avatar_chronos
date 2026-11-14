@@ -413,8 +413,7 @@ static void write_page_edge(PageBuffer *buffer, const ContextGraphEdge *edge)
     buffer_char(buffer, '}');
 }
 
-static void begin_collection(PageBuffer *buffer, ChronosCoverage coverage,
-                             size_t total, size_t next_offset)
+static void begin_collection(PageBuffer *buffer, ChronosCoverage coverage)
 {
     static const char *const names[] = {"complete", "incomplete", "unavailable"};
     buffer_text(buffer, "{\"status\":");
@@ -425,15 +424,16 @@ static void begin_collection(PageBuffer *buffer, ChronosCoverage coverage,
     buffer_string(buffer, names[coverage]);
     buffer_text(buffer, ",\"items\":");
     buffer_text(buffer, coverage == CHRONOS_UNAVAILABLE ? "null" : "[");
-    buffer_text(buffer, ",\"total\":");
+}
+
+static void end_collection(PageBuffer *buffer, ChronosCoverage coverage,
+                           size_t total, size_t next_offset)
+{
+    buffer_text(buffer, coverage == CHRONOS_UNAVAILABLE ? ",\"total\":" : "],\"total\":");
     buffer_integer(buffer, total);
     buffer_text(buffer, ",\"nextOffset\":");
     buffer_integer(buffer, next_offset);
-}
-
-static void end_collection(PageBuffer *buffer, ChronosCoverage coverage)
-{
-    buffer_text(buffer, coverage == CHRONOS_UNAVAILABLE ? "}" : "]}");
+    buffer_char(buffer, '}');
 }
 
 static int valid_evidence(const ContextEvidence *evidence)
@@ -476,29 +476,29 @@ static void write_page(PageBuffer *buffer, const ContextPage *page)
     buffer_text(buffer, ",\"revision\":");
     write_revision(buffer, &page->revision);
     buffer_text(buffer, ",\"nodes\":");
-    begin_collection(buffer, page->node_coverage, page->node_total,
-                     page->node_next_offset);
+    begin_collection(buffer, page->node_coverage);
     for (size_t i = 0; i < page->node_count && buffer->status >= 0; ++i) {
         if (i != 0) buffer_char(buffer, ',');
         write_page_node(buffer, &page->nodes[i]);
     }
-    end_collection(buffer, page->node_coverage);
+    end_collection(buffer, page->node_coverage, page->node_total,
+                   page->node_next_offset);
     buffer_text(buffer, ",\"edges\":");
-    begin_collection(buffer, page->edge_coverage, page->edge_total,
-                     page->edge_next_offset);
+    begin_collection(buffer, page->edge_coverage);
     for (size_t i = 0; i < page->edge_count && buffer->status >= 0; ++i) {
         if (i != 0) buffer_char(buffer, ',');
         write_page_edge(buffer, &page->edges[i]);
     }
-    end_collection(buffer, page->edge_coverage);
+    end_collection(buffer, page->edge_coverage, page->edge_total,
+                   page->edge_next_offset);
     buffer_text(buffer, ",\"evidence\":");
-    begin_collection(buffer, page->evidence_coverage, page->evidence_total,
-                     page->evidence_next_offset);
+    begin_collection(buffer, page->evidence_coverage);
     for (size_t i = 0; i < page->evidence_count && buffer->status >= 0; ++i) {
         if (i != 0) buffer_char(buffer, ',');
         write_evidence(buffer, &page->evidence[i]);
     }
-    end_collection(buffer, page->evidence_coverage);
+    end_collection(buffer, page->evidence_coverage, page->evidence_total,
+                   page->evidence_next_offset);
     buffer_text(buffer, ",\"counts\":{\"children\":");
     buffer_integer(buffer, page->node_total);
     buffer_text(buffer, ",\"edges\":");

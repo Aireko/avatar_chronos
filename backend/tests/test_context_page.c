@@ -150,6 +150,9 @@ int main(void)
     assert(context_page_write_json(&page, page_json, (size_t)page_length + 1) == page_length);
     assert(strstr(page_json, "\"schemaVersion\":1") != NULL);
     assert(strstr(page_json, "\"kind\":\"symbol\"") != NULL);
+    assert(strstr(page_json, "\"items\":[,") == NULL);
+    assert(strstr(page_json, "\"items\":[{\"id\":") != NULL);
+    assert(strstr(page_json, "],\"total\":1,\"nextOffset\":1}") != NULL);
     assert(strstr(page_json, "\"total\":1") != NULL);
     assert(strstr(page_json, "\"source\":") == NULL);
     assert(strstr(page_json, "\"call\":") == NULL);

@@ -22,6 +22,15 @@ import type {
   WatcherEvent,
   WatchState,
 } from "./types";
+import {
+  normalizeBugCheckEvent,
+  normalizeGhStatus,
+  normalizePostResult,
+  normalizePrList,
+  normalizeReport,
+  normalizeWatcherEvent,
+  normalizeWatchState,
+} from "./normalize";
 
 export type * from "./types";
 
@@ -146,10 +155,12 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
   }
 }
 
+// Every answer and event is normalised (./normalize.ts): a null or partial answer from a
+// command that failed half-way rejects with a BugCheckError instead of crashing the panel.
 export const bugCheckService: BugCheckService = {
-  ghStatus: () => call<GhStatus>("bug_check_gh_status"),
+  ghStatus: async () => normalizeGhStatus(await call<GhStatus>("bug_check_gh_status")),
 
-  listPrs: (repo) => call<PrWithStatus[]>("bug_check_list_prs", { repo }),
+  listPrs: async (repo) => normalizePrList(await call<PrWithStatus[]>("bug_check_list_prs", { repo })),
 
   // `async` so a synchronous failure (the Channel constructor outside Tauri)
   // becomes a rejected promise, never a thrown exception.
@@ -170,9 +181,11 @@ export const bugCheckService: BugCheckService = {
     signal?.addEventListener("abort", onAbort, { once: true });
 
     const channel = new Channel<BugCheckEvent>();
-    channel.onmessage = (event) => {
+    channel.onmessage = (raw) => {
+      const event = normalizeBugCheckEvent(raw);
+      if (!event) return;
       if (event.type === "started") {
-        runId = event.runId;
+        runId = event.runId || undefined;
         if (signal?.aborted) sendCancel();
       }
       onEvent?.(event);
@@ -187,7 +200,7 @@ export const bugCheckService: BugCheckService = {
       });
       // An aborted call never resolves as a success, even if it finished first.
       if (signal?.aborted) throw CANCELLED;
-      return report;
+      return normalizeReport(report);
     } finally {
       signal?.removeEventListener("abort", onAbort);
     }
@@ -195,23 +208,28 @@ export const bugCheckService: BugCheckService = {
 
   cancel: (runId) => call<boolean>("bug_check_cancel", { runId }),
 
-  getReport: async (repo, number) =>
-    (await call<BugCheckReport | null>("bug_check_get_report", { repo, number })) ?? null,
+  getReport: async (repo, number) => {
+    const report = await call<BugCheckReport | null>("bug_check_get_report", { repo, number });
+    return report == null ? null : normalizeReport(report);
+  },
 
-  post: (repo, number, findingIds) => call<PostResult>("bug_check_post", { repo, number, findingIds }),
+  post: async (repo, number, findingIds) =>
+    normalizePostResult(await call<PostResult>("bug_check_post", { repo, number, findingIds })),
 
-  watchGet: () => call<WatchState>("bug_check_watch_get"),
+  watchGet: async () => normalizeWatchState(await call<WatchState>("bug_check_watch_get")),
 
-  watchStart: (config) => call<WatchState>("bug_check_watch_start", { config }),
+  watchStart: async (config) => normalizeWatchState(await call<WatchState>("bug_check_watch_start", { config })),
 
-  watchStop: () => call<WatchState>("bug_check_watch_stop"),
+  watchStop: async () => normalizeWatchState(await call<WatchState>("bug_check_watch_stop")),
 
   onWatcherEvent(handler) {
     if (!isTauri()) return () => {};
     let stopped = false;
     let unlisten: (() => void) | undefined;
     listen<WatcherEvent>(WATCHER_EVENT, (event) => {
-      if (!stopped) handler(event.payload);
+      if (stopped) return;
+      const payload = normalizeWatcherEvent(event.payload);
+      if (payload) handler(payload);
     }).then(
       (fn) => {
         if (stopped) fn();

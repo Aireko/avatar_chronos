@@ -159,4 +159,15 @@ describe("the controller behind useTheme", () => {
     media.flip(false);
     expect(c.theme).toBe("board");
   });
+
+  it("says whether a change came from the system or the user's pick", () => {
+    // useTheme cross-fades only system changes; the toolbar switch fades the pick itself.
+    const media = fakeMedia(false);
+    const seen: string[] = [];
+    const c = createThemeController((t, cause) => seen.push(`${cause}:${t}`), { storage: fakeStorage(), matchMedia: media.matchMedia });
+    media.flip(true);
+    c.choose("paper");
+    c.choose("paper");
+    expect(seen).toEqual(["system:board", "pick:paper"]);
+  });
 });

@@ -1,0 +1,233 @@
+/* ============ Context compiler: motion and doodle finish ============
+   The base layout lives with the other panels in graph/details.css (.ctx, .ctx-row,
+   .ctx-chip ...). This file adds the compiler's motion, borrowing the app's shared
+   keyframes rather than inventing new ones:
+     sheet-in, swap-in, ticket-in, roll-down/up, banner-nudge  (tools/tools.css)
+     rise, breathe, fade-in                                     (graph/graph.css)
+   Rules that override details.css are written as `.ctx .x` so they win whatever
+   order the two files load in. Every animation and transition stops under
+   prefers-reduced-motion at the end. */
+
+/* The compiler is laid over the workspace like the editor's sheet. Horizontal
+   overflow is clipped so a pane sliding in from the right never flashes a
+   scrollbar on the workspace. */
+.ctx {
+  overflow-x: clip;
+  transform-origin: 50% 0;
+  animation: sheet-in 0.24s ease-out backwards;
+}
+.ctx small { font-size: 15px; }
+/* Since .ctx clips horizontal overflow, long unbroken labels (file paths, the repository
+   id, evidence locations) wrap rather than being cut off where nothing can scroll to them. */
+.ctx small,
+.ctx .ctx-node,
+.ctx .ctx-chip { overflow-wrap: anywhere; }
+.ctx code { font-family: var(--mono); font-size: 14px; overflow-wrap: anywhere; }
+
+/* ---- Brief / Graph: one block of ink glides under the chosen tab (as .scope-ink) ---- */
+.ctx .ctx-tabs {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  border: 2px solid var(--ink);
+  border-radius: var(--sketch);
+  overflow: hidden;
+  background: var(--paper);
+  isolation: isolate;
+}
+.ctx-tabs-ink {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 0;
+  width: 50%;
+  background: var(--ink);
+  pointer-events: none;
+  transition: transform 0.24s cubic-bezier(0.3, 0.9, 0.3, 1.12);
+}
+.ctx-tabs[data-tab="graph"] .ctx-tabs-ink { transform: translateX(100%); }
+.ctx-tab {
+  position: relative;
+  z-index: 1;
+  min-width: 84px;
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-left: 2px solid var(--ink);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 0.18s ease, color 0.18s ease;
+}
+.ctx-tab:first-of-type { border-left: 0; }
+.ctx-tab[aria-pressed="true"] { color: var(--paper); }
+.ctx-tab:hover:not([aria-pressed="true"]) { background: var(--wash); }
+/* The tabs clip their overflow, so the dashed ring sits inside. */
+.ctx-tab:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: -5px; }
+.ctx-tab[aria-pressed="true"]:focus-visible { outline-color: var(--paper); }
+
+/* Switching tab, or focusing another scope, swaps the new view in like a tool pane. */
+.ctx-view { animation: swap-in 0.2s ease-out backwards; }
+
+/* ---- compile progress: a pencil scribble drawn along and lifted off, at a calm
+   tempo, beside the words. It waits a beat, so a quick compile never flashes it. ---- */
+.ctx-working {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0 0;
+  color: var(--soft);
+  animation: fade-in 0.2s ease-out 0.18s backwards;
+}
+.ctx-scribble { flex: none; overflow: visible; }
+.ctx-scribble path {
+  fill: none;
+  stroke: var(--pen-1);
+  stroke-width: 2.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  /* pathLength=1, so a dash of 1 is the whole stroke. */
+  stroke-dasharray: 1;
+  animation: ctx-scribble 2.2s ease-in-out infinite;
+}
+@keyframes ctx-scribble {
+  0% { stroke-dashoffset: 1; }
+  45%, 55% { stroke-dashoffset: 0; }
+  100% { stroke-dashoffset: -1; }
+}
+
+.ctx-notice { animation: banner-nudge 0.26s ease-out backwards; }
+
+/* ---- task targets: the list rolls down under the mode picker, a new row swaps in ---- */
+.ctx-target { animation: swap-in 0.2s ease-out backwards; }
+
+/* ---- rolling levels (task targets, each opened tree level), as the legend drawer:
+   a one-row grid animates 0fr <-> 1fr. The inner box clips with a little margin so
+   the dashed focus rings of the rows inside are never cut off. ---- */
+.ctx-roll { display: grid; grid-template-rows: 1fr; }
+.ctx-roll-clip { min-height: 0; overflow: clip; overflow-clip-margin: 6px; }
+.ctx-roll.is-entering { animation: roll-down 0.22s ease-out backwards; }
+/* ROLL_EXIT_MS in ContextViewsPanel.tsx is this duration. */
+.ctx-roll.is-leaving { pointer-events: none; animation: roll-up 0.16s ease-in forwards; }
+
+/* "Loading..." under a level waits a beat too. */
+.ctx-pending { margin: 2px 0 0; animation: fade-in 0.2s ease-out 0.18s backwards; }
+
+/* ---- brief items settle in one after another (a small, capped stagger; --d) ---- */
+.ctx-brief-item { animation: rise 0.22s ease-out backwards; animation-delay: var(--d, 0ms); }
+
+/* ---- the scope tree ---- */
+.ctx .ctx-toggle {
+  display: inline-grid;
+  place-items: center;
+  vertical-align: 1px;
+  transition: background-color 0.15s ease, transform 0.08s;
+}
+.ctx .ctx-toggle:hover:not(:disabled) { background: var(--wash); }
+.ctx .ctx-toggle:active:not(:disabled) { transform: translateY(1px) rotate(-6deg); }
+.ctx .ctx-toggle:disabled { cursor: progress; }
+/* A pen-drawn plus: the upright turns down into the bar when the level opens. */
+.ctx-pm { position: relative; width: 10px; height: 10px; }
+.ctx-pm::before,
+.ctx-pm::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 0;
+  width: 10px;
+  height: 2px;
+  border-radius: 2px;
+  background: currentColor;
+}
+.ctx-pm::after { transform: rotate(90deg); transition: transform 0.22s var(--ease-pop); }
+.ctx-toggle[aria-expanded="true"] .ctx-pm::after { transform: rotate(180deg); }
+/* While its page loads, the mark breathes (the app's one waiting tempo). */
+.ctx-toggle.is-loading .ctx-pm { animation: breathe 1.1s ease-in-out infinite; }
+.ctx .ctx-node:hover { text-decoration: underline wavy; text-underline-offset: 3px; }
+
+.ctx .ctx-graph-cols { align-items: flex-start; gap: 18px; }
+.ctx-scopes { flex: 1; min-width: 280px; }
+.ctx-rels { flex: 2; min-width: 360px; }
+.ctx .ctx-rels-head { align-items: center; margin-top: 0; }
+.ctx .ctx-rels-head h4 { margin: 0; }
+
+/* ---- relationships: ruled like the rest of the notebook, rows easing in ---- */
+.ctx .ctx-table { width: 100%; border-collapse: collapse; font-size: 15px; }
+.ctx .ctx-table th {
+  padding: 4px 8px 4px 0;
+  border-bottom: 2px solid var(--ink);
+  color: var(--soft);
+  font-weight: 400;
+  text-align: left;
+}
+.ctx .ctx-table td {
+  padding: 4px 8px 4px 0;
+  border-bottom: 1.5px dashed var(--grid-strong);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.ctx-edge { --rise: 4px; animation: rise 0.2s ease-out backwards; animation-delay: var(--d, 0ms); }
+
+/* ---- evidence chips (font floor 14px); the one being read keeps a highlighter swipe ---- */
+.ctx .ctx-chip { font-size: 14px; transition: background-color 0.15s ease, transform 0.08s; }
+.ctx .ctx-chip:active { transform: translateY(1px) rotate(-0.6deg); }
+.ctx .ctx-chip.is-on { background: var(--highlight); box-shadow: inset 0 -2px 0 var(--ink); }
+
+/* ---- omitted IDs ---- */
+.ctx-omitted { margin-top: 14px; }
+.ctx-omitted summary { width: fit-content; color: var(--soft); cursor: pointer; }
+.ctx-omitted summary:hover { text-decoration: underline wavy; text-underline-offset: 3px; }
+.ctx-omitted summary:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: 2px; border-radius: 4px; }
+.ctx-omitted[open] > ul { animation: rise 0.2s ease-out backwards; }
+
+/* ---- the evidence source: a card tucked in from the right like a ticket ---- */
+.ctx-evidence {
+  margin-top: 18px;
+  padding: 2px 16px 12px;
+  border: 2px solid var(--ink);
+  border-radius: var(--sketch);
+  background: var(--paper);
+  box-shadow: 4px 5px 0 var(--grid-strong);
+  transform-origin: 100% 0;
+  animation: ticket-in 0.26s cubic-bezier(0.2, 0.9, 0.25, 1.15) backwards;
+}
+.ctx-evidence > .section-title { margin-top: 10px; }
+/* The source arrives a moment after the card: it swaps in over "Loading source...". */
+.ctx-source { animation: swap-in 0.2s ease-out backwards; }
+.ctx .ctx-evidence pre {
+  padding: 10px 12px;
+  border: 2px dashed var(--grid-strong);
+  border-radius: var(--sketch);
+  background: var(--wash);
+  font-size: 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ctx,
+  .ctx-view,
+  .ctx-working,
+  .ctx-scribble path,
+  .ctx-notice,
+  .ctx-target,
+  .ctx-roll.is-entering,
+  .ctx-roll.is-leaving,
+  .ctx-pending,
+  .ctx-brief-item,
+  .ctx-toggle.is-loading .ctx-pm,
+  .ctx-edge,
+  .ctx-omitted[open] > ul,
+  .ctx-evidence,
+  .ctx-source { animation: none; }
+  /* Without the loop the scribble rests fully drawn. */
+  .ctx-scribble path { stroke-dashoffset: 0; }
+  .ctx-tabs-ink,
+  .ctx-tab,
+  .ctx-pm::after,
+  .ctx .ctx-toggle,
+  .ctx .ctx-chip { transition: none; }
+  .ctx .ctx-toggle:active:not(:disabled),
+  .ctx .ctx-chip:active { transform: none; }
+}

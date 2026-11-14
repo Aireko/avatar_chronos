@@ -110,6 +110,40 @@ export function ChevronIcon() {
   );
 }
 
+/** A branch peeling off a line, for the branch key in the toolbar. */
+export function BranchIcon() {
+  return (
+    <svg {...common} width={18} height={18}>
+      <circle cx="6.4" cy="5.6" r="2.2" />
+      <circle cx="6.3" cy="18.4" r="2.2" />
+      <circle cx="17.6" cy="7.8" r="2.2" />
+      <path d="M6.4 7.9v8.2" />
+      <path d="M17.5 10.1c-.2 3.6-2.6 4.9-6.2 5.3-2.3.3-3.9.9-4.6 1.4" />
+    </svg>
+  );
+}
+
+/** An arrow lifting off a line: the work going up to the remote. */
+export function PushIcon() {
+  return (
+    <svg {...common} width={18} height={18}>
+      <path d="M12.1 15.6c-.1-3.6 0-7.2-.1-10.8" />
+      <path d="M7.6 8.8c1.6-1.6 3-3 4.4-4.4 1.5 1.5 2.9 2.9 4.4 4.5" />
+      <path d="M4.2 19.6c5.2-.3 10.4-.3 15.6.1" />
+    </svg>
+  );
+}
+
+/** A small plus, drawn like the rest (for "New branch…"). */
+export function PlusIcon() {
+  return (
+    <svg {...common} width={16} height={16}>
+      <path d="M12.1 5.2c-.1 4.6 0 9.1-.2 13.7" />
+      <path d="M5.2 12.2c4.6-.2 9.1-.1 13.6 0" />
+    </svg>
+  );
+}
+
 /** A hand-drawn warning sign for the error banner. */
 export function WarnIcon() {
   return (
@@ -161,6 +195,33 @@ export function EmptyScopeDoodle() {
       <path className="d-ink" pathLength={1} d="M95.4 52.2l13.8 14.4" />
       <path className="d-pen-a" pathLength={1} d="M74.6 32.6c.8-4.2 4.4-6.2 7.8-5.4 3.6.8 5 4.6 3 7.4-1.6 2.2-4.4 2.8-4.6 6.2" />
       <path className="d-pen-a" pathLength={1} d="M80.8 46.2v.2" />
+    </svg>
+  );
+}
+
+/**
+ * "Open in the editor": a pen arrow leaving a little sheet, drawn at the size of the
+ * text it sits in (the ticket's file rows). Replaces the "↗" glyph, which Patrick Hand
+ * doesn't have and so came out in a crisp system symbol font.
+ */
+export function OpenFileIcon() {
+  return (
+    <svg
+      className="open-file-icon"
+      width={14}
+      height={14}
+      viewBox="0 0 14 14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M6.1 2.4H3.3c-.7 0-1 .4-1 1.1l.1 7.3c0 .6.4 1 1 1l7.2-.1c.6 0 1-.4 1-1V8" />
+      <path d="M6.6 7.5 11.7 2.3" />
+      <path d="M8.4 2.2l3.4-.1.1 3.3" />
     </svg>
   );
 }

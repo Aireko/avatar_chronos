@@ -146,6 +146,23 @@ unresolved calls as evidence with unavailable snippets instead of dropping
 them. `make -C backend test` runs the CLI twice against the same commit pair
 and requires byte-identical output.
 
+### Flow discovery and bridges
+
+`backend/include/context_flow.h` adds deterministic flow discovery on top of
+the index. Onboarding seeds recognized entry points and walks callees;
+task mode walks callers before callees from explicit symbols, paths, or changed
+symbols. Rank combines hop proximity, caller direction, cross-module
+transitions, and a fan-in penalty, so a ubiquitous helper cannot dominate.
+Cycles collapse at the first visited node. Flow IDs are derived from the seed
+and target symbol IDs.
+
+`context_discover_bridges` recognizes the Chronos path from an
+`invoke`/wrapper callsite through a `generate_handler!` registration and Rust
+dispatch to a C FFI symbol. Every bridge edge carries an evidence ID and the
+pinned callsite or registration range. The fixtures under
+`backend/tests/fixtures/context_flow/` cover a cycle, a high-fan-in helper,
+same-name symbols, and the real Chronos command/wrapper naming pattern.
+
 ## Adding a C function
 
 1. Declare it in `backend/include/avatar.h` and implement it in `backend/src/`. New `.c` files are picked up automatically.

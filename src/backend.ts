@@ -681,6 +681,102 @@ export async function readSource(
   return JSON.parse(raw.sourceJson) as SourceResponse;
 }
 
+/* ---------- call tree (chronos_call_tree in backend/include/avatar.h) ---------- */
+
+export type CallTreeSide = "root" | "caller" | "callee";
+export type CallTreeEdgeState = "resolved" | "ambiguous" | "unresolved";
+
+export interface CallTreeSymbol {
+  symbol: { revision: ContextRevision; id: string };
+  name: string;
+  qualifiedName: string;
+  kind: SymbolKind;
+  filePath: string;
+  /** One-based, inclusive. */
+  startLine: number;
+  endLine: number;
+  /** Zero-based, end-exclusive, in the original UTF-8 source (see `readSource`). */
+  startByte: number;
+  endByte: number;
+}
+
+export interface CallTreeNode extends CallTreeSymbol {
+  id: string;
+  side: CallTreeSide;
+  /** The root is zero. */
+  depth: number;
+  /** The node this one was reached from; null for the root. */
+  parent: string | null;
+  /** Neighbors exist that the depth or node limit left out. */
+  hasMore: boolean;
+}
+
+/** Runs from caller (`from`) to callee (`to`). `to` is null for unresolved and ambiguous calls. */
+export interface CallTreeEdge {
+  id: string;
+  from: string;
+  to: string | null;
+  side: CallTreeSide;
+  state: CallTreeEdgeState;
+  calleeText: string;
+  /** Calls folded into this edge; `callSites` holds at most the first eight. */
+  callCount: number;
+  callSites: ContextLocation[];
+  candidateCount: number;
+  candidates: CallTreeSymbol[];
+}
+
+export interface CallTreeOk {
+  schemaVersion: number;
+  status: "ok";
+  revision: ContextRevision;
+  maxDepth: number;
+  maxNodes: number;
+  truncated: boolean;
+  coverage: "complete" | "incomplete";
+  root: string;
+  nodes: CallTreeNode[];
+  edges: CallTreeEdge[];
+}
+
+/** The name matched several definitions in the file, or none. */
+export interface CallTreeUnresolved {
+  schemaVersion: number;
+  status: "ambiguous" | "not_found";
+  revision: ContextRevision;
+  candidates: CallTreeSymbol[];
+}
+
+export type CallTree = CallTreeOk | CallTreeUnresolved;
+
+export interface CallTreeOptions {
+  /** Defaults to HEAD. */
+  revision?: string;
+  maxDepth?: number;
+  maxNodes?: number;
+}
+
+/**
+ * The callers and callees of a function in one commit. `name` may be a short name or a
+ * qualified one (`Class::method`); `path` is repository-relative.
+ */
+export async function callTree(
+  repoPath: string,
+  path: string,
+  name: string,
+  options: CallTreeOptions = {},
+): Promise<CallTree> {
+  const raw = await call<{ treeJson: string }>("call_tree", {
+    repoPath,
+    revision: options.revision?.trim() || "HEAD",
+    path,
+    name,
+    maxDepth: options.maxDepth ?? null,
+    maxNodes: options.maxNodes ?? null,
+  });
+  return JSON.parse(raw.treeJson) as CallTree;
+}
+
 /* ---------- errors ---------- */
 
 function isBackendError(error: unknown): error is BackendError {

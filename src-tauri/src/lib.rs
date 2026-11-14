@@ -209,6 +209,12 @@ struct CompileTarget {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct CallTreePayload {
+    tree_json: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SourcePayload {
     source_json: String,
 }
@@ -494,6 +500,33 @@ fn close_views(session_id: u64) {
     ffi::close_views(session_id);
 }
 
+/// Bounded caller/callee tree for one function, built from the index of one commit.
+#[tauri::command]
+async fn call_tree(
+    repo_path: String,
+    revision: Option<String>,
+    path: String,
+    name: String,
+    max_depth: Option<u64>,
+    max_nodes: Option<u64>,
+) -> Result<CallTreePayload, BackendError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let depth = usize::try_from(max_depth.unwrap_or(0)).unwrap_or(usize::MAX);
+        let nodes = usize::try_from(max_nodes.unwrap_or(0)).unwrap_or(usize::MAX);
+        let tree_json = ffi::call_tree(
+            &repo_path,
+            revision.as_deref().unwrap_or("HEAD"),
+            &path,
+            &name,
+            depth,
+            nodes,
+        )?;
+        Ok(CallTreePayload { tree_json })
+    })
+    .await
+    .map_err(join_error)?
+}
+
 /// Reads the pinned source range behind an evidence ID/location.
 #[tauri::command]
 async fn read_source(
@@ -580,6 +613,7 @@ pub fn run() {
             views_source,
             close_views,
             read_source,
+            call_tree,
             ai::commands::ai_status,
             ai::commands::ai_check_connection,
             ai::commands::ai_list_models,

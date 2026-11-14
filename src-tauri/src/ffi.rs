@@ -77,6 +77,15 @@ unsafe extern "C" {
         out_json: *mut *mut c_char,
     ) -> c_int;
     fn chronos_views_close(handle: u64);
+    fn chronos_call_tree(
+        repo_path: *const c_char,
+        revision: *const c_char,
+        path: *const c_char,
+        name: *const c_char,
+        max_depth: usize,
+        max_nodes: usize,
+        out_json: *mut *mut c_char,
+    ) -> c_int;
     fn chronos_read_source(
         repo_path: *const c_char,
         revision: *const c_char,
@@ -445,6 +454,46 @@ pub fn close_views(handle: u64) {
     let _guard = lock();
     // SAFETY: closing an invalid handle is a no-op in C.
     unsafe { chronos_views_close(handle) };
+}
+
+/// Bounded caller/callee neighborhood of one function at a pinned revision.
+/// "ambiguous" and "not_found" come back as a successful JSON result.
+pub fn call_tree(
+    repo_path: &str,
+    revision: &str,
+    path: &str,
+    name: &str,
+    max_depth: usize,
+    max_nodes: usize,
+) -> Result<String, BackendError> {
+    let repo = c_string(repo_path, "repo path")?;
+    let rev = c_string(revision, "revision")?;
+    let file = c_string(path, "path")?;
+    let name = c_string(name, "function name")?;
+    let _guard = lock();
+    let mut out: *mut c_char = std::ptr::null_mut();
+    // SAFETY: input strings are valid for the call; `out` is writable.
+    let status = unsafe {
+        chronos_call_tree(
+            repo.as_ptr(),
+            rev.as_ptr(),
+            file.as_ptr(),
+            name.as_ptr(),
+            max_depth,
+            max_nodes,
+            &mut out,
+        )
+    };
+    if status < 0 {
+        return Err(BackendError::from_status(status));
+    }
+    if out.is_null() {
+        return Err(BackendError::new(-4, "the C backend returned no call tree"));
+    }
+    // SAFETY: `out` is a backend-allocated NUL-terminated string.
+    let json = unsafe { string_from_c(out) };
+    unsafe { chronos_free_string(out) };
+    Ok(json)
 }
 
 /// Reads pinned source bytes for one evidence location.

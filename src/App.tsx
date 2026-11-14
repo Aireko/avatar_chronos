@@ -31,7 +31,8 @@ import { FindBar } from "./graph/FindBar";
 import { findJumpTarget, findMatches, stepMatch } from "./graph/findCommits";
 import { carryIds, layoutGraph } from "./graph/layout";
 import { Terminal } from "./graph/Terminal";
-import { ScopeBar } from "./graph/ScopeBar";
+import { CallGraphView } from "./graph/CallGraphView";
+import { ScopeBar, type FunctionView } from "./graph/ScopeBar";
 import { BranchSwitcher } from "./push/BranchSwitcher";
 import { PushPanel } from "./push/PushPanel";
 import { PROJECT, scopeGraph, scopeKey, type Scope } from "./graph/scope";
@@ -92,6 +93,7 @@ function App() {
   const [path, setPath] = useState("");
   const [graph, setGraph] = useState<ChronosGraph>();
   const [scope, setScope] = useState<Scope>(PROJECT);
+  const [functionView, setFunctionView] = useState<FunctionView>("history");
   const [selected, setSelected] = useState<string | null>(null);
   const [panel, setPanel] = useState<{ mode: PanelMode; id: number } | null>(null);
   const [showEditor, setShowEditor] = useState(false);
@@ -134,8 +136,12 @@ function App() {
   const currentBranch = graph?.branches.find((b) => b.isHead)?.name ?? null;
   const repoLabel = graph?.repoPath.split(/[/\\]/).filter(Boolean).pop() || graph?.repoPath || "repo";
 
+  // The call map replaces the commit map while a function is in scope and "Calls" is chosen.
+  const callsShown = Boolean(graph?.head && scope.kind === "function" && functionView === "calls" && !showContext);
   // The map is on screen (not the editor, not an empty scope): find and the author chip live on it.
-  const mapShown = Boolean(graph && layout && scoped && !showEditor && !showContext && layout.nodes.length > 0);
+  const mapShown = Boolean(
+    graph && layout && scoped && !showEditor && !showContext && !callsShown && layout.nodes.length > 0,
+  );
   const findShown = findOpen && mapShown;
   // Matches among the commits in view, newest first like the history itself.
   // Deferred, so typing stays quick on a big history: the scan, the marks and the jump to
@@ -202,6 +208,7 @@ function App() {
         setSelected(null);
         setPanel(null);
         setScope(PROJECT);
+        setFunctionView("history");
         setHighlightAuthor(null);
       }
     } catch (e) {
@@ -213,6 +220,8 @@ function App() {
 
   function changeScope(next: Scope) {
     setScope(next);
+    // Picking another function keeps the call map open; any other scope goes back to history.
+    if (next.kind !== "function") setFunctionView("history");
     setSelected(null);
     setPanel(null);
     setShowEditor(false);
@@ -417,6 +426,7 @@ function App() {
         } else if (findShown) closeFind();
         else if (showTerminal) setShowTerminal(false);
         else if (showContext) setShowContext(false);
+        else if (callsShown) setFunctionView("history");
         else if (highlightAuthor !== null) {
           // On the chip's own ×, focus would drop to the page as the chip goes; anywhere
           // else (the map), it stays where it is.
@@ -426,7 +436,7 @@ function App() {
         return;
       }
 
-      if (tool || showEditor || showContext || !layout || !selected) return;
+      if (tool || showEditor || showContext || callsShown || !layout || !selected) return;
 
       const node = layout.byHash.get(selected);
       if (!node) return;
@@ -453,7 +463,7 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
     // openFind / closeFind only read the state listed here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layout, selected, panel, tool, showEditor, showTerminal, showContext, findOpen, findShown, mapShown, highlightAuthor]);
+  }, [layout, selected, panel, tool, showEditor, showTerminal, showContext, callsShown, findOpen, findShown, mapShown, highlightAuthor]);
 
   function toggleEditor() {
     if (!graph) {
@@ -555,7 +565,16 @@ function App() {
             Open
           </button>
         </form>
-        <ScopeBar graph={graph} scope={scope} onChange={changeScope} />
+        <ScopeBar
+          graph={graph}
+          scope={scope}
+          onChange={changeScope}
+          view={functionView}
+          onViewChange={(next) => {
+            setFunctionView(next);
+            if (next === "calls") setPanel(null);
+          }}
+        />
 
         <button
           className="btn"
@@ -653,7 +672,16 @@ function App() {
               <ContextViewsPanel key={graph.repoPath} repoPath={graph.repoPath} />
             </div>
           ) : graph && layout && scoped ? (
-            showEditor ? null : layout.nodes.length === 0 ? (
+            showEditor ? null : callsShown && scope.kind === "function" && graph.head ? (
+              <CallGraphView
+                key={`${scopeKey(scope)}@${graph.head}`}
+                repoPath={graph.repoPath}
+                revision={graph.head}
+                path={scope.path}
+                name={scope.name}
+                onClose={() => setFunctionView("history")}
+              />
+            ) : layout.nodes.length === 0 ? (
               <div key={scopeKey(scope)} className="empty shell-empty">
                 <EmptyScopeDoodle />
                 <h1>Nothing here</h1>

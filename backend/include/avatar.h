@@ -105,6 +105,31 @@ CHRONOS_API int chronos_views_source(uint64_t handle, const char* evidence_id,
                                      char** out_json);
 CHRONOS_API void chronos_views_close(uint64_t handle);
 
+/* Bounded call neighborhood of one function at a pinned revision (revision may
+ * be empty for HEAD). `name` is a qualified name (Class::method) or a short
+ * name; `path` is the repository-relative file. Append "#<line>" to the name to
+ * pick the definition that starts on that line. The result is a heap JSON
+ * object (free it with chronos_free_string()):
+ *   { schemaVersion, status: "ok" | "ambiguous" | "not_found", revision,
+ *     candidates: [...]                       (ambiguous / not_found only)
+ *     maxDepth, maxNodes, truncated, coverage, root: "n0",
+ *     nodes: [{ id, side: root|caller|callee, depth, parent, hasMore, symbol,
+ *               name, qualifiedName, kind, filePath, startLine, endLine,
+ *               startByte, endByte }],
+ *     edges: [{ id, from, to, side, state: resolved|ambiguous|unresolved,
+ *               calleeText, callCount, callSites, candidateCount, candidates }] }
+ * Edges run from caller to callee; `to` is null for unresolved and ambiguous
+ * calls. max_depth 0 means 2 (cap 6); max_nodes 0 means 48 (cap 256). The index
+ * is cached for the last repository and commit, so repeated calls are cheap.
+ * "ambiguous" and "not_found" are successful results, not errors. */
+CHRONOS_API int chronos_call_tree(const char* repo_path,
+                                  const char* revision,
+                                  const char* path,
+                                  const char* name,
+                                  size_t max_depth,
+                                  size_t max_nodes,
+                                  char** out_json);
+
 /* Reads pinned source bytes for start_byte..end_byte and returns a heap JSON
  * object with repository, revision, path, range and source. revision may be
  * empty for HEAD. Free the result with chronos_free_string(). */

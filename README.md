@@ -6,6 +6,12 @@ It started as a hackathon project. The repository and package are still called `
 
 ## What it does today
 
+- **Commit graph.** Branches and merges drawn on paper (or a blackboard, if you switch themes), with zoom keys and a collapsible branch legend.
+- **File and function scope.** The Project / File / Function tabs in the toolbar cut the graph down to the history of one file or one function. The C backend reads each commit's diff and works out which function each changed line belongs to. It does that with a line-based guess at definitions plus the function names in Git's hunk headers, not a full parse, so now and then it misses or misnames a function.
+- **Call map.** With a function in scope, the History | Calls switch next to the scope chip swaps the commit graph for a map of who calls it and what it calls, built from the latest commit. Callers sit on the left, callees on the right, and arrows run from caller to callee. Click a box or an arrow to see the call sites in the caller's source. Double-click a box (or use "Centre here") to follow the chain, and use Back to return. Calls the indexer can't tie to one function are drawn as dashed boxes rather than dropped. It reads C, Rust, JavaScript and TypeScript only, and only direct calls by name, so imports, dynamic dispatch and function pointers aren't followed. It reflects the commit, not uncommitted edits.
+- **Commit details.** Click a commit to see what changed since then, open a side-by-side comparison in the editor, or rebase onto it. With a file or function in scope, "rebase" means something narrower: that one file or function is put back the way it was at that commit and saved as a new commit. Nothing else in the repo is touched and history is never rewritten.
+- **Code editor and terminal.** A built-in editor for the files in the repo folder (it skips hidden files, `node_modules` and `target`), with a side-by-side diff and its own pannable commit map in the corner. A terminal docks along the bottom and runs in the repo folder.
+- **Themes and reload.** Switch between paper and blackboard, and reload the history after you commit from somewhere else.
 ### Opening a repository
 
 - **Path field.** Type a path and press Open (or Enter). Its dropdown lists the last 8 repositories that opened successfully, newest first. Use Up/Down and Enter to open one, and Shift+Delete or the × on a row to forget it.
@@ -246,6 +252,10 @@ Follow the patterns already in `avatar.h`:
 - Strings go into C as NUL-terminated UTF-8 `const char*`. Results usually come back as a heap-allocated JSON string, either returned directly or through a `char** out_json` parameter. A few differ: the graph export and merge analysis write to a file path, and `chronos_views_open` hands back a `uint64_t` session handle.
 - C allocates the strings it returns. The Rust wrapper copies each one and then frees it with `chronos_free_string()`, so a new function that returns a string needs the same treatment.
 - A negative return value is an `AVATAR_ERR_*` code, and `chronos_last_error()` holds the matching message. Rust wraps both as `BackendError { code, message }`, which rejects the promise in JavaScript. The context compiler functions are the exception: they pass through their own status codes, where `1` means a partial result (still a success) and some negative numbers mean something different from the `AVATAR_ERR_*` code with the same value.
+
+## Logo
+
+- The logo was created using figma with the help of some shapes from the Material 3 Design Kit community library.
 
 ## Worth knowing
 

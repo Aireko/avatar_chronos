@@ -1,19 +1,25 @@
 import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from "react";
 import { Presence } from "../tools/Presence";
 import { blameFile, errorMessage, listFiles, type ChronosGraph } from "../backend";
+import { supportsCallGraph } from "./callTree";
 import { PROJECT, functionChoices, scopeTarget, type FunctionChoice, type Scope } from "./scope";
 import "./scope.css";
+
+export type FunctionView = "history" | "calls";
 
 interface Props {
   graph: ChronosGraph | undefined;
   scope: Scope;
   onChange: (scope: Scope) => void;
+  /** With a function in scope: whether the map shows its commits or its calls. */
+  view?: FunctionView;
+  onViewChange?: (view: FunctionView) => void;
 }
 
 type Picking = { kind: "file" } | { kind: "function"; path: string | null };
 const MAX_SHOWN = 200;
 
-export function ScopeBar({ graph, scope, onChange }: Props) {
+export function ScopeBar({ graph, scope, onChange, view = "history", onViewChange }: Props) {
   const [picking, setPicking] = useState<Picking | null>(null);
   const [query, setQuery] = useState("");
   const [files, setFiles] = useState<string[]>([]);
@@ -170,6 +176,14 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
   const active = picking ? picking.kind : scope.kind;
   const q = query.trim().toLowerCase();
   const isCurrent = (name: string) => scope.kind === "function" && scope.path === functionPath && scope.name === name;
+  const callsOff =
+    scope.kind !== "function"
+      ? null
+      : !graph?.head
+        ? "The repository has no commits yet"
+        : !supportsCallGraph(scope.path)
+          ? "Call maps read C, Rust, JavaScript and TypeScript files"
+          : null;
   const fileMatches = files.filter((f) => f.toLowerCase().includes(q));
   const functionMatches = functions.filter((f) => f.name.toLowerCase().includes(q));
 
@@ -209,6 +223,27 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
         <span className="scope-chip" title={scope.kind === "function" ? `${scope.path} : ${scope.name}` : scope.path}>
           {scope.kind === "function" ? `${scope.path.split("/").pop()} › ${scopeTarget(scope)}` : scope.path}
         </span>
+      )}
+
+      {scope.kind === "function" && !picking && onViewChange && (
+        <div className="scope-tabs scope-view" role="group" aria-label="What to show for this function">
+          <button
+            className={`scope-tab${view === "history" ? " on" : ""}`}
+            aria-pressed={view === "history"}
+            onClick={() => onViewChange("history")}
+          >
+            History
+          </button>
+          <button
+            className={`scope-tab${view === "calls" ? " on" : ""}`}
+            aria-pressed={view === "calls"}
+            disabled={callsOff !== null}
+            title={callsOff ?? "Show what calls this function and what it calls, as of the latest commit"}
+            onClick={() => onViewChange("calls")}
+          >
+            Calls
+          </button>
+        </div>
       )}
 
       <Presence show={picking !== null} className="scope-pop" exitMs={140}>

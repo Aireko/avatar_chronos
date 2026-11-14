@@ -82,6 +82,7 @@ test: all
 	  echo "Running $$bin"; \
 	  case "$$bin" in \
 	    "$(BUILD)/test_revision_index") sh tests/run_revision_index_test.sh "$$bin" ;; \
+	    "$(BUILD)/test_call_tree") sh tests/run_call_tree_test.sh "$$bin" ;; \
 	    *) "./$$bin" ;; \
 	  esac; \
 	done; \

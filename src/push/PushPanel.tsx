@@ -4,6 +4,7 @@ import { aiErrorMessage } from "../ai/aiService";
 import { Presence } from "../tools/Presence";
 import { analyze, listDelay, reviewBlast, type Blast, type Finding } from "./blast";
 import { BlastMap } from "./BlastMap";
+import { PrCreate } from "./PrCreate";
 import { branchNames, commitAll, pullFrom, pushTo } from "./git";
 import "./push.css";
 
@@ -62,7 +63,7 @@ export function PushPanel({ repoPath, graph, currentBranch, onGraphChange, onClo
   const [message, setMessage] = useState("");
   const [target, setTarget] = useState(currentBranch ?? branches[0] ?? "");
   const [newName, setNewName] = useState("");
-  const [step, setStep] = useState<"form" | "working" | "result">("form");
+  const [step, setStep] = useState<"form" | "working" | "result" | "pushed">("form");
   const [status, setStatus] = useState("");
   const [blast, setBlast] = useState<Blast | null>(null);
   const [findings, setFindings] = useState<Finding[] | null>(null);
@@ -186,7 +187,9 @@ export function PushPanel({ repoPath, graph, currentBranch, onGraphChange, onClo
     setCanPull(false);
     try {
       onGraphChange(await pushTo(repoPath, dest));
-      close();
+      if (!alive.current) return;
+      setPushing(false);
+      setStep("pushed");
     } catch (e) {
       const msg = errorMessage(e);
       if (/non-fast-forward|rejected|fetch first/i.test(msg)) {
@@ -202,7 +205,7 @@ export function PushPanel({ repoPath, graph, currentBranch, onGraphChange, onClo
       } else {
         setError(msg);
       }
-      setPushing(false);
+       setPushing(false);
     }
   }
 
@@ -362,6 +365,12 @@ export function PushPanel({ repoPath, graph, currentBranch, onGraphChange, onClo
                   <span key={pushLabel} className="push-go-label">{pushLabel}</span>
                 </button>
               </div>
+            </>
+          )}
+          {step === "pushed" && (
+            <>
+              <div className="push-note ok">Pushed to origin/{dest}.</div>
+              <PrCreate repoPath={repoPath} head={dest} message={message} branches={branches} onDone={close} />
             </>
           )}
         </div>

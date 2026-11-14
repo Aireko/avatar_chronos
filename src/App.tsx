@@ -16,6 +16,7 @@ import "./graph/graph.css";
 import "./tools/tools.css";
 import "./tools/toolbar.css";
 import "./graph/find.css";
+import "./noscroll.css";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -47,6 +48,8 @@ import { ScopeBar } from "./graph/ScopeBar";
 import { FunctionViewSwitch, callsOffReason, type FunctionView } from "./graph/FunctionViewSwitch";
 import { BranchSwitcher } from "./push/BranchSwitcher";
 import { PushPanel } from "./push/PushPanel";
+import { MergeDoctor } from "./merge/MergeDoctor";
+import { MergeIcon } from "./merge/MergeIcon";
 import { PROJECT, scopeGraph, scopeKey, type Scope } from "./graph/scope";
 import ContextViewsPanel from "./context/ContextViewsPanel";
 import { useTheme, type Theme } from "./tools/theme";
@@ -211,6 +214,7 @@ function App() {
   const [leave, setLeave] = useState<(LeaveAsk & { go: () => void }) | null>(null);
   const [showTerminal, setShowTerminal] = useState(false);
   const [showPush, setShowPush] = useState(false);
+  const [showMerge, setShowMerge] = useState(false);
   const [showContext, setShowContext] = useState(false);
   // At most one drawer is open on the right: a tool or the commit details.
   const [tool, setTool] = useState<ToolId | null>(null);
@@ -1224,7 +1228,7 @@ function App() {
 
         {graph && <ScopeBar graph={graph} scope={scope} onChange={changeScope} />}
 
-        {/* The branch and Push share one cluster: both are about where the work goes. */}
+        {/* The branch, Push and Merge share one cluster: all about where the work goes. */}
         {graph && (
           <div className="git-cluster" role="group" aria-label="Git">
             <BranchSwitcher
@@ -1242,6 +1246,16 @@ function App() {
             >
               <PushIcon />
               <span className="push-key-label">Push</span>
+            </button>
+            <button
+              type="button"
+              className="btn tool-btn"
+              disabled={!desktop}
+              onClick={() => setShowMerge(true)}
+              title={desktop ? "Preview and resolve a merge, function by function" : "Only available in the desktop app"}
+            >
+              <MergeIcon />
+              <span className="tool-label">Merge</span>
             </button>
           </div>
         )}
@@ -1285,6 +1299,16 @@ function App() {
           currentBranch={currentBranch}
           onGraphChange={applyGraph}
           onClose={() => setShowPush(false)}
+        />
+      )}
+
+      {graph && showMerge && (
+        <MergeDoctor
+          repoPath={graph.repoPath}
+          graph={graph}
+          currentBranch={currentBranch}
+          onGraphChange={applyGraph}
+          onClose={() => setShowMerge(false)}
         />
       )}
 

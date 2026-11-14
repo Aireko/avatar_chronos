@@ -28,7 +28,7 @@ export const short = (label: string) => (label.split(/[.:#/]/).pop() ?? label).r
 const MAX = 6;
 
 /** Maps the functions changed in HEAD to their callers and callees. */
-export async function analyze(repo: string, graph: ChronosGraph): Promise<Blast> {
+export async function analyze(repo: string, graph: ChronosGraph, knownDiff?: string): Promise<Blast> {
   const head = graph.commits.find((c) => c.hash === graph.head);
   const targets = (head?.filesChanged ?? []).flatMap((f) =>
     f.symbolsTouched
@@ -36,7 +36,7 @@ export async function analyze(repo: string, graph: ChronosGraph): Promise<Blast>
       .map((s) => ({ path: f.path, qualifiedName: s.name })),
   ).slice(0, 8);
 
-  const diff = await headDiff(repo).catch(() => "");
+  const diff = knownDiff ?? (await headDiff(repo).catch(() => ""));
   const changed: BNode[] = targets.map((t) => ({
     id: `t:${t.path}:${t.qualifiedName}`,
     label: t.qualifiedName,

@@ -4,10 +4,14 @@ import {
   COL_W,
   CULL_BLOCK,
   DRAW_TAIL_MS,
+  LINES,
+  NO_DRAW,
   LEGEND_ALL,
   PAD_L,
   RowPacker,
   cameraAt,
+  carryIds,
+  entrances,
   cullLayout,
   drawDelayAt,
   fitText,
@@ -26,7 +30,14 @@ import {
   scrollForWindow,
   visibleWindow,
   wheelZoomFactor,
+  withPinned,
 } from "./layout";
+// The tests run in node; the project has no @types/node (as in vite.config.ts). Vitest leaves
+// CSS out of `?raw` imports, so the theme colours are read from the file itself.
+// @ts-expect-error type error without @types/node package
+import { readFileSync } from "node:fs";
+
+const graphCss: string = readFileSync(new URL("./graph.css", import.meta.url), "utf8");
 
 describe("drawInWindow", () => {
   it("staggers only the columns around the focus that fit on screen", () => {
@@ -346,6 +357,7 @@ describe("legendRows", () => {
     index,
     name: `l${index}`,
     color: "c",
+    text: "t",
     on: "o",
     isHead: false,
     named,
@@ -368,4 +380,203 @@ describe("legendRows", () => {
     expect(more.hidden).toBe(4956);
     expect(legendRows(lanes, 1e9).hidden).toBe(0);
   });
+});
+
+/* ---------- lettering in the lane pens ---------- */
+type Rgb = [number, number, number];
+const toRgb = (hex: string): Rgb => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as Rgb;
+const luminance = ([r, g, b]: Rgb) => {
+  const lin = (c: number) => ((c /= 255) <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+};
+const contrast = (a: Rgb, b: Rgb) => {
+  const [x, y] = [luminance(a), luminance(b)].sort((p, q) => q - p);
+  return (x + 0.05) / (y + 0.05);
+};
+/** color-mix(in srgb, a p, b) */
+const mix = (a: Rgb, b: Rgb, p: number): Rgb => a.map((v, i) => v * p + b[i] * (1 - p)) as Rgb;
+
+/** One theme's custom properties from graph.css, with var() references resolved. */
+function themeVars(theme: string): (name: string) => Rgb {
+  // The block that defines the colours (not the one-line color-scheme rule above it).
+  const start = graphCss.search(new RegExp(`\\.app\\[data-theme="${theme}"\\] \\{\\s*--paper:`));
+  expect(start).toBeGreaterThan(-1);
+  const block = graphCss.slice(start, graphCss.indexOf("}", start));
+  const raw = new Map([...block.matchAll(/(--[\w-]+):\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]));
+  const get = (name: string): Rgb => {
+    const value = raw.get(name);
+    if (value === undefined) throw new Error(`${theme} has no ${name}`);
+    const ref = /^var\((--[\w-]+)\)$/.exec(value);
+    return ref ? get(ref[1]) : toRgb(value);
+  };
+  return get;
+}
+
+describe("lane lettering", () => {
+  for (const theme of ["paper", "board"]) {
+    it(`clears WCAG AA on --paper and --wash in the ${theme} theme`, () => {
+      const v = themeVars(theme);
+      for (let i = 0; i < LINES.length; i++) {
+        for (const ground of ["--paper", "--wash"]) {
+          expect(contrast(v(`--pen-${i}-text`), v(ground)), `--pen-${i}-text on ${ground}`).toBeGreaterThanOrEqual(4.5);
+          // The fallback when only --line is set (.ticket-line, .lane-text): 66% pen, 34% ink.
+          const fallback = mix(v(`--pen-${i}`), v("--ink"), 0.66);
+          expect(contrast(fallback, v(ground)), `pen ${i} mixed with ink on ${ground}`).toBeGreaterThanOrEqual(4.5);
+        }
+      }
+    });
+  }
+
+  it("letters each line in its own pen's text shade", () => {
+    LINES.forEach((style, i) => {
+      expect(style.color).toBe(`var(--pen-${i})`);
+      expect(style.text).toBe(`var(--pen-${i}-text)`);
+    });
+  });
+});
+
+/* ---------- drawing pinned commits and their entrances ---------- */
+describe("withPinned", () => {
+  const col = (c: number) => ({ col: c });
+  const run = [10, 11, 12, 13].map(col);
+  const range = { from: 10, to: 13 };
+
+  it("draws the run alone when nothing is pinned outside it", () => {
+    const out = withPinned(run, range, [run[1], undefined]);
+    expect(out.nodes).toBe(run);
+    expect(out.outside).toEqual([]);
+  });
+
+  it("keeps column order with pinned commits on either side, each once", () => {
+    const before = col(3);
+    const after = col(40);
+    const out = withPinned(run, range, [after, before, after]);
+    expect(out.nodes.map((n) => n.col)).toEqual([3, 10, 11, 12, 13, 40]);
+    expect(out.outside).toEqual([before, after]);
+  });
+});
+
+describe("entrances", () => {
+  it("keeps an element's entrance for as long as it stays drawn", () => {
+    const born = new Map([["n:a", 1000]]);
+    const first = entrances(new Map(), born, 1000);
+    expect(first("n:a", 320)).toEqual({ cls: " draw", delay: "320ms" });
+    expect(first("n:b")).toBe(NO_DRAW);
+    // A later render, mid draw-in, without n:b: the same entry for n:a, so its animation is untouched.
+    const again = entrances(first.kept, born, 1300);
+    expect(again("n:a", 320)).toBe(first.kept.get("n:a"));
+    expect([...again.kept.keys()]).toEqual(["n:a"]);
+  });
+
+  it("joins a draw-in under way for an element drawn for the first time mid-intro", () => {
+    const take = entrances(new Map(), new Map([["e:x", 1000]]), 1200);
+    expect(take("e:x")).toEqual({ cls: " draw", delay: "-200ms" });
+  });
+
+  it("keeps a commit pinned outside the range booked, so entering the range does not replay it", () => {
+    const born = new Map([["n:far", 1000]]);
+    const pinned = entrances(new Map(), born, 1000);
+    const at = pinned("n:far", 320);
+    // Panned into the range 100ms later: still the same entry, not a fresh one.
+    const later = entrances(pinned.kept, born, 1100);
+    expect(later("n:far", 320)).toBe(at);
+  });
+});
+
+/* ---------- regression pass: the map on a big history ---------- */
+describe("the map on a 12k-commit history", () => {
+  const { commits, branches, head } = prHistory(3000, 3); // 12,001 commits
+  const layout = layoutGraph(commits, branches, head);
+  const lastCol = layout.nodes.length - 1;
+  const pad = 280;
+
+  // One expect per check rather than one per element: tens of thousands of expect calls are
+  // slow enough to time out when the suite shares a busy machine.
+  const SLOW = 30_000;
+
+  it("gives every line, hop and commit a real lane, so pointing at the legend dims the rest", () => {
+    const lanes = layout.lanes.length;
+    const real = (lane: number) => lane >= 0 && lane < lanes;
+    expect(layout.nodes.filter((n) => !real(n.lane)).map((n) => n.id)).toEqual([]);
+    // Each line is drawn in the pen of the lane it is tagged with, so it dims with that lane.
+    const offEdges = layout.edges.filter((e) => !real(e.lane) || e.color !== layout.lanes[e.lane].color);
+    expect(offEdges.map((e) => e.key)).toEqual([]);
+    const offBridges = layout.bridges.filter((b) => !real(b.lane) || b.color !== layout.lanes[b.lane].color);
+    expect(offBridges.map((b) => b.key)).toEqual([]);
+  }, SLOW);
+
+  it("letters every flag and lane in the text shade of the pen it is drawn with", () => {
+    const textOf = (color: string) => color.replace(/\)$/, "-text)");
+    expect(layout.lanes.filter((lane) => lane.text !== textOf(lane.color)).map((l) => l.name)).toEqual([]);
+    const flags = layout.nodes.flatMap((n) => n.flags);
+    expect(flags.filter((f) => f.text !== textOf(f.color)).map((f) => f.name)).toEqual([]);
+    expect(flags.length).toBeGreaterThan(3000);
+  }, SLOW);
+
+  it("folds the legend to the branches that still exist", () => {
+    const { rows, hidden } = legendRows(layout.lanes, 0);
+    expect(rows.map((l) => l.name).sort()).toEqual(["main", "release"]);
+    expect(hidden).toBe(layout.lanes.length - 2);
+    // The tips the legend flies to are all on the map.
+    for (const lane of rows) expect(layout.byHash.has(lane.tip)).toBe(true);
+  });
+
+  it("fits as far out as the map goes, staying near where the view is", () => {
+    const z = fitZoom(layout.width, layout.height, 1600, 900, 24, 0.45, 1);
+    expect(z).toBe(0.45);
+    const here = pad + layout.nodes[6000].x;
+    expect(fitAxis(pad, pad + layout.width, 1600, 24, z, here)).toBe(here);
+    // Near the start it stops at the edge rather than showing empty sheet.
+    expect(fitAxis(pad, pad + layout.width, 1600, 24, z, 0)).toBeCloseTo(pad + (800 - 24) / z);
+  });
+
+  it("finds head for the go-to-head key and draws it in the range opened around it", () => {
+    const home = layout.byHash.get(head)!;
+    expect(home.col).toBe(lastCol);
+    const left = Math.max(0, home.x + pad - 1600 / 2);
+    const range = visibleColumns(left, 1600, 1, pad, lastCol);
+    expect(range.from).toBeLessThanOrEqual(home.col);
+    expect(range.to).toBe(lastCol);
+    const win = drawInWindow(home.col, lastCol, 1600, 1);
+    expect(win.to).toBe(lastCol);
+    // Only a screenful staggers in, and all of it lies inside what is drawn.
+    expect(win.to - win.from).toBeLessThanOrEqual(12);
+    expect(win.from).toBeGreaterThanOrEqual(range.from);
+  });
+
+  it("has no broken numbers in any path", () => {
+    const broken = /NaN|Infinity|undefined/;
+    expect(layout.edges.filter((e) => broken.test(e.d)).map((e) => e.key)).toEqual([]);
+    const bad = layout.nodes
+      .slice(-200)
+      .filter((n) => /NaN/.test(n.shape) || !Number.isFinite(n.x) || !Number.isFinite(n.y));
+    expect(bad.map((n) => n.id)).toEqual([]);
+    expect(scribbleLoop(30, layout.nodes[lastCol].id)).not.toMatch(/NaN/);
+  }, SLOW);
+
+  it("keeps the identities of replayed commits after a rebase, so they glide", () => {
+    // Rebase the last pull request onto main before its merge, dropping the merge commit.
+    const last = 2999;
+    const replayed: Commit[] = [];
+    let parent = `m${last - 1}`;
+    for (let k = 0; k < 3; k++) {
+      const old = commits.find((c) => c.hash === `pr${last}-${k}`)!;
+      const c = { ...old, hash: `${old.hash}'`, parents: [parent] };
+      replayed.unshift(c);
+      parent = c.hash;
+    }
+    const kept = commits.filter((c) => c.hash !== `m${last}` && !c.hash.startsWith(`pr${last}-`));
+    const next = [...replayed, ...kept];
+    const ids = carryIds(commits, new Map(), next);
+    for (let k = 0; k < 3; k++) expect(ids.get(`pr${last}-${k}'`)).toBe(`pr${last}-${k}`);
+    const moved = layoutGraph(next, [{ name: "main", commitHash: parent, isHead: true }, branches[1]], parent, ids);
+    // The same keys before and after: the circles and the line between them glide, not redraw.
+    const key = `pr${last}-0>pr${last}-1`;
+    expect(layout.edges.some((e) => e.key === key)).toBe(true);
+    expect(moved.edges.some((e) => e.key === key)).toBe(true);
+    expect(moved.nodes[moved.nodes.length - 1].id).toBe(`pr${last}-2`);
+    // Everything older stays where it was.
+    expect(moved.nodes[100].id).toBe(layout.nodes[100].id);
+    expect(moved.nodes[100].x).toBe(layout.nodes[100].x);
+  }, SLOW);
 });

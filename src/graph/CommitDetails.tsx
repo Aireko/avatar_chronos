@@ -14,6 +14,7 @@ import {
 import { functionDiffText } from "./functionDiff";
 import { scopeNoun, scopeTarget, type Scope } from "./scope";
 import { formatAge, truncate, type GraphLayout, type Lane } from "./layout";
+import { OpenFileIcon } from "../tools/icons";
 import "./details.css";
 
 interface Props {
@@ -29,6 +30,8 @@ interface Props {
   currentBranch: string | null;
   /** A rebase is paused on a conflict (App shows the way out in a note). */
   rebasePaused?: boolean;
+  /** A merge is paused on a conflict; git won't rebase until it is finished or aborted. */
+  mergePaused?: boolean;
   /** Take keyboard focus when the ticket opens (not when arrow keys walk the map). */
   autoFocus?: boolean;
   onGraphChange: (graph: ChronosGraph) => void;
@@ -70,6 +73,7 @@ export function CommitDetails({
   removed,
   currentBranch,
   rebasePaused = false,
+  mergePaused = false,
   autoFocus = false,
   onGraphChange,
   onSelect,
@@ -116,7 +120,7 @@ export function CommitDetails({
   const noun = scopeNoun(scope);
   const target = scoped ? scopeTarget(scope) : branchLabel;
   const pathThen = pathAtCommit ?? (scope.kind === "project" ? "" : scope.path);
-  const canRebase = scoped ? !isHead && !removed : !!currentBranch && !isHead;
+  const canRebase = !mergePaused && (scoped ? !isHead && !removed : !!currentBranch && !isHead);
   const otherBranches = graph.branches.filter((b) => b.commitHash === commit.hash && b.name !== lane.name);
   const tags = commit.refs.filter((r) => r.startsWith("tag: ")).map((r) => r.slice(5));
   const children = layout.childrenOf.get(commit.hash) ?? [];
@@ -234,7 +238,9 @@ export function CommitDetails({
     ? scoped
       ? "This is already the latest version"
       : `${branchLabel} is already here`
-    : scoped
+    : mergePaused
+      ? "Finish or abort the paused merge first"
+      : scoped
       ? removed
         ? "It was deleted here"
         : `Put ${target} back to this commit`
@@ -475,8 +481,8 @@ export function CommitDetails({
                         onClick={() => onOpenFile(f.path)}
                       >
                         {row}
-                        <span className="file-open" aria-hidden="true">
-                          ↗
+                        <span className="file-open has-icon" aria-hidden="true">
+                          <OpenFileIcon />
                         </span>
                         <span className="details-sr-only">, open in the editor</span>
                       </button>

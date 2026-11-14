@@ -7,12 +7,25 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type FocusEvent as ReactFocusEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { clamp, prefersReducedMotion, trackDrag } from "./drag";
-import { laneSpans, scrollForWindow, visibleWindow, type GraphLayout } from "./layout";
+import {
+  cullLayout,
+  laneSpans,
+  sameRange,
+  scrollForWindow,
+  visibleColumns,
+  visibleWindow,
+  withPinned,
+  type ColumnRange,
+  type GraphLayout,
+  type GraphNode,
+} from "./layout";
+import "./details.css";
 
 interface Props {
   layout: GraphLayout;
@@ -77,6 +90,43 @@ export function nudgeMapBox(
   return fitMapBox(next, room, shift ? undefined : shownH);
 }
 
+/** The columns worth drawing when the map is scrolled `left` px across a `viewW`-px view. */
+export function miniColumns(left: number, viewW: number, lastCol: number): ColumnRange {
+  return visibleColumns(left, viewW, SCALE, 0, lastCol);
+}
+
+type NavNode = Pick<GraphNode, "col" | "x" | "y">;
+
+/**
+ * Where a key on a commit in the map moves the keyboard: Left and Right one column older
+ * or newer, Up and Down to the nearest commit drawn above or below, Home and End to the
+ * oldest and newest. `nodes` are in column order. Null for other keys and past either end.
+ */
+export function stepMapFocus<N extends NavNode>(nodes: readonly N[], from: N, key: string): N | null {
+  const at = nodes[from.col] === from ? from.col : nodes.indexOf(from);
+  if (at === -1) return null;
+  const pick = (i: number) => (i >= 0 && i < nodes.length && i !== at ? nodes[i] : null);
+  if (key === "ArrowLeft") return pick(at - 1);
+  if (key === "ArrowRight") return pick(at + 1);
+  if (key === "Home") return pick(0);
+  if (key === "End") return pick(nodes.length - 1);
+  if (key !== "ArrowUp" && key !== "ArrowDown") return null;
+  const up = key === "ArrowUp";
+  let best: N | null = null;
+  let bestD = Infinity;
+  for (const n of nodes) {
+    const dy = n.y - from.y;
+    if (up ? dy >= 0 : dy <= 0) continue;
+    // Nearest on the page; a tie goes to the closer row.
+    const d = (n.x - from.x) ** 2 + dy ** 2;
+    if (d < bestD || (d === bestD && best && Math.abs(dy) < Math.abs(best.y - from.y))) {
+      best = n;
+      bestD = d;
+    }
+  }
+  return best;
+}
+
 /** Large pannable commit map for the code editor — does not shrink to fit. */
 export const MiniMap = memo(function MiniMap({ layout, selected, head, onSelect }: Props) {
   const root = useRef<HTMLDivElement>(null);
@@ -86,7 +136,10 @@ export const MiniMap = memo(function MiniMap({ layout, selected, head, onSelect 
   const moved = useRef(false);
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
   const keysHint = useId();
+  const navHint = useId();
 
   /* ---------- keeping the chosen commit in view ---------- */
   const glide = useRef(0);
@@ -124,7 +177,8 @@ export const MiniMap = memo(function MiniMap({ layout, selected, head, onSelect 
   // so panning around is not undone by an unrelated graph refresh.
   useEffect(() => {
     const el = view.current;
-    if (!el || !targetNode) return;
+    if (!el) return;
+    if (!targetNode) return syncRange();
     const x = targetNode.x * SCALE;
     const y = targetNode.y * SCALE;
     const left = x - el.clientWidth / 2;
@@ -133,18 +187,107 @@ export const MiniMap = memo(function MiniMap({ layout, selected, head, onSelect 
       placed.current = true;
       stopGlide();
       el.scrollTo({ left, top, behavior: "auto" });
+      // Drawn for where the view now is, even when that scroll fired no event (it was there).
+      syncRange();
       return;
     }
+    if (!inView(el, x, y)) glideTo(el, left, top);
+  }, [target, targetNode?.x, targetNode?.y, folded]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Whether a point on the drawing (in map pixels) is comfortably inside the view. */
+  function inView(el: HTMLElement, x: number, y: number) {
     const margin = 24;
-    const inView =
+    return (
       x >= el.scrollLeft + margin &&
       x <= el.scrollLeft + el.clientWidth - margin &&
       y >= el.scrollTop + margin &&
-      y <= el.scrollTop + el.clientHeight - margin;
-    if (!inView) glideTo(el, left, top);
-  }, [target, targetNode?.x, targetNode?.y, folded]); // eslint-disable-line react-hooks/exhaustive-deps
+      y <= el.scrollTop + el.clientHeight - margin
+    );
+  }
+
+  /** Brings a commit the keyboard moved to into view, centred, if it is not already. */
+  function reveal(node: GraphNode) {
+    const el = view.current;
+    if (!el) return;
+    const x = node.x * SCALE;
+    const y = node.y * SCALE;
+    if (inView(el, x, y)) return;
+    const left = x - el.clientWidth / 2;
+    const top = y - el.clientHeight / 2;
+    if (prefersReducedMotion()) {
+      stopGlide();
+      el.scrollTo({ left, top, behavior: "auto" });
+    } else glideTo(el, left, top);
+  }
 
   useEffect(() => stopGlide, []);
+
+  /* ---------- drawing only what is in view ----------
+     Only the columns in view (plus a block either side) are drawn, as on the big map, so a
+     history of tens of thousands of commits costs about one screenful. The range moves a
+     block at a time, so panning re-renders only every few hundred pixels. */
+  const lastCol = layout.nodes.length - 1;
+  const [range, setRange] = useState<ColumnRange>(() =>
+    miniColumns(targetNode ? Math.max(0, targetNode.x * SCALE - box.w / 2) : 0, box.w, lastCol),
+  );
+  const rangeRef = useRef(range);
+  rangeRef.current = range;
+
+  /** Re-reads which columns are in view; renders only when that moves to another block. */
+  function syncRange() {
+    const el = view.current;
+    if (!el) return;
+    const next = miniColumns(el.scrollLeft, el.clientWidth, layoutRef.current.nodes.length - 1);
+    if (!sameRange(next, rangeRef.current)) {
+      rangeRef.current = next;
+      setRange(next);
+    }
+  }
+
+  // A new graph or a resize; until the view is placed (just opened or unfolded), the range
+  // was worked out for where it will be placed instead.
+  // With no commit to place the view at, it is never "placed", so it syncs straight away.
+  useLayoutEffect(() => {
+    if (placed.current || !targetNode) syncRange();
+  }, [layout, box.w, folded]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const shown = useMemo(
+    () => cullLayout({ nodes: layout.nodes, edges: layout.edges, bridges: [] }, range),
+    [layout, range],
+  );
+
+  /* ---------- one Tab stop (a roving tabindex) ----------
+     The map is one stop: the commit the arrow keys last moved to, else the chosen one, else
+     head (when drawn), else the middle of what is drawn. The arrows move the keyboard, not
+     the choice (picking compares or reloads in the editor); Enter or Space picks. */
+  const selectedNode = selected ? layout.byHash.get(selected) : undefined;
+  const headNode = head ? layout.byHash.get(head) : undefined;
+  const [rover, setRover] = useState<string | null>(null);
+  // A new choice takes the stop back.
+  const [roverFor, setRoverFor] = useState(selected);
+  if (roverFor !== selected) {
+    setRoverFor(selected);
+    setRover(null);
+  }
+  const roverNode = rover ? layout.byHash.get(rover) : undefined;
+  const tabNode =
+    roverNode ??
+    selectedNode ??
+    (headNode && headNode.col >= range.from && headNode.col <= range.to ? headNode : undefined) ??
+    shown.nodes[Math.floor(shown.nodes.length / 2)];
+  const tabHash = tabNode?.commit.hash;
+  // The commit to give focus to once it is drawn (set by the arrow keys).
+  const focusTo = useRef<string | null>(null);
+
+  useEffect(() => {
+    const hash = focusTo.current;
+    if (!hash) return;
+    focusTo.current = null;
+    const el = view.current?.querySelector<SVGGElement>(`.mini-node[data-hash="${hash}"]`);
+    if (el && el !== document.activeElement) el.focus({ preventScroll: true });
+    const node = layoutRef.current.byHash.get(hash);
+    if (node) reveal(node);
+  });
 
   /* ---------- the whole-history strip ----------
      Each branch row squeezed to one stroke, with a window showing the part the map
@@ -154,8 +297,6 @@ export const MiniMap = memo(function MiniMap({ layout, selected, head, onSelect 
   const windowEl = useRef<HTMLDivElement>(null);
   const spans = useMemo(() => laneSpans(layout.nodes), [layout]);
   const overflows = layout.width * SCALE > box.w - 8 || layout.height * SCALE > box.h - 80;
-  const selectedNode = selected ? layout.byHash.get(selected) : undefined;
-  const headNode = head ? layout.byHash.get(head) : undefined;
 
   /** Moves the window to match the map's scroll position. Straight to the DOM: scrolling never re-renders. */
   function syncWindow() {
@@ -201,6 +342,7 @@ export const MiniMap = memo(function MiniMap({ layout, selected, head, onSelect 
         if (!did) return;
         bar.classList.add("dragging");
         go(fx + dx / tb.width, fy + dy / tb.height, "auto");
+        syncRange();
       },
       onUp: () => bar.classList.remove("dragging"),
     });
@@ -261,6 +403,7 @@ export const MiniMap = memo(function MiniMap({ layout, selected, head, onSelect 
         el.style.width = `${last.w}px`;
         if (!folded) el.style.height = `${last.h}px`;
         syncWindow();
+        syncRange();
       },
       onUp: () => setBox(last),
     });
@@ -286,19 +429,42 @@ export const MiniMap = memo(function MiniMap({ layout, selected, head, onSelect 
     const hash = nodeHash(e);
     if (!hash) return;
     e.stopPropagation();
-    if (!moved.current) onSelectRef.current(hash);
-  }
-
-  function onDrawingKey(e: ReactKeyboardEvent<SVGSVGElement>) {
-    if (e.key !== "Enter" && e.key !== " ") return;
-    const hash = nodeHash(e);
-    if (!hash) return;
-    e.preventDefault();
+    if (moved.current) return;
+    setRover(hash);
     onSelectRef.current(hash);
   }
 
-  // Tens of thousands of elements, built only when the graph or the selection changes,
-  // so moving or resizing the map, or typing in the editor, never touches them.
+  // A commit Tabbed to becomes the Tab stop, so it stays drawn (and focused) when the map
+  // is panned away from it, instead of being culled out from under the keyboard.
+  function onDrawingFocus(e: ReactFocusEvent<SVGSVGElement>) {
+    const hash = nodeHash(e);
+    if (hash) setRover((prev) => (prev === hash ? prev : hash));
+  }
+
+  function onDrawingKey(e: ReactKeyboardEvent<SVGSVGElement>) {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    const hash = nodeHash(e);
+    if (!hash) return;
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      setRover(hash);
+      onSelectRef.current(hash);
+      return;
+    }
+    const nav = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"];
+    if (!nav.includes(e.key)) return;
+    // Handled even at either end, so the keys never scroll the view instead.
+    e.preventDefault();
+    const { nodes, byHash } = layoutRef.current;
+    const from = byHash.get(hash);
+    const next = from && stepMapFocus(nodes, from, e.key);
+    if (!next) return;
+    focusTo.current = next.commit.hash;
+    setRover(next.commit.hash);
+  }
+
+  // Built only when the graph, the drawn columns, the selection or the Tab stop change,
+  // so moving or resizing the map, or typing in the editor, never touches it.
   const drawing = useMemo(
     () => (
       <svg
@@ -306,35 +472,42 @@ export const MiniMap = memo(function MiniMap({ layout, selected, head, onSelect 
         width={layout.width * SCALE}
         height={layout.height * SCALE}
         viewBox={`0 0 ${layout.width} ${layout.height}`}
+        role="group"
+        aria-label="Commits"
+        aria-describedby={navHint}
         onClick={onDrawingClick}
         onKeyDown={onDrawingKey}
+        onFocus={onDrawingFocus}
       >
-        {layout.edges.map((edge) => (
+        {shown.edges.map((edge) => (
           <path key={edge.key} d={edge.d} className={edge.ghost ? "mini-ghost" : "mini-tube"} stroke={edge.color} />
         ))}
-        {layout.nodes.map((node) => (
-          <g
-            key={node.id}
-            data-hash={node.commit.hash}
-            className={`mini-node${node.commit.hash === selected ? " selected" : ""}${
-              node.commit.hash === head ? " head" : ""
-            }`}
-            style={{ transform: `translate(${node.x}px, ${node.y}px)`, "--line": node.color } as CSSProperties}
-            role="button"
-            tabIndex={0}
-            aria-label={node.commit.message}
-          >
-            <circle className="mini-hit" r={28} />
-            <circle className="mini-halo" r={27} />
-            {node.commit.hash === head && <circle className="mini-head" r={22} />}
-            <circle className="mini-ball" r={14} />
-          </g>
-        ))}
+        {/* The chosen commit and the Tab stop stay drawn when out of view, so focus never drops. */}
+        {withPinned(shown.nodes, range, [selectedNode, tabNode]).nodes.map((node) => {
+          const hash = node.commit.hash;
+          return (
+            <g
+              key={node.id}
+              data-hash={hash}
+              className={`mini-node${hash === selected ? " selected" : ""}${hash === head ? " head" : ""}`}
+              style={{ transform: `translate(${node.x}px, ${node.y}px)`, "--line": node.color } as CSSProperties}
+              role="button"
+              tabIndex={hash === tabHash ? 0 : -1}
+              aria-pressed={hash === selected}
+              aria-label={`${node.commit.message} (${node.commit.shortHash}${hash === head ? ", head" : ""})`}
+            >
+              <circle className="mini-hit" r={28} />
+              <circle className="mini-halo" r={27} />
+              {hash === head && <circle className="mini-head" r={22} />}
+              <circle className="mini-ball" r={14} />
+            </g>
+          );
+        })}
       </svg>
     ),
     // The handlers only read refs, so they need not rebuild the drawing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [layout, selected, head],
+    [layout, shown, range, selectedNode, tabNode, selected, head],
   );
 
   return (
@@ -345,6 +518,9 @@ export const MiniMap = memo(function MiniMap({ layout, selected, head, onSelect 
       aria-label="Commit map"
       style={{ width: box.w, height: folded ? undefined : box.h, right: box.right, bottom: box.bottom }}
     >
+      <span id={navHint} className="details-sr-only">
+        Arrow keys move between commits, Home and End go to either end, Enter picks one.
+      </span>
       {!folded && (
         <div
           className="mini-map-resize"
@@ -399,7 +575,10 @@ export const MiniMap = memo(function MiniMap({ layout, selected, head, onSelect 
         <div
           ref={view}
           className="mini-map-view"
-          onScroll={syncWindow}
+          onScroll={() => {
+            syncWindow();
+            syncRange();
+          }}
           onWheel={stopGlide}
           onPointerDown={(e) => {
             stopGlide();

@@ -140,17 +140,21 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
     const down = (e: MouseEvent) => {
       if (root.current && !root.current.contains(e.target as Node)) setPicking(null);
     };
+    // Escape closes the picker and nothing else: it is the top layer (z-index 60), so the key
+    // is caught on the way down and kept from App's handler, which would otherwise also close
+    // the commit panel or a tool, or drop the chosen commit, in the same press.
     const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && !e.isComposing) {
+        e.stopPropagation();
         returnFocus();
         setPicking(null);
       }
     };
     window.addEventListener("mousedown", down);
-    window.addEventListener("keydown", key);
+    window.addEventListener("keydown", key, true);
     return () => {
       window.removeEventListener("mousedown", down);
-      window.removeEventListener("keydown", key);
+      window.removeEventListener("keydown", key, true);
     };
   }, [picking]);
 
@@ -235,7 +239,16 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
   const functionMatches = functions.filter((f) => f.name.toLowerCase().includes(q));
 
   return (
-    <div className="scope" ref={root}>
+    <div
+      className="scope"
+      ref={root}
+      onBlur={(e) => {
+        // Tabbing out of the picker closes it, as clicking elsewhere does. (Focus that simply
+        // vanishes, such as a list redrawn between steps, has no relatedTarget.)
+        const to = e.relatedTarget;
+        if (picking && to instanceof Node && !e.currentTarget.contains(to)) setPicking(null);
+      }}
+    >
       <div ref={tabs} className={`scope-tabs${graph ? "" : " is-off"}`} role="group" aria-label="History view">
         <button
           className={`scope-tab${active === "project" ? " on" : ""}`}
@@ -251,6 +264,7 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
         <button
           className={`scope-tab${active === "file" ? " on" : ""}`}
           aria-pressed={active === "file"}
+          aria-expanded={picking?.kind === "file"}
           disabled={!graph}
           onClick={() => open({ kind: "file" })}
         >
@@ -259,6 +273,7 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
         <button
           className={`scope-tab${active === "function" ? " on" : ""}`}
           aria-pressed={active === "function"}
+          aria-expanded={picking?.kind === "function"}
           disabled={!graph}
           onClick={() => open({ kind: "function", path: null })}
         >

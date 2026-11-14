@@ -21,12 +21,16 @@ const FLAG_FONT = '400 19px "Patrick Hand", "Comic Sans MS", cursive';
 
 /* ---------- pen colours: defined per theme in graph.css ---------- */
 export interface LineStyle {
+  /** The pen the line, its rings and its swatch are drawn with. */
   color: string;
+  /** The same pen for lettering (a branch's name): a shade deeper where the pen is too faint as text. */
+  text: string;
   on: string;
 }
 
 export const LINES: LineStyle[] = Array.from({ length: 8 }, (_, i) => ({
   color: `var(--pen-${i})`,
+  text: `var(--pen-${i}-text)`,
   on: "var(--paper)",
 }));
 export const lineStyle = (index: number) => LINES[index % LINES.length];
@@ -36,6 +40,8 @@ export interface Lane {
   index: number;
   name: string;
   color: string;
+  /** The lane's pen for lettering (its name in the ticket band), e.g. as --line-text. */
+  text: string;
   on: string;
   isHead: boolean;
   /** A line a branch still points at (or head). Lines inferred from merged, deleted branches are not. */
@@ -50,7 +56,8 @@ export interface Flag {
   name: string;
   w: number;
   dy: number;
-  color: string;
+  color: string; // the pen for its underline
+  text: string; // the pen for its lettering
   isCurrent: boolean; // the checked-out branch
 }
 
@@ -654,14 +661,14 @@ export function layoutGraph(
   const edges = [...ghosts, ...crossing, ...along];
 
   /* 7. Names: above a line's first commit, and above the commit each branch points at. */
-  const pending = new Map<string, { name: string; color: string; isCurrent: boolean }[]>();
-  const addFlag = (hash: string, name: string, color: string, isCurrent: boolean) => {
+  const pending = new Map<string, { name: string; style: LineStyle; isCurrent: boolean }[]>();
+  const addFlag = (hash: string, name: string, style: LineStyle, isCurrent: boolean) => {
     const list = pending.get(hash) ?? [];
     const existing = list.find((f) => f.name === name);
     if (existing) {
       existing.isCurrent = existing.isCurrent || isCurrent;
     } else {
-      list.push({ name, color, isCurrent });
+      list.push({ name, style, isCurrent });
     }
     pending.set(hash, list);
   };
@@ -671,10 +678,10 @@ export function layoutGraph(
     const node = byHash.get(b.commitHash);
     if (!node) continue;
     const own = chainNamed.get(b.name);
-    addFlag(b.commitHash, b.name, lineStyle(own ? own.index : node.lane).color, b.isHead);
+    addFlag(b.commitHash, b.name, lineStyle(own ? own.index : node.lane), b.isHead);
   }
   for (const chain of chains) {
-    addFlag(chain.hashes[chain.hashes.length - 1], chain.name, lineStyle(chain.index).color, false);
+    addFlag(chain.hashes[chain.hashes.length - 1], chain.name, lineStyle(chain.index), false);
   }
   for (const node of nodes) {
     const isHeadNode = node.commit.hash === head;
@@ -685,7 +692,8 @@ export function layoutGraph(
         name,
         w: textWidth(name, FLAG_FONT),
         dy: -(STATION_R + 16) - lift - k * 25,
-        color: f.color,
+        color: f.style.color,
+        text: f.style.text,
         isCurrent: f.isCurrent,
       };
     });
@@ -697,6 +705,7 @@ export function layoutGraph(
       index: chain.index,
       name: chain.name,
       color: style.color,
+      text: style.text,
       on: style.on,
       isHead: chain.isHead,
       named: chain.index < branchChains || chain.isHead || chain.hashes[0] === head,
@@ -763,6 +772,37 @@ export function drawDelayAt(start: number | undefined, now: number, lag = 0): nu
   return delay < -DRAW_TAIL_MS ? null : delay;
 }
 
+/** How a drawn element enters: with the .draw class after `delay`, or not at all. */
+export interface DrawAttr {
+  cls: string;
+  delay?: string;
+}
+export const NO_DRAW: DrawAttr = { cls: "" };
+
+/**
+ * Books how each element drawn this time enters. Call the result with each drawn key (and its
+ * lag); `kept` then holds those keys only. A key booked last time keeps its entry unchanged, so
+ * a running animation's delay never changes under it; a new key gets its delay from `born`
+ * (see drawDelayAt), or no draw-in at all.
+ */
+export function entrances(
+  old: Map<string, DrawAttr>,
+  born: Map<string, number> | undefined,
+  now: number = performance.now(),
+): ((key: string, lag?: number) => DrawAttr) & { kept: Map<string, DrawAttr> } {
+  const kept = new Map<string, DrawAttr>();
+  const take = (key: string, lag = 0): DrawAttr => {
+    let at = kept.get(key) ?? old.get(key);
+    if (!at) {
+      const delay = drawDelayAt(born?.get(key), now, lag);
+      at = delay === null ? NO_DRAW : { cls: " draw", delay: `${delay}ms` };
+    }
+    kept.set(key, at);
+    return at;
+  };
+  return Object.assign(take, { kept });
+}
+
 /* ---------- branch legend ---------- */
 /** Up to this many lines, the legend lists them all; past it, merged lines fold away. */
 export const LEGEND_ALL = 12;
@@ -826,6 +866,28 @@ export function cullLayout(
   const edges = layout.edges.filter((e) => e.to >= range.from && e.from <= range.to);
   const bridges = layout.bridges.filter((b) => b.col + 1 >= range.from && b.col <= range.to);
   return { nodes, edges, bridges };
+}
+
+/**
+ * The commits to draw: the culled run `inRange` (the nodes of `range`, in column order) plus
+ * any `pinned` commits outside it (the chosen one, the one holding keyboard focus), each once,
+ * placed in column order either side of the run. Keeping the order means React never has to
+ * move a focused element in the DOM (which would blur it) as it scrolls into or out of range.
+ */
+export function withPinned<N extends { col: number }>(
+  inRange: N[],
+  range: ColumnRange,
+  pinned: (N | undefined)[],
+): { nodes: N[]; outside: N[] } {
+  const outside = pinned.filter(
+    (n, i, all): n is N => !!n && all.indexOf(n) === i && (n.col < range.from || n.col > range.to),
+  );
+  if (outside.length === 0) return { nodes: inRange, outside };
+  outside.sort((a, b) => a.col - b.col);
+  return {
+    nodes: [...outside.filter((n) => n.col < range.from), ...inRange, ...outside.filter((n) => n.col > range.to)],
+    outside,
+  };
 }
 
 /* ---------- landing mark ---------- */

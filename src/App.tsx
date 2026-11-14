@@ -6,6 +6,7 @@ import "@fontsource/patrick-hand/400.css";
 import "./graph/graph.css";
 import "./tools/tools.css";
 import { isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import AiPanel from "./ai/AiPanel";
@@ -44,6 +45,7 @@ import {
 import { Presence } from "./tools/Presence";
 import { ToolDrawer, type ToolId } from "./tools/ToolDrawer";
 import { historyChanged, isToolSwap } from "./tools/appLogic";
+import { busyFinishedNote, headText, pauseCopy, pausedOp, withBusy, type PausedOp } from "./tools/appStatus";
 
 /** How long the "History up to date" note stays after a reload. */
 const RELOAD_NOTE_MS = 2600;
@@ -55,6 +57,10 @@ const LEAVE_SCOPE: LeaveAsk = { title: "Switch the history view?", discard: "Dis
 const LEAVE_REPO: LeaveAsk = { title: "Open the other repository?", discard: "Discard and open" };
 const LEAVE_REFRESH: LeaveAsk = { title: "Reload the editor's files?", discard: "Discard and reload" };
 const LEAVE_COMPARE: LeaveAsk = { title: "Compare with another commit?", discard: "Discard and compare" };
+const LEAVE_QUIT: LeaveAsk = { title: "Close Chronos?", discard: "Discard and close Chronos" };
+
+/** How long a "finished working" announcement stays in the live region. */
+const TOOL_NOTE_MS = 5000;
 
 /** Panels whose opener gets the keyboard back when they close. */
 type Opener = "panel" | "tool" | "editor" | "terminal" | "leave";
@@ -135,8 +141,9 @@ function App() {
   const [editorStart, setEditorStart] = useState<string | null>(null);
   // The editor has edits that are not saved (reported by CodeEditor).
   const [editorDirty, setEditorDirty] = useState(false);
-  // Bumped to make the editor read the files again (it remounts).
-  const [editorEpoch, setEditorEpoch] = useState(0);
+  // Bumped to make the editor read its files again in place (keeping the open file,
+  // cursor and scroll). Only bumped once unsaved edits have been asked about.
+  const [refreshToken, setRefreshToken] = useState(0);
   // The history moved while the editor was open, so its files may be out of date.
   const [editorStale, setEditorStale] = useState(false);
   // A step that would close or reload the editor, waiting for "Discard" or "Keep editing".
@@ -150,9 +157,16 @@ function App() {
   const [openedTools, setOpenedTools] = useState<ReadonlySet<ToolId>>(() => new Set());
   // Switching straight from one tool to another re-inks the drawer (opening does not).
   const [toolSwap, setToolSwap] = useState(false);
-  // A rebase stopped on a conflict and is waiting to be continued or aborted.
-  const [rebasePaused, setRebasePaused] = useState(false);
-  const [rebaseBusy, setRebaseBusy] = useState<"abort" | "continue" | null>(null);
+  // Tools working in the background (a model download, a PR check), as they report it.
+  const [busyTools, setBusyTools] = useState<ReadonlySet<ToolId>>(() => new Set());
+  // "Local AI finished working.", for screen readers, when it happened out of sight.
+  const [toolNote, setToolNote] = useState("");
+  // A rebase or merge stopped on a conflict and is waiting to be continued or aborted.
+  const [paused, setPaused] = useState<PausedOp | null>(null);
+  const [pauseBusy, setPauseBusy] = useState<"abort" | "continue" | null>(null);
+  // Bumped to look again for a paused rebase or merge (after continuing or aborting one).
+  const [pauseCheck, setPauseCheck] = useState(0);
+  const rebasePaused = paused === "rebase";
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   // What the last reload found; keyed by `n` so a repeat reload stamps it again.
@@ -165,6 +179,10 @@ function App() {
   const showEditorRef = useRef(showEditor);
   showEditorRef.current = showEditor;
   const dirtyRef = useRef(false);
+  const busyRef = useRef<ReadonlySet<ToolId>>(busyTools);
+  // The tool whose pane is on screen right now (none while the drawer is closed).
+  const toolInViewRef = useRef<ToolId | null>(null);
+  toolInViewRef.current = tool && !panel ? tool : null;
 
   // Where keyboard focus goes back to when each panel closes.
   const openers = useRef<Partial<Record<Opener, Element | null>>>({});
@@ -200,7 +218,9 @@ function App() {
       go();
       return;
     }
-    rememberOpener("leave");
+    // Asked again while the question is already up (a second click on the window's X):
+    // keep the first opener, or focus would end up on the question's own button.
+    if (!leave) rememberOpener("leave");
     setLeave({ ...ask, go });
   }
 
@@ -233,16 +253,78 @@ function App() {
   }, [leave]);
 
   // Reloading or closing the window would drop unsaved edits too, so the browser asks.
-  // (A native close of the desktop window isn't covered here.)
   useEffect(() => {
     if (!editorDirty || !showEditor) return;
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      // Already discarded (the window is being closed after the question): let it go.
+      if (!dirtyRef.current) return;
       e.preventDefault();
       e.returnValue = "";
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [editorDirty, showEditor]);
+
+  // The desktop window's own close (title-bar X, Alt+F4) asks the same question as the
+  // editor does. Only listened for while there are unsaved edits: with a listener in
+  // place Tauri leaves closing to us, so the rest of the time the window closes as usual.
+  const guardRef = useRef(guardEditor);
+  guardRef.current = guardEditor;
+  useEffect(() => {
+    if (!editorDirty || !showEditor || !isTauri()) return;
+    const win = getCurrentWindow();
+    let alive = true;
+    let unlisten: (() => void) | undefined;
+    win
+      .onCloseRequested((event) => {
+        // Saved in the meantime: let it close (the API destroys the window for us).
+        if (!dirtyRef.current || !showEditorRef.current) return;
+        event.preventDefault();
+        guardRef.current(LEAVE_QUIT, () => {
+          win.destroy().catch((e: unknown) => setError(`Couldn't close the window: ${errorMessage(e)}`));
+        });
+      })
+      .then(
+        (stop) => {
+          if (alive) unlisten = stop;
+          else stop();
+        },
+        () => {
+          /* not in a Tauri window after all: the browser's own question still covers it */
+        },
+      );
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
+  }, [editorDirty, showEditor]);
+
+  /** A tool reports that its long work started or stopped (see onBusyChange). */
+  const setToolBusy = useCallback((id: ToolId, busy: boolean) => {
+    const prev = busyRef.current;
+    const next = withBusy(prev, id, busy);
+    if (next === prev) return;
+    busyRef.current = next;
+    setBusyTools(next);
+    const label = TOOLS.find((t) => t.id === id)?.label ?? "A tool";
+    const note = busyFinishedNote(label, prev.has(id), busy, toolInViewRef.current === id);
+    if (note) setToolNote(note);
+  }, []);
+  // One stable callback per tool, so the panels' effects don't re-run on every render.
+  const onBusy = useMemo(
+    () => ({
+      ai: (busy: boolean) => setToolBusy("ai", busy),
+      reviews: (busy: boolean) => setToolBusy("reviews", busy),
+    }),
+    [setToolBusy],
+  );
+
+  // The announcement clears itself, so the same words can be announced again next time.
+  useEffect(() => {
+    if (!toolNote) return;
+    const timer = window.setTimeout(() => setToolNote(""), TOOL_NOTE_MS);
+    return () => window.clearTimeout(timer);
+  }, [toolNote]);
 
   const scoped = useMemo(() => (graph ? scopeGraph(graph, scope) : null), [graph, scope]);
   const layout = useMemo(
@@ -274,24 +356,49 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [reloadNote]);
 
-  // A paused rebase leaves HEAD detached, so only then ask git whether one is waiting.
+  // Ask git whether a rebase or merge stopped on a conflict. A paused rebase leaves HEAD
+  // detached, so REBASE_HEAD is only looked for then; a paused merge stays on its branch.
   useEffect(() => {
-    if (!graph || currentBranch || !isTauri()) {
-      setRebasePaused(false);
+    if (!graph || !isTauri()) {
+      setPaused(null);
       return;
     }
     let alive = true;
-    runShellCommand(graph.repoPath, "git rev-parse -q --verify REBASE_HEAD").then(
-      (r) => alive && setRebasePaused(r.ok && r.stdout.trim().length > 0),
-      () => alive && setRebasePaused(false),
-    );
+    const repo = graph.repoPath;
+    const has = (ref: string) =>
+      runShellCommand(repo, `git rev-parse -q --verify ${ref}`).then(
+        (r) => r.ok && r.stdout.trim().length > 0,
+        () => false,
+      );
+    void Promise.all([currentBranch ? false : has("REBASE_HEAD"), has("MERGE_HEAD")]).then(([rebase, merge]) => {
+      if (alive) setPaused(pausedOp(rebase, merge));
+    });
     return () => {
       alive = false;
     };
-  }, [graph, currentBranch]);
+  }, [graph, currentBranch, pauseCheck]);
 
-  /** Swap in fresh history. Within the same repository, commits keep their identity so changes animate. */
-  function applyGraph(next: ChronosGraph) {
+  /**
+   * The files under the open editor may have changed on disk. Without unsaved edits it
+   * just reads them again in place; with some, a note offers to (saving would overwrite).
+   */
+  function editorFilesMoved() {
+    if (!showEditorRef.current) return;
+    if (dirtyRef.current) {
+      setEditorStale(true);
+      return;
+    }
+    // Fresh files now, so an earlier "out of date" note (from before a save) goes too.
+    setEditorStale(false);
+    setRefreshToken((n) => n + 1);
+  }
+
+  /**
+   * Swap in fresh history. Within the same repository, commits keep their identity so
+   * changes animate. `filesMoved` says the files on disk may have changed even if the
+   * history didn't (an explicit Reload).
+   */
+  function applyGraph(next: ChronosGraph, filesMoved = false) {
     const prev = graphRef.current;
     // A command from a repository that has since been closed: not this history.
     if (prev && next.repoPath !== prev.repoPath) return;
@@ -302,7 +409,19 @@ function App() {
       current && next.commits.some((c) => c.hash === current) ? current : null,
     );
     // A checkout, pull or rebase can change the files the editor has open.
-    if (showEditorRef.current && historyChanged(prev, next)) setEditorStale(true);
+    if (filesMoved || historyChanged(prev, next)) editorFilesMoved();
+  }
+
+  /**
+   * After a git command in the terminal. Many (checkout -- file, stash, restore) change
+   * files without moving the history, so a clean editor reads its files again anyway;
+   * with unsaved edits the note only comes up when the history moved.
+   */
+  function applyTerminalGraph(next: ChronosGraph) {
+    const sameRepo = graphRef.current?.repoPath === next.repoPath;
+    const moved = historyChanged(graphRef.current, next);
+    applyGraph(next);
+    if (sameRepo && !moved && !dirtyRef.current) editorFilesMoved();
   }
 
   /** Close the editor now (callers have already asked about unsaved edits). */
@@ -319,13 +438,14 @@ function App() {
     guardEditor(LEAVE_CLOSE, closeEditorNow);
   }
 
-  /** Read the editor's files again: it remounts on the new epoch. */
+  /** Read the editor's files again, in place: the open file, cursor and scroll stay. */
   function refreshEditor() {
     guardEditor(LEAVE_REFRESH, () => {
-      setEditorEpoch((n) => n + 1);
+      setRefreshToken((n) => n + 1);
       setEditorStale(false);
       dirtyRef.current = false;
       setEditorDirty(false);
+      // The note's button goes away; if the keyboard was on it, it lands in the editor.
       focusLater(() => document.querySelector(".editor-layer:not(.is-leaving) .file-search-input"));
     });
   }
@@ -346,9 +466,8 @@ function App() {
         const after = new Set(next.commits.map((c) => c.hash));
         const added = next.commits.filter((c) => !before.has(c.hash)).length;
         const dropped = current.commits.filter((c) => !after.has(c.hash)).length;
-        applyGraph(next);
-        // Reload is the user asking for fresh files, so an open editor offers them too.
-        if (showEditorRef.current) setEditorStale(true);
+        // Reload is the user asking for fresh files, so an open editor gets them too.
+        applyGraph(next, true);
         setReloadNote((prev) => ({
           text: reloadText(added, dropped),
           fresh: added > 0 || dropped > 0,
@@ -366,7 +485,7 @@ function App() {
           setPanel(null);
           setScope(PROJECT);
           setEditorStart(null);
-          setRebasePaused(false);
+          setPaused(null);
           if (showEditorRef.current) closeEditorNow();
         });
       }
@@ -607,24 +726,29 @@ function App() {
     focusTerminalSoon();
   }
 
-  /** Way out of a rebase that stopped on a conflict. */
-  async function finishRebase(how: "abort" | "continue") {
+  /** Way out of a rebase or merge that stopped on a conflict. */
+  async function finishPaused(op: PausedOp, how: "abort" | "continue") {
     const repo = graphRef.current?.repoPath;
     if (!repo) return;
-    setRebaseBusy(how);
+    setPauseBusy(how);
     setError("");
     try {
-      // (The backend runs git with a no-op editor, so continuing keeps each commit's message.)
-      const run = await runGitCommand(repo, `rebase --${how}`);
-      if (run.graph) applyGraph(run.graph);
+      // (The backend runs git with a no-op editor, so continuing keeps each commit's
+      // message, and a merge gets git's own "Merge branch …" message.)
+      const run = await runGitCommand(repo, `${op} --${how}`);
+      // Either way the working tree changes, even when the history doesn't (an abort).
+      if (run.graph) applyGraph(run.graph, true);
+      else editorFilesMoved();
       if (!run.result.ok) {
         const why = (run.result.error ?? run.result.stderr ?? "").trim() || `git exited with ${run.result.exitCode}`;
-        setError(how === "abort" ? `Couldn't abort the rebase: ${why}` : `The rebase can't continue yet: ${why}`);
+        setError(how === "abort" ? `Couldn't abort the ${op}: ${why}` : `The ${op} can't continue yet: ${why}`);
       }
     } catch (e) {
       setError(errorMessage(e));
     } finally {
-      setRebaseBusy(null);
+      setPauseBusy(null);
+      // Look again even if the history didn't move (an abort with nothing committed yet).
+      setPauseCheck((n) => n + 1);
       focusLater(() => selectedNodeEl() ?? pathField.current);
     }
   }
@@ -713,22 +837,28 @@ function App() {
         </button>
 
         <div className="tools" role="group" aria-label="Tools">
-          {TOOLS.map(({ id, label, hint, icon: Icon }) => (
-            <button
-              key={id}
-              ref={(el) => {
-                if (el) toolKeys.current.set(id, el);
-                else toolKeys.current.delete(id);
-              }}
-              className="btn tool-btn"
-              aria-pressed={tool === id}
-              onClick={() => toggleTool(id)}
-              title={hint}
-            >
-              <Icon />
-              <span className="tool-label">{label}</span>
-            </button>
-          ))}
+          {TOOLS.map(({ id, label, hint, icon: Icon }) => {
+            // Working out of sight: a little chalk dot on the button says so.
+            const working = busyTools.has(id) && !(drawerOpen && tool === id);
+            return (
+              <button
+                key={id}
+                ref={(el) => {
+                  if (el) toolKeys.current.set(id, el);
+                  else toolKeys.current.delete(id);
+                }}
+                className={`btn tool-btn${working ? " is-working" : ""}`}
+                aria-pressed={tool === id}
+                aria-label={working ? `${label} (working)` : undefined}
+                onClick={() => toggleTool(id)}
+                title={working ? `${hint}. Still working…` : hint}
+              >
+                <Icon />
+                <span className="tool-label">{label}</span>
+                {working && <span className="tool-busy-dot" aria-hidden="true" />}
+              </button>
+            );
+          })}
           <span className="toolbar-sep" aria-hidden />
           <button
             className="btn tool-btn theme-switch"
@@ -769,56 +899,58 @@ function App() {
         )}
       </Presence>
 
-      {/* A rebase that stopped on a conflict stays in view until it is finished or aborted,
-          whatever happens to the commit ticket it started from. */}
-      <Presence show={Boolean(graph && rebasePaused)} className="banner-roll" exitMs={160}>
-        <div className="banner-clip">
-          <section className="banner rebase-note" aria-label="Rebase paused">
-            <span className="banner-text">
-              <WarnIcon />
-              <span>
-                <strong className="rebase-note-title">A rebase is paused on a conflict.</strong>{" "}
-                <span className="rebase-note-help">
-                  Fix the files and stage them (<code>git add</code>), then continue. Or abort to put everything back.
+      {/* A rebase or merge that stopped on a conflict stays in view until it is finished
+          or aborted, whatever happens to the commit ticket (or terminal) it started from. */}
+      <Presence show={Boolean(graph && paused)} className="banner-roll" exitMs={160}>
+        {paused && (
+          <div className="banner-clip">
+            <section className="banner rebase-note" aria-label={pauseCopy(paused).label}>
+              <span className="banner-text">
+                <WarnIcon />
+                <span>
+                  <strong className="rebase-note-title">{pauseCopy(paused).title}</strong>{" "}
+                  <span className="rebase-note-help">
+                    Fix the files and stage them (<code>git add</code>), {pauseCopy(paused).help}
+                  </span>
                 </span>
               </span>
-            </span>
-            <span className="rebase-note-keys">
-              <button
-                type="button"
-                className="btn"
-                disabled={rebaseBusy !== null}
-                onClick={() => {
-                  if (!showTerminal) {
-                    rememberOpener("terminal");
-                    setShowTerminal(true);
-                  }
-                  focusTerminalSoon();
-                }}
-              >
-                Terminal
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={rebaseBusy !== null}
-                aria-busy={rebaseBusy === "continue" || undefined}
-                onClick={() => void finishRebase("continue")}
-              >
-                {rebaseBusy === "continue" ? "Continuing…" : "Continue"}
-              </button>
-              <button
-                type="button"
-                className="btn primary"
-                disabled={rebaseBusy !== null}
-                aria-busy={rebaseBusy === "abort" || undefined}
-                onClick={() => void finishRebase("abort")}
-              >
-                {rebaseBusy === "abort" ? "Aborting…" : "Abort rebase"}
-              </button>
-            </span>
-          </section>
-        </div>
+              <span className="rebase-note-keys">
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={pauseBusy !== null}
+                  onClick={() => {
+                    if (!showTerminal) {
+                      rememberOpener("terminal");
+                      setShowTerminal(true);
+                    }
+                    focusTerminalSoon();
+                  }}
+                >
+                  Terminal
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={pauseBusy !== null}
+                  aria-busy={pauseBusy === "continue" || undefined}
+                  onClick={() => void finishPaused(paused, "continue")}
+                >
+                  {pauseBusy === "continue" ? "Continuing…" : "Continue"}
+                </button>
+                <button
+                  type="button"
+                  className="btn primary"
+                  disabled={pauseBusy !== null}
+                  aria-busy={pauseBusy === "abort" || undefined}
+                  onClick={() => void finishPaused(paused, "abort")}
+                >
+                  {pauseBusy === "abort" ? "Aborting…" : pauseCopy(paused).abort}
+                </button>
+              </span>
+            </section>
+          </div>
+        )}
       </Presence>
 
       <main className="stage">
@@ -883,8 +1015,9 @@ function App() {
           <Presence show={editorUp} className="editor-layer" exitMs={160}>
             {graph && layout && scoped && (
               <CodeEditor
-                // A new repository, or a refresh, starts the editor over on fresh files.
-                key={`${graph.repoPath}#${editorEpoch}`}
+                // A new repository starts the editor over; a refresh reads the files in place.
+                key={graph.repoPath}
+                refreshToken={refreshToken}
                 repoPath={graph.repoPath}
                 graph={scoped.graph}
                 layout={layout}
@@ -943,6 +1076,7 @@ function App() {
               removed={scoped.gone.has(selectedNode.commit.hash)}
               currentBranch={currentBranch}
               rebasePaused={rebasePaused}
+              mergePaused={paused === "merge"}
               onGraphChange={applyGraph}
               onSelect={(hash) => {
                 setSelected(hash);
@@ -972,8 +1106,8 @@ function App() {
                     hidden={t.id !== drawerTool.id || undefined}
                   >
                     <PanelBoundary name={t.label}>
-                      {t.id === "ai" && <AiPanel />}
-                      {t.id === "reviews" && <BugCheckPanel repoPath={graph?.repoPath} />}
+                      {t.id === "ai" && <AiPanel onBusyChange={onBusy.ai} />}
+                      {t.id === "reviews" && <BugCheckPanel repoPath={graph?.repoPath} onBusyChange={onBusy.reviews} />}
                       {t.id === "people" && (
                         <ContributorsPanel
                           key={graph?.repoPath ?? ""}
@@ -996,7 +1130,7 @@ function App() {
               key={graph.repoPath}
               repoPath={graph.repoPath}
               repoLabel={repoLabel}
-              onGraphChange={applyGraph}
+              onGraphChange={applyTerminalGraph}
               onClose={closeTerminal}
             />
           )}
@@ -1045,8 +1179,8 @@ function App() {
               {graph.repoPath}
             </span>
             {/* Keyed by value: a changed figure ticks in, so a reload or scope change is noticed. */}
-            <span key={`b:${currentBranch}:${rebasePaused}`} className="status-tick">
-              {currentBranch ? `On ${currentBranch}` : rebasePaused ? "Rebasing (paused)" : "Detached HEAD"}
+            <span key={`b:${currentBranch}:${paused}`} className="status-tick">
+              {headText(currentBranch, paused)}
             </span>
             <span key={`c:${scoped?.graph.commits.length ?? 0}:${scope.kind}`} className="status-tick">
               {scoped?.graph.commits.length ?? 0} commits{scope.kind !== "project" ? ` touching this ${scope.kind}` : ""}
@@ -1071,6 +1205,10 @@ function App() {
         {/* Always present, so screen readers hear each reload's result. */}
         <span className="details-sr-only" role="status">
           {reloadNote ? `Reloaded: ${reloadNote.text}` : ""}
+        </span>
+        {/* A tool that finished its work while its pane was out of sight. */}
+        <span className="details-sr-only" role="status" aria-live="polite">
+          {toolNote}
         </span>
 
         <span

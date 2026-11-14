@@ -4,6 +4,7 @@ import {
   useDeferredValue,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -70,6 +71,18 @@ interface Props {
   onClose: () => void;
   /** Called when the editor gets unsaved edits and again when it has none (after Save, or false on unmount). */
   onDirtyChange?: (dirty: boolean) => void;
+  /**
+   * Bump to reload the open file (or comparison) and the file lists from disk in place,
+   * keeping the open file, the tree, the caret and the scroll position. The first value
+   * does nothing. The app asks about unsaved edits first, so a refresh drops the buffer.
+   */
+  refreshToken?: number;
+}
+
+/** Where the caret and the scrolled panes were, put back after a reload from disk. */
+interface ViewSnap {
+  scroll: { el: HTMLElement; top: number; left: number }[];
+  caret: { el: HTMLTextAreaElement; start: number; end: number; dir: "forward" | "backward" | "none" } | null;
 }
 
 /** A callback with a fixed identity that always runs the latest `fn` (for memoised children). */
@@ -171,6 +184,7 @@ export function CodeEditor({
   onCompare,
   onClose,
   onDirtyChange,
+  refreshToken,
 }: Props) {
   const [files, setFiles] = useState<string[]>([]);
   const [changed, setChanged] = useState<DiffPath[]>([]);
@@ -192,6 +206,7 @@ export function CodeEditor({
   const leftPane = useRef<HTMLPreElement>(null);
   const rightPane = useRef<HTMLTextAreaElement>(null);
   const rightMarks = useRef<HTMLDivElement>(null);
+  const body = useRef<HTMLDivElement>(null);
   // "jump" while the change keys place both panes themselves.
   const syncing = useRef<"left" | "right" | "jump" | null>(null);
   const savedTimer = useRef<number | undefined>(undefined);
@@ -213,6 +228,22 @@ export function CodeEditor({
   // comparison, so a later re-list (the selection hint changed) keeps the file being edited.
   const pathOpened = useRef<DiffCompare | null>(null);
   const diffing = !!compare;
+
+  // A refresh (see refreshToken) re-runs the loads below quietly: no "Loading…" placeholder,
+  // which would unmount the panes and lose the caret and scroll position.
+  const seenToken = useRef(refreshToken);
+  const [epoch, setEpoch] = useState(0);
+  useEffect(() => {
+    if (refreshToken === seenToken.current) return;
+    seenToken.current = refreshToken;
+    setEpoch((n) => n + 1);
+  }, [refreshToken]);
+  // The epoch each load last ran at: a load running at a newer one is a refresh.
+  const changedEpoch = useRef(0);
+  const fileEpoch = useRef(0);
+  const blobEpoch = useRef(0);
+  const restore = useRef<ViewSnap | null>(null);
+  const [, setHeld] = useState(0);
 
   const selectedCommit = selected ? graph.commits.find((c) => c.hash === selected) : undefined;
   const canCompare = !!selectedCommit && selectedCommit.hash !== graph.head;
@@ -305,6 +336,7 @@ export function CodeEditor({
       .then((paths) => {
         if (!alive) return;
         setFiles(paths);
+        // On a refresh too, the open file stays open while it is still there.
         if (!diffing) {
           setActive((prev) => {
             if (prev && paths.includes(prev)) return prev;
@@ -319,15 +351,17 @@ export function CodeEditor({
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [repoPath]);
+  }, [repoPath, epoch]);
 
   useEffect(() => {
+    const refresh = changedEpoch.current !== epoch;
+    changedEpoch.current = epoch;
     if (!compare) {
       setChanged([]);
       return;
     }
     let alive = true;
-    setLoading(true);
+    if (!refresh) setLoading(true);
     setError("");
     void listChangedPaths(repoPath, compare.baseRev)
       .then((listed) => {
@@ -359,7 +393,7 @@ export function CodeEditor({
     return () => {
       alive = false;
     };
-  }, [repoPath, compare, hint]);
+  }, [repoPath, compare, hint, epoch]);
 
   useEffect(() => {
     if (!active || searching) return;
@@ -380,17 +414,21 @@ export function CodeEditor({
       setSaved("");
       return;
     }
-    if (loaded.current === active) return;
+    const refresh = fileEpoch.current !== epoch && loaded.current === active;
+    fileEpoch.current = epoch;
+    if (loaded.current === active && !refresh) return;
     let alive = true;
-    setLoading(true);
+    if (!refresh) setLoading(true);
     setError("");
     setNotice("");
     void readRepoFile(repoPath, active)
       .then((file) => {
         if (!alive) return;
+        if (refresh) holdView(area.current);
         loaded.current = active;
         setSource(file.content);
         setSaved(file.content);
+        if (refresh) noteDone("Reloaded");
       })
       .catch((e) => {
         if (!alive) return;
@@ -403,7 +441,9 @@ export function CodeEditor({
     return () => {
       alive = false;
     };
-  }, [repoPath, active, diffing]);
+    // holdView and noteDone only read refs and set state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repoPath, active, diffing, epoch]);
 
   // Side-by-side blobs: left is the selected commit; right is the working tree (editable).
   useEffect(() => {
@@ -415,9 +455,11 @@ export function CodeEditor({
       return;
     }
     let alive = true;
-    setLoading(true);
-    setError("");
     const fileChanged = diffFile.current !== active;
+    const refresh = blobEpoch.current !== epoch && !fileChanged;
+    blobEpoch.current = epoch;
+    if (!refresh) setLoading(true);
+    setError("");
     const leftPath = activeChange?.oldPath || active;
     const rightPath = active;
     void Promise.all([
@@ -426,9 +468,14 @@ export function CodeEditor({
     ])
       .then(([left, right]) => {
         if (!alive) return;
+        if (refresh) {
+          holdView(rightPane.current);
+          noteDone("Reloaded");
+        }
         setLeftText(left);
         // Keep in-progress working-tree edits when only the compared commit changes.
-        if (fileChanged || !dirtyRightRef.current) {
+        // A refresh reloads them from disk (the app has asked about unsaved edits first).
+        if (fileChanged || refresh || !dirtyRightRef.current) {
           const next = right ?? "";
           setRightText(right);
           setSavedRight(next);
@@ -449,7 +496,62 @@ export function CodeEditor({
     return () => {
       alive = false;
     };
-  }, [repoPath, active, compare, diffing, activeChange?.oldPath, activeChange?.status]);
+    // holdView and noteDone only read refs and set state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repoPath, active, compare, diffing, activeChange?.oldPath, activeChange?.status, epoch]);
+
+  /** Notes where the caret and the scrolled panes are, to put them back once the reload renders. */
+  function holdView(caretEl: HTMLTextAreaElement | null) {
+    const scroll = [body.current, leftPane.current, rightPane.current]
+      .filter((el): el is HTMLDivElement | HTMLPreElement | HTMLTextAreaElement => !!el)
+      .map((el) => ({ el, top: el.scrollTop, left: el.scrollLeft }));
+    // Always render once more, so the snapshot is used now even when the file on disk is
+    // unchanged (same text, notice already "Reloaded"), never on some later keystroke.
+    setHeld((n) => n + 1);
+    restore.current = {
+      scroll,
+      caret: caretEl
+        ? {
+            el: caretEl,
+            start: caretEl.selectionStart,
+            end: caretEl.selectionEnd,
+            dir: caretEl.selectionDirection ?? "none",
+          }
+        : null,
+    };
+  }
+
+  // After a reload renders: setting the new text moved the caret to its end, so put it back
+  // (clamped to the new text) and the scroll positions too, without the panes re-syncing.
+  useLayoutEffect(() => {
+    const snap = restore.current;
+    if (!snap) return;
+    restore.current = null;
+    const { caret } = snap;
+    if (caret?.el.isConnected) {
+      const n = caret.el.value.length;
+      caret.el.setSelectionRange(Math.min(caret.start, n), Math.min(caret.end, n), caret.dir);
+    }
+    syncing.current = "jump";
+    for (const s of snap.scroll) {
+      if (!s.el.isConnected) continue;
+      s.el.scrollTop = s.top;
+      s.el.scrollLeft = s.left;
+    }
+    moveMarks();
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (syncing.current === "jump") syncing.current = null;
+      }),
+    );
+  });
+
+  /** Stamps "saved" or "reloaded" in the bar for a moment. */
+  function noteDone(what: "Saved" | "Reloaded") {
+    setNotice(what);
+    window.clearTimeout(savedTimer.current);
+    savedTimer.current = window.setTimeout(() => setNotice(""), 1400);
+  }
 
   async function save() {
     if (!active || !dirty || saving) return;
@@ -467,9 +569,7 @@ export function CodeEditor({
         setSaved(content);
         setSource(content);
       }
-      setNotice("Saved");
-      window.clearTimeout(savedTimer.current);
-      savedTimer.current = window.setTimeout(() => setNotice(""), 1400);
+      noteDone("Saved");
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -802,12 +902,24 @@ export function CodeEditor({
             )}
           </span>
           {saveState ? (
-            <span key={saveState} className={`editor-state is-${saveState}`}>
-              {saveState === "saving" ? "saving" : saveState === "dirty" ? "edited" : "saved"}
+            <span key={saveState === "saved" ? notice : saveState} className={`editor-state is-${saveState}`}>
+              {saveState === "saving"
+                ? "saving"
+                : saveState === "dirty"
+                  ? "edited"
+                  : notice === "Reloaded"
+                    ? "reloaded"
+                    : "saved"}
             </span>
           ) : null}
           <span className="details-sr-only" role="status">
-            {saving ? "Saving" : notice ? `${active ?? "File"} saved` : ""}
+            {saving
+              ? "Saving"
+              : notice === "Reloaded"
+                ? `${active ?? "File"} reloaded from disk`
+                : notice
+                  ? `${active ?? "File"} saved`
+                  : ""}
           </span>
           <span className="details-sr-only" role="status">
             {diffing ? changeNote : ""}
@@ -861,8 +973,13 @@ export function CodeEditor({
               >
                 {saving ? "Saving" : "Save"}
               </button>
-              <button type="button" className="btn editor-close" onClick={stopCompare}>
-                Main view
+              <button
+                type="button"
+                className="btn editor-close"
+                title="Leave the side-by-side view and edit the working tree on its own"
+                onClick={stopCompare}
+              >
+                Stop comparing
               </button>
             </>
           ) : (
@@ -895,7 +1012,7 @@ export function CodeEditor({
           </button>
         </header>
 
-        <div className={`editor-body${diffing ? " editor-body-diff" : ""}`}>
+        <div ref={body} className={`editor-body${diffing ? " editor-body-diff" : ""}`}>
           {error && (
             <p className="editor-banner" role="alert">
               {error}

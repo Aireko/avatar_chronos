@@ -41,7 +41,7 @@
   box-shadow: 4px 5px 0 var(--grid-strong);
 }
 .scope-title { display: flex; align-items: center; gap: 8px; font-size: 19px; }
-.scope-back { border: 0; background: none; color: var(--pen-2); font: inherit; cursor: pointer; padding: 0; }
+.scope-back { border: 0; background: none; color: var(--pen-2-text); font: inherit; cursor: pointer; padding: 0; }
 .scope-list {
   margin: 0; padding: 0; list-style: none; overflow-y: auto; min-height: 0;
   scrollbar-width: thin; scrollbar-color: var(--soft) transparent;

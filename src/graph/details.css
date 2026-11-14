@@ -4,12 +4,10 @@
    Every animation and transition is switched off under prefers-reduced-motion
    at the bottom of this file. */
 
-/* Shared motion: content settling onto the page, and a rubber stamp. */
-@keyframes details-settle { from { opacity: 0; transform: translateY(6px); } }
+/* Motion: the shared keyframes in graph.css (rise to settle in from below, stamp for a
+   rubber stamp, fade-in, breathe for anything working), plus these three of its own. */
 @keyframes details-drop { from { opacity: 0; transform: translateY(-4px); } }
 @keyframes details-row-in { from { opacity: 0; transform: translateX(8px); } }
-@keyframes details-stamp { from { opacity: 0; transform: scale(1.3) rotate(-8deg); } }
-@keyframes details-late { from { opacity: 0; } }
 @keyframes details-flash { from { background-color: var(--highlight); } }
 
 /* Text for screen readers only (live status lines). */
@@ -29,7 +27,7 @@
 
 /* Stepping to another commit (Comes after / Followed by, or the arrow keys) remounts
    the ticket; its contents settle in instead of snapping. */
-.ticket .ticket-scroll { animation: details-settle 0.2s ease-out backwards; }
+.ticket .ticket-scroll { animation: rise 0.2s ease-out backwards; }
 
 /* Changed files deal in one after another; the stagger stops after ten rows. */
 .ticket .files li {
@@ -44,7 +42,7 @@
   font-family: var(--hand);
   font-size: 16px;
   text-decoration: none;
-  animation: details-stamp 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards;
+  animation: stamp 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards;
 }
 
 /* The rebase question unfolds where the two keys were. */
@@ -53,14 +51,14 @@
 /* Results (working line, outcome, comparison) settle in under the keys. */
 .ticket-body > .working,
 .ticket-body > .notice,
-.ticket-body > .diff { animation: details-settle 0.2s ease-out backwards; }
+.ticket-body > .diff { animation: rise 0.2s ease-out backwards; }
 
 /* Each file in the comparison folds open and shut; the caret shows which. */
 .ticket .diff-file summary { list-style: none; transition: background-color 0.15s ease; }
 .ticket .diff-file summary::-webkit-details-marker { display: none; }
 .ticket .diff-file summary:hover { background: var(--grid-strong); }
 .ticket .diff-file summary:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: -4px; }
-.diff-caret { flex: none; display: inline-block; width: 12px; color: var(--soft); font-size: 12px; transition: transform 0.18s ease; }
+.diff-caret { flex: none; display: inline-block; width: 12px; color: var(--soft); transition: transform 0.18s ease; }
 .diff-file[open] > summary .diff-caret { transform: rotate(90deg); }
 .ticket .diff-file[open] > .diff-code { animation: details-drop 0.18s ease-out backwards; }
 
@@ -123,12 +121,16 @@
 .file-tree .tree-row:active { transform: translateY(1px); }
 .file-tree .tree-row:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: 0; }
 .file-tree .file-search-input:focus-visible { background: var(--wash); border-style: dashed; }
-.file-tree .file-search-clear:hover { color: var(--ink); }
 .file-tree .file-search-clear:focus-visible { outline: 2px dashed var(--pen-2); outline-offset: 1px; }
 
 /* The tree resizer can be dragged or moved with the arrow keys. */
 .editor .tree-resizer { transition: opacity 0.15s ease; touch-action: none; }
 .editor .tree-resizer:focus-visible { outline: none; opacity: 1; background: var(--pen-2); }
+
+/* The bar wraps beside a tool drawer on a narrow window (tools.css). The path keeps a
+   readable width on the first line, so the keys wrap under it rather than squeezing it
+   down to an ellipsis. */
+.editor-bar .editor-path { flex: 1 1 120px; }
 
 /* Edited / saving / saved sit beside the path so a long path can't hide them. */
 .editor-state {
@@ -143,17 +145,17 @@
   white-space: nowrap;
 }
 .editor-state::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
-.editor-state.is-dirty { color: var(--warn); border-style: dashed; animation: details-late 0.15s ease-out backwards; }
+.editor-state.is-dirty { color: var(--warn); border-style: dashed; animation: fade-in 0.15s ease-out backwards; }
 .editor-state.is-saving { color: var(--soft); border-style: dashed; }
-.editor-state.is-saving::before { animation: pulse 0.9s ease-in-out infinite; }
-.editor-state.is-saved { color: var(--ok); animation: details-stamp 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards; }
+.editor-state.is-saving::before { animation: breathe 0.9s ease-in-out infinite; }
+.editor-state.is-saved { color: var(--ok); animation: stamp 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards; }
 
 /* "Loading…" waits a moment before showing, so quick reads don't flash it. */
-.editor .is-loading { animation: details-late 0.2s ease-out 0.15s backwards; }
+.editor .is-loading { animation: fade-in 0.2s ease-out 0.15s backwards; }
 
 /* A newly opened file or comparison settles onto the sheet. */
 .editor-body > .code-edit,
-.editor-body > .side-diff { animation: details-settle 0.18s ease-out backwards; }
+.editor-body > .side-diff { animation: rise 0.18s ease-out backwards; }
 .editor-body > .editor-banner { animation: details-drop 0.18s ease-out backwards; }
 
 /* Side-by-side: change counts and the previous / next change keys. */
@@ -230,11 +232,11 @@
 /* "Esc, then Tab, leaves" shows in the bar while the plain editor has the keyboard,
    since Tab there types an indent. */
 .editor-bar .editor-keys { display: none; flex: none; font-size: 14px; white-space: nowrap; }
-.editor-main:has(.code-input:focus) .editor-bar .editor-keys { display: inline; animation: details-late 0.15s ease-out backwards; }
+.editor-main:has(.code-input:focus) .editor-bar .editor-keys { display: inline; animation: fade-in 0.15s ease-out backwards; }
 .editor-bar .editor-keys.is-armed { color: var(--ink); text-decoration: underline wavy var(--highlight); text-underline-offset: 4px; }
 
 /* Which change the arrows last jumped to, e.g. "2/5", pencilled beside the counts. */
-.diff-nav .change-pos { min-width: 30px; font-size: 14px; text-align: center; animation: details-late 0.15s ease-out backwards; }
+.diff-nav .change-pos { min-width: 30px; font-size: 14px; text-align: center; animation: fade-in 0.15s ease-out backwards; }
 
 /* ============ commit map in the editor (MiniMap.tsx) ============ */
 
@@ -271,7 +273,7 @@
 
 /* ============ terminal dock ============ */
 
-.term .term-line { animation: details-settle 0.14s ease-out backwards; }
+.term .term-line { animation: rise 0.14s ease-out backwards; }
 .term .term-close { transition: background-color 0.15s ease; }
 .term .term-close:hover { background: color-mix(in srgb, currentColor 14%, transparent); }
 .term .term-close:focus-visible { outline: 2px dashed currentColor; outline-offset: 2px; }
@@ -293,7 +295,7 @@
 }
 .term .term-prompt:focus-within::after { opacity: 0.25; transform: none; }
 /* While a command runs, the $ pulses and the bar says what is running. */
-.term .term-prompt.is-busy .term-dollar { animation: pulse 0.9s ease-in-out infinite; }
+.term .term-prompt.is-busy .term-dollar { animation: breathe 0.9s ease-in-out infinite; }
 .term .term-prompt.is-busy .term-input { opacity: 0.6; }
 .term-running {
   min-width: 0;
@@ -303,7 +305,7 @@
   font-family: var(--mono);
   font-size: 12px;
   opacity: 0.7;
-  animation: details-late 0.2s ease-out backwards;
+  animation: fade-in 0.2s ease-out backwards;
 }
 
 /* ============ dock keys and the status bar (App.tsx) ============ */
@@ -358,7 +360,7 @@
 .ctx-label { display: flex; flex-direction: column; gap: 2px; color: var(--soft); font-size: 14px; }
 .ctx-tabs { display: flex; gap: 6px; }
 .ctx-tabs .btn[aria-pressed="true"] { background: var(--highlight); }
-.ctx-panel { animation: details-settle 0.2s ease-out backwards; }
+.ctx-panel { animation: rise 0.2s ease-out backwards; }
 .ctx h4 { margin: 14px 0 4px; font-size: 18px; font-weight: 400; }
 .ctx ul { margin: 4px 0; padding-left: 20px; }
 .ctx li { margin: 3px 0; }

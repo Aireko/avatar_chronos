@@ -272,3 +272,13 @@
   .people-report,
   .people-bar-fill { transition: none; }
 }
+
+/* ============ back from a hidden drawer pane ============
+   Showing a display: none pane restarts every animation in it. While usePaneReturn
+   (src/ai/panelHooks.ts) marks the panel, the rows, avatars and share bars stay put
+   instead of arriving again; the waiting dot keeps breathing. */
+.people-panel[data-pane-return] :not(.working-dot),
+.people-panel[data-pane-return] :not(.working-dot)::before {
+  animation-duration: 0s !important;
+  animation-delay: 0s !important;
+}

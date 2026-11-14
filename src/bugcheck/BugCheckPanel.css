@@ -561,3 +561,21 @@
 @media (prefers-reduced-motion: reduce) {
   .bc-panel details::details-content { transition: none; }
 }
+
+/* ============ back from a hidden drawer pane ============
+   Showing a display: none pane restarts every animation in it. While usePaneReturn
+   (src/ai/panelHooks.ts) marks the panel, the PR rows, finding cards and their stripes
+   stay put instead of arriving again; looping motion (waiting dot, skeleton, the
+   chunk being read, stripes) carries on. */
+.bc-panel[data-pane-return] :not(.working-dot, .bc-skeleton span, .bc-tick.is-active, progress),
+.bc-panel[data-pane-return] :not(.working-dot, .bc-skeleton span, .bc-tick.is-active, progress)::before {
+  animation-duration: 0s !important;
+  animation-delay: 0s !important;
+}
+
+/* Closing a report or a posting question hands focus to the PR list heading or the
+   "Posted" note (both tabindex -1): a pen ring for keyboard users only. */
+.bc-title:focus,
+.bc-post-done:focus { outline: none; }
+.bc-title:focus-visible,
+.bc-post-done:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: 3px; }

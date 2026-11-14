@@ -18,6 +18,7 @@ import {
 import { isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { runShellCommand } from "../backend";
+import { useBusySignal, usePaneReturn } from "../ai/panelHooks";
 import { bugCheckService, isValidPrNumber, isValidRepo, toBugCheckError } from "./bugCheckService";
 import { type ChunkOutcome, chunkTicks, ticksLabel } from "./chunkTicks";
 import { githubRepoFromRemote } from "./originRepo";
@@ -127,6 +128,8 @@ function postedIdsOf(report: BugCheckReport | undefined): Set<string> {
 
 /** Opens a GitHub link in the system browser (inside the app) or a new tab (in a browser). */
 function ExternalLink({ href, children }: { href: string; children: ReactNode }) {
+  // No address (a partial answer): plain text rather than a link to nowhere.
+  if (!/^https?:\/\//i.test(href)) return <>{children}</>;
   const onClick = (event: MouseEvent<HTMLAnchorElement>) => {
     if (!isTauri()) return;
     event.preventDefault();
@@ -278,12 +281,26 @@ function prefersReducedMotion(): boolean {
   return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
 }
 
+/** Whether `el` is laid out (not inside the drawer's hidden panes or a parked drawer). */
+function isShown(el: Element | null | undefined): el is HTMLElement {
+  return !!el && el.isConnected && el.getClientRects().length > 0;
+}
+
+/** Moves focus to `el`, but only while the panel is on screen: a hidden pane never takes focus. */
+function focusIfShown(el: HTMLElement | null | undefined, options?: FocusOptions): boolean {
+  if (!isShown(el) || (el instanceof HTMLButtonElement && el.disabled)) return false;
+  el.focus(options);
+  return document.activeElement === el;
+}
+
 /**
  * Scrolls the nearest scrolling ancestor (the drawer body) so `el` sits at its
  * top. Unlike scrollIntoView it never nudges the fixed app shell around it: it
  * stops at that first scroll container even when it has nothing to scroll.
  */
 function scrollToTop(el: HTMLElement) {
+  // In a hidden drawer pane every box measures 0: there is nothing to scroll to.
+  if (!isShown(el)) return;
   for (let parent = el.parentElement; parent; parent = parent.parentElement) {
     const { overflowY } = getComputedStyle(parent);
     if (overflowY !== "auto" && overflowY !== "scroll") continue;
@@ -420,9 +437,21 @@ function FindingCard({
 interface BugCheckPanelProps {
   /** The local repository open in Chronos; its GitHub `origin` is the default repository. */
   repoPath?: string;
+  /**
+   * Told when long work starts (true) and when the last of it stops (false): loading the
+   * PR list, a bug check run here, or an auto-review run. False again on unmount.
+   */
+  onBusyChange?: (busy: boolean) => void;
 }
 
-export default function BugCheckPanel({ repoPath }: BugCheckPanelProps = {}) {
+export default function BugCheckPanel({ repoPath, onBusyChange }: BugCheckPanelProps = {}) {
+  const panelRef = useRef<HTMLElement>(null);
+  // Focus targets around the report and the posting step (see the effects below).
+  const prsHeading = useRef<HTMLHeadingElement>(null);
+  const reportOpener = useRef<HTMLElement | null>(null);
+  const postKey = useRef<HTMLButtonElement>(null);
+  const confirmCancel = useRef<HTMLButtonElement>(null);
+  const postDone = useRef<HTMLParagraphElement>(null);
   const [gh, setGh] = useState<GhStatus>();
   const [ghError, setGhError] = useState<BugCheckError>();
   const [checkingGh, setCheckingGh] = useState(false);
@@ -439,6 +468,8 @@ export default function BugCheckPanel({ repoPath }: BugCheckPanelProps = {}) {
   const [prs, setPrs] = useState<PrWithStatus[]>();
   const [prsError, setPrsError] = useState<BugCheckError>();
   const [loadingPrs, setLoadingPrs] = useState(false);
+  // A reload the watcher asked for after a poll: not work anyone waits on, so not "busy".
+  const [prsLoadQuiet, setPrsLoadQuiet] = useState(false);
   const prsRequest = useRef(0);
 
   const [otherPr, setOtherPr] = useState("");
@@ -493,9 +524,10 @@ export default function BugCheckPanel({ repoPath }: BugCheckPanelProps = {}) {
     }
   }, []);
 
-  const loadPrs = useCallback(async (target: string) => {
+  const loadPrs = useCallback(async (target: string, quiet = false) => {
     const request = ++prsRequest.current;
     setLoadingPrs(true);
+    setPrsLoadQuiet(quiet);
     try {
       const list = await bugCheckService.listPrs(target);
       if (request !== prsRequest.current) return;
@@ -611,7 +643,9 @@ export default function BugCheckPanel({ repoPath }: BugCheckPanelProps = {}) {
           setWatchProgress(undefined);
         }
         if (event.type === "reviewDone" || event.type === "polled") {
-          if (repoRef.current) void loadPrs(repoRef.current);
+          // After a plain poll the refresh is background upkeep (quiet: no busy dot and no
+          // "finished" announcement every few minutes); after a review it ends that run's work.
+          if (repoRef.current) void loadPrs(repoRef.current, event.type === "polled");
           const open = reportRef.current;
           // Reload an open report only if the watcher just reviewed that very PR (repo and number).
           if (event.type === "reviewDone" && open && open.number === event.number && sameRepo(open.repo, event.repo)) {
@@ -640,6 +674,7 @@ export default function BugCheckPanel({ repoPath }: BugCheckPanelProps = {}) {
 
   async function runCheck(number: number) {
     if (runAbort.current || !repo) return;
+    rememberOpener();
     const target = repo;
     const controller = new AbortController();
     runAbort.current = controller;
@@ -667,8 +702,25 @@ export default function BugCheckPanel({ repoPath }: BugCheckPanelProps = {}) {
     runAbort.current?.abort();
   }
 
+  /** The control that asked for a report, so closing the report can hand focus back to it. */
+  function rememberOpener() {
+    const active = document.activeElement;
+    reportOpener.current = active instanceof HTMLElement && panelRef.current?.contains(active) ? active : null;
+  }
+
+  // Closing the report removes the focused Close key: focus goes back to whatever opened
+  // the report (its "View report" or "Run bug check" key), else to the PR list heading.
+  function closeReport() {
+    const opener = reportOpener.current;
+    reportOpener.current = null;
+    const hadFocus = !!reportBox.current?.contains(document.activeElement);
+    showReport(undefined);
+    if (hadFocus && !focusIfShown(opener)) focusIfShown(prsHeading.current);
+  }
+
   async function viewReport(number: number) {
     if (!repo) return;
+    rememberOpener();
     setReportError(undefined);
     try {
       const stored = await bugCheckService.getReport(repo, number);
@@ -689,7 +741,7 @@ export default function BugCheckPanel({ repoPath }: BugCheckPanelProps = {}) {
   useEffect(() => {
     const box = reportBox.current;
     if (revealReport === 0 || !box) return;
-    box.querySelector<HTMLElement>(".bc-report-title")?.focus({ preventScroll: true });
+    focusIfShown(box.querySelector<HTMLElement>(".bc-report-title"), { preventScroll: true });
     scrollToTop(box);
   }, [revealReport]);
 
@@ -799,8 +851,31 @@ export default function BugCheckPanel({ repoPath }: BugCheckPanelProps = {}) {
     }
   }
 
+  // The posting question takes focus on its safe answer (Cancel), since the key that asked
+  // it is gone; when it closes, focus returns to the Post key, or to the posted note.
+  const wasConfirming = useRef(false);
+  useEffect(() => {
+    const was = wasConfirming.current;
+    wasConfirming.current = confirming;
+    if (confirming) {
+      focusIfShown(confirmCancel.current);
+      return;
+    }
+    // Only when focus was lost with the question (it sits on the page body now).
+    const active = document.activeElement;
+    if (!was || (active && active !== document.body)) return;
+    if (!focusIfShown(postKey.current)) focusIfShown(postDone.current);
+  }, [confirming]);
+
   const running = progress !== undefined;
   const watchConfig = watch?.config;
+  // Auto review is checking a PR (the watcher reports it as current, or progress is arriving).
+  const autoReviewing = (!!watch?.enabled && watch.current !== undefined) || watchProgress !== undefined;
+  useBusySignal((loadingPrs && !prsLoadQuiet) || running || autoReviewing, onBusyChange);
+
+  // Kept mounted (hidden) in the drawer: coming back neither replays the entrance of every
+  // PR row and finding card nor loses the scroll offset of a suggested fix.
+  usePaneReturn(panelRef);
   const watchDirty =
     !!watch?.enabled &&
     !!watchConfig &&
@@ -818,7 +893,7 @@ export default function BugCheckPanel({ repoPath }: BugCheckPanelProps = {}) {
       (!!watch?.enabled && watch.current === report.number && sameRepo(watchConfig?.repo, report.repo)));
 
   return (
-    <section className="bc-panel" aria-labelledby="bc-panel-title">
+    <section ref={panelRef} className="bc-panel" aria-labelledby="bc-panel-title">
       {/* The drawer band already shows the title; this one names the section for assistive tech. */}
       <h2 id="bc-panel-title" className="bc-sr">
         PR Bug Check
@@ -867,7 +942,7 @@ export default function BugCheckPanel({ repoPath }: BugCheckPanelProps = {}) {
       </div>
 
       <div className="bc-block">
-        <h3 className="bc-title">
+        <h3 ref={prsHeading} className="bc-title" tabIndex={-1}>
           Open pull requests
           {repo && (
             <>
@@ -1029,7 +1104,7 @@ export default function BugCheckPanel({ repoPath }: BugCheckPanelProps = {}) {
             <h3 className="bc-report-title" tabIndex={-1}>
               {report.repo}#{report.number}: {report.title}
             </h3>
-            <button type="button" className="btn bc-btn-sm" onClick={() => showReport(undefined)}>
+            <button type="button" className="btn bc-btn-sm" onClick={closeReport}>
               Close
             </button>
           </div>
@@ -1134,6 +1209,7 @@ export default function BugCheckPanel({ repoPath }: BugCheckPanelProps = {}) {
               {!confirming && (
                 <div className="bc-row">
                   <button
+                    ref={postKey}
                     type="button"
                     className="btn primary"
                     onClick={() => setConfirming(true)}
@@ -1160,8 +1236,21 @@ export default function BugCheckPanel({ repoPath }: BugCheckPanelProps = {}) {
                 </div>
               )}
               {confirming && (
-                <div className="bc-confirm" role="alertdialog" aria-label="Confirm posting">
-                  <p>
+                <div
+                  className="bc-confirm"
+                  role="alertdialog"
+                  aria-label="Confirm posting"
+                  aria-describedby="bc-confirm-text"
+                  onKeyDown={(event) => {
+                    // Esc answers "Cancel" here; it must not also close the whole drawer
+                    // (not even while posting, when there is nothing left to cancel).
+                    if (event.key !== "Escape") return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (!posting) setConfirming(false);
+                  }}
+                >
+                  <p id="bc-confirm-text">
                     Post a review with {plural(selectedIds.length, "inline comment")} to{" "}
                     <strong>
                       {report.repo}#{report.number}
@@ -1177,14 +1266,20 @@ export default function BugCheckPanel({ repoPath }: BugCheckPanelProps = {}) {
                     >
                       {posting ? "Posting..." : `Post ${plural(selectedIds.length, "comment")}`}
                     </button>
-                    <button type="button" className="btn" onClick={() => setConfirming(false)} disabled={posting}>
+                    <button
+                      ref={confirmCancel}
+                      type="button"
+                      className="btn"
+                      onClick={() => setConfirming(false)}
+                      disabled={posting}
+                    >
                       Cancel
                     </button>
                   </div>
                 </div>
               )}
               {postResult && (
-                <p className="bc-ok bc-done" role="status">
+                <p ref={postDone} className="bc-ok bc-done bc-post-done" role="status" tabIndex={-1}>
                   Posted {plural(postResult.postedCount, "comment")}
                   {postResult.reviewUrl && (
                     <>

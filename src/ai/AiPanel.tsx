@@ -2,6 +2,7 @@
 // It exercises every aiService call; it is not the product UI.
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { aiErrorMessage, aiService, isAiError } from "./aiService";
+import { usePaneReturn, useBusySignal } from "./panelHooks";
 import type { AiError, AiStatus, GenerateResponse, GenerationStats, PullEvent } from "./types";
 import "./AiPanel.css";
 
@@ -60,7 +61,13 @@ function overallPercent(progress: PullProgress): number | undefined {
   return total > 0 ? Math.min(100, (completed / total) * 100) : undefined;
 }
 
-export default function AiPanel() {
+interface AiPanelProps {
+  /** Told when a model download or a generation starts (true) and when the last one stops (false). */
+  onBusyChange?: (busy: boolean) => void;
+}
+
+export default function AiPanel({ onBusyChange }: AiPanelProps = {}) {
+  const panelRef = useRef<HTMLElement>(null);
   const [status, setStatus] = useState<AiStatus>();
   const [statusError, setStatusError] = useState<AiError>();
   const [loadingStatus, setLoadingStatus] = useState(false);
@@ -119,14 +126,24 @@ export default function AiPanel() {
     };
   }, [refresh]);
 
+  useBusySignal(pulling || generating, onBusyChange);
+
   useEffect(() => {
     const el = outputRef.current;
     if (el && generating && stickToEnd.current) el.scrollTop = el.scrollHeight;
   }, [output, generating]);
 
+  // The drawer hides this panel (display: none) while another tool is shown; the answer
+  // can keep streaming meanwhile. Back on screen, a followed answer shows its newest line.
+  usePaneReturn(panelRef, () => {
+    const el = outputRef.current;
+    if (el && stickToEnd.current) el.scrollTop = el.scrollHeight;
+  });
+
   function onOutputScroll() {
     const el = outputRef.current;
-    if (el) stickToEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    // A hidden box reads all zeros; that says nothing about where the reader is.
+    if (el && el.clientHeight > 0) stickToEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
   }
 
   async function onCopy() {
@@ -162,13 +179,14 @@ export default function AiPanel() {
       await aiService.pullModel(tag, {
         signal: controller.signal,
         onProgress: (event: PullEvent) => {
-          if (event.type !== "progress") return;
+          if (!event || event.type !== "progress") return;
           setPullProgress((prev) => {
             const layers = { ...(prev?.layers ?? {}) };
-            if (event.digest && event.total !== undefined) {
-              layers[event.digest] = { total: event.total, completed: event.completed ?? 0 };
+            const { digest, total, completed } = event;
+            if (typeof digest === "string" && digest && typeof total === "number" && Number.isFinite(total)) {
+              layers[digest] = { total, completed: typeof completed === "number" && Number.isFinite(completed) ? completed : 0 };
             }
-            return { status: event.status, layers };
+            return { status: typeof event.status === "string" ? event.status : (prev?.status ?? "downloading"), layers };
           });
         },
       });
@@ -228,7 +246,7 @@ export default function AiPanel() {
   const canGenerate = !!status?.connection.reachable && status.selectedModelInstalled === true && !generating;
 
   return (
-    <section className="ai-panel" aria-labelledby="ai-panel-title">
+    <section ref={panelRef} className="ai-panel" aria-labelledby="ai-panel-title">
       {/* The drawer band already shows the tool title; keep the heading for screen readers. */}
       <h2 id="ai-panel-title" className="ai-sr-only">
         Local AI test panel

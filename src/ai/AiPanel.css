@@ -399,3 +399,13 @@
 @media (prefers-reduced-motion: reduce) {
   .ai-panel details::details-content { transition: none; }
 }
+
+/* ---------- back from a hidden drawer pane ----------
+   Showing a display: none pane restarts every animation in it. While usePaneReturn
+   (panelHooks.ts) marks the panel, whatever had already arrived stays put instead of
+   arriving again; looping motion (waiting dot, skeleton, caret, hatching) carries on. */
+.ai-panel[data-pane-return] :not(.working-dot, .ai-skeleton span, .ai-caret, progress),
+.ai-panel[data-pane-return] :not(.working-dot, .ai-skeleton span, .ai-caret, progress)::before {
+  animation-duration: 0s !important;
+  animation-delay: 0s !important;
+}

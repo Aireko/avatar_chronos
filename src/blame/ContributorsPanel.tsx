@@ -18,6 +18,8 @@ import {
   type DraftContext,
 } from "./contributors";
 import { initials } from "./initials";
+import { normalizeBlameReport } from "./normalizeBlame";
+import { usePaneReturn } from "../ai/panelHooks";
 import "./ContributorsPanel.css";
 
 interface ContributorsPanelProps {
@@ -44,6 +46,10 @@ export default function ContributorsPanel({ repoPath, filePaths }: ContributorsP
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const listId = useId();
+  // Kept mounted (hidden) in the drawer: coming back neither replays the rows' entrance
+  // nor loses the scroll offset of anything scrolling inside the panel.
+  const panelRef = useRef<HTMLElement>(null);
+  usePaneReturn(panelRef);
 
   async function onBlame(event: FormEvent) {
     event.preventDefault();
@@ -51,7 +57,8 @@ export default function ContributorsPanel({ repoPath, filePaths }: ContributorsP
     setError("");
     setNotice("");
     try {
-      setReport(await blameFile(repoPath, filePath.trim(), revision));
+      // A partial answer becomes an error message here, not a crash while rendering.
+      setReport(normalizeBlameReport(await blameFile(repoPath, filePath.trim(), revision)));
       setScope({ kind: "file" });
     } catch (e) {
       setReport(undefined);
@@ -136,7 +143,7 @@ export default function ContributorsPanel({ repoPath, filePaths }: ContributorsP
   const inTauri = isTauri();
 
   return (
-    <section className="people-panel" aria-labelledby="people-title">
+    <section ref={panelRef} className="people-panel" aria-labelledby="people-title">
       <h2 id="people-title" className="people-sr-only">
         Who worked on this?
       </h2>

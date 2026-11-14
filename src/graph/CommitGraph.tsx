@@ -13,10 +13,11 @@ import type { ChronosGraph } from "../backend";
 import {
   STATION_R,
   cameraAt,
+  NO_DRAW,
   cullLayout,
   drawDelay,
-  drawDelayAt,
   drawInWindow,
+  entrances,
   fitAxis,
   fitZoom,
   glideMs,
@@ -25,8 +26,10 @@ import {
   scribbleLoop,
   visibleColumns,
   wheelZoomFactor,
+  withPinned,
   type CameraShot,
   type ColumnRange,
+  type DrawAttr,
   type GraphLayout,
   type GraphNode,
   type Lane,
@@ -141,13 +144,6 @@ function updateIntro(intro: Intro, layout: GraphLayout, now: number) {
   intro.seenBridges = bridges;
 }
 
-/** How an element enters: with the .draw class after `delay`, or not at all. */
-interface DrawAttr {
-  cls: string;
-  delay?: string;
-}
-const NO_DRAW: DrawAttr = { cls: "" };
-
 /** A function whose identity never changes but which always runs the latest `fn`. */
 function useStable<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
   const ref = useRef(fn);
@@ -190,14 +186,16 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
   // changes); each later layout of it only draws in what is new. Re-running this for the same
   // layout changes nothing, so it is safe in a memo.
   const intro = useRef<Intro | null>(null);
-  // How each drawn element enters, kept while it stays drawn (see `attrs` below).
-  const attrCache = useRef(new Map<string, DrawAttr>());
+  // How each drawn line and commit enters, kept while it stays drawn (see `lineAttrs` below).
+  const lineCache = useRef(new Map<string, DrawAttr>());
+  const nodeCache = useRef(new Map<string, DrawAttr>());
   useMemo(() => {
     const now = performance.now();
     if (!intro.current || intro.current.repo !== graph.repoPath) {
       intro.current = openIntro(graph, layout, zoomRef.current, now);
       // Another repository (a clone or worktree can share commits): forget the old entrances.
-      attrCache.current = new Map();
+      lineCache.current = new Map();
+      nodeCache.current = new Map();
     } else {
       updateIntro(intro.current, layout, now);
     }
@@ -410,10 +408,20 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // +/- on the keyboard zoom the map (ignored while typing).
+  // +/- on the keyboard zoom the map: not while typing, and not from a drawer, the terminal,
+  // the scope picker or a dialog, whose keys belong to them.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const t = e.target;
+      if (e.defaultPrevented || e.altKey) return;
+      if (
+        t instanceof HTMLInputElement ||
+        t instanceof HTMLTextAreaElement ||
+        t instanceof HTMLSelectElement ||
+        (t instanceof HTMLElement && t.isContentEditable)
+      )
+        return;
+      if (t instanceof Element && t.closest('.slide-panel, .dock-panel, .scope-pop, [role="dialog"]')) return;
       if (e.key === "+" || e.key === "=") {
         e.preventDefault();
         applyZoom(targetZoom() + ZOOM_STEP, keyAnchor(), { smooth: true });
@@ -544,34 +552,40 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
   // What is drawn: the nodes in the column range and the lines and hops that reach into it.
   const view = useMemo(() => cullLayout(layout, range), [layout, range]);
 
+  // The chosen commit and the one holding keyboard focus stay drawn (and focusable) when they
+  // are off screen, so a wheel pan never drops focus onto the page (see withPinned).
+  const selectedNode = selected ? layout.byHash.get(selected) : undefined;
+  const focusedNode = focusedHash ? layout.byHash.get(focusedHash) : undefined;
+  const pinned = withPinned(view.nodes, range, [selectedNode, focusedNode]);
+  const drawnNodes = pinned.nodes;
+  const pinnedKey = pinned.outside.map((n) => n.id).join(" ");
+
   // How each drawn element enters. Worked out once when it is first drawn and then kept for
   // as long as it stays drawn, so a later render never changes a running animation's delay.
-  const attrs = useMemo(() => {
-    const now = performance.now();
-    const born = intro.current?.born ?? new Map<string, number>();
-    const old = attrCache.current;
-    const next = new Map<string, DrawAttr>();
-    const take = (key: string, lag = 0) => {
-      let at = old.get(key);
-      if (!at) {
-        const delay = drawDelayAt(born.get(key), now, lag);
-        at = delay === null ? NO_DRAW : { cls: " draw", delay: `${delay}ms` };
-      }
-      next.set(key, at);
-    };
+  // Lines and commits keep separate books, so pinning a commit never rebuilds the lines.
+  const lineAttrs = useMemo(() => {
+    const take = entrances(lineCache.current, intro.current?.born);
     for (const e of view.edges) take(`e:${e.key}`);
     for (const b of view.bridges) take(`b:${b.key}`, BRIDGE_LAG);
-    for (const n of view.nodes) take(`n:${n.id}`, STATION_LAG);
-    attrCache.current = next;
-    return next;
+    lineCache.current = take.kept;
+    return take.kept;
   }, [view]);
+  const nodeAttrs = useMemo(() => {
+    const take = entrances(nodeCache.current, intro.current?.born);
+    // A pinned commit outside the range is booked too, so it does not replay its draw-in
+    // when a pan brings it back into the range.
+    for (const n of drawnNodes) take(`n:${n.id}`, STATION_LAG);
+    nodeCache.current = take.kept;
+    return take.kept;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, pinnedKey]);
 
   // The lines only change with the history and the drawn range. Selecting, zooming, panning
   // within a block and pointing at the legend re-render this component without touching them.
   const lines = useMemo(() => {
     const solid = view.edges.filter((e) => !e.ghost);
     const ghosts = view.edges.filter((e) => e.ghost);
-    const at = (key: string) => attrs.get(key) ?? NO_DRAW;
+    const at = (key: string) => lineAttrs.get(key) ?? NO_DRAW;
     return (
       <>
         {ghosts.map((edge) => {
@@ -638,27 +652,10 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
         })}
       </>
     );
-  }, [view, attrs]);
+  }, [view, lineAttrs]);
 
   // One Tab stop for the whole map (a roving tabindex): the chosen commit, else head, else the
   // commit in the middle of what is drawn. Arrow keys (in App) move the choice, and focus follows.
-  const selectedNode = selected ? layout.byHash.get(selected) : undefined;
-  const focusedNode = focusedHash ? layout.byHash.get(focusedHash) : undefined;
-  // The chosen commit and the one holding keyboard focus stay drawn (and focusable) when they
-  // are off screen, so a wheel pan never drops focus onto the page. They go in column order
-  // either side of the drawn run: React then never has to move a focused element (moving one
-  // in the DOM blurs it) when it scrolls back into range or out of it.
-  const extra = [selectedNode, focusedNode].filter(
-    (n, i, all): n is GraphNode => !!n && all.indexOf(n) === i && (n.col < range.from || n.col > range.to),
-  );
-  const drawnNodes =
-    extra.length === 0
-      ? view.nodes
-      : [
-          ...extra.filter((n) => n.col < range.from).sort((a, b) => a.col - b.col),
-          ...view.nodes,
-          ...extra.filter((n) => n.col > range.to).sort((a, b) => a.col - b.col),
-        ];
   const headNode = graph.head ? layout.byHash.get(graph.head) : undefined;
   const tabHash =
     selectedNode?.commit.hash ??
@@ -692,9 +689,12 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
 
-  function focusStation(hash: string) {
+  /** Puts keyboard focus on a commit's station; true when focus moved there. */
+  function focusStation(hash: string): boolean {
     const el = viewport.current?.querySelector<SVGGElement>(`.node[data-hash="${hash}"]`);
-    if (el && el !== document.activeElement) el.focus({ preventScroll: true });
+    if (!el || el === document.activeElement) return false;
+    el.focus({ preventScroll: true });
+    return document.activeElement === el;
   }
 
   const landingNode = landing ? layout.byHash.get(landing.hash) : undefined;
@@ -767,7 +767,7 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
                   selected={node === selectedNode}
                   tabbable={node.commit.hash === tabHash}
                   isHead={node.commit.hash === graph.head}
-                  at={attrs.get(`n:${node.id}`) ?? NO_DRAW}
+                  at={nodeAttrs.get(`n:${node.id}`) ?? NO_DRAW}
                   onPick={pickStation}
                 />
               ))}
@@ -798,11 +798,10 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
                   onClick={(e) => e.stopPropagation()}
                   onPointerDown={(e) => e.stopPropagation()}
                   onKeyDown={(e) => {
-                    // Escape steps back to the commit (it stays chosen) instead of dropping the choice.
-                    if (e.key === "Escape") {
-                      e.stopPropagation();
-                      focusStation(menuNode.commit.hash);
-                    }
+                    // Escape steps back to the commit (it stays chosen) instead of dropping the
+                    // choice. Only when that actually moved focus is the key used up; otherwise
+                    // App's Escape handling (closing a tool, the terminal, the choice) still runs.
+                    if (e.key === "Escape" && focusStation(menuNode.commit.hash)) e.stopPropagation();
                   }}
                 >
                   {menu.map((item) => (
@@ -858,13 +857,17 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
             <HeadIcon />
           </button>
           <span className="zoom-sep" aria-hidden="true" />
+          {/* At either end of the range the key says so with aria-disabled rather than
+              `disabled`, so a keyboard user pressing it to the limit keeps focus on it. */}
           <button
             type="button"
             className="btn zoom-btn"
             aria-label="Zoom in"
             title="Zoom in (+)"
-            disabled={goal >= ZOOM_MAX}
-            onClick={() => applyZoom(targetZoom() + ZOOM_STEP, keyAnchor(), { smooth: true })}
+            aria-disabled={goal >= ZOOM_MAX || undefined}
+            onClick={() => {
+              if (goal < ZOOM_MAX) applyZoom(targetZoom() + ZOOM_STEP, keyAnchor(), { smooth: true });
+            }}
           >
             +
           </button>
@@ -886,8 +889,10 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
             className="btn zoom-btn"
             aria-label="Zoom out"
             title="Zoom out (−)"
-            disabled={goal <= ZOOM_MIN}
-            onClick={() => applyZoom(targetZoom() - ZOOM_STEP, keyAnchor(), { smooth: true })}
+            aria-disabled={goal <= ZOOM_MIN || undefined}
+            onClick={() => {
+              if (goal > ZOOM_MIN) applyZoom(targetZoom() - ZOOM_STEP, keyAnchor(), { smooth: true });
+            }}
           >
             −
           </button>
@@ -956,7 +961,8 @@ const Station = memo(function Station({ node, selected, tabbable, isHead, at, on
 
       {node.flags.map((flag) => (
         <g key={flag.name} className="flag" transform={`translate(0 ${flag.dy})`}>
-          <text style={{ fill: flag.color }}>{flag.name}</text>
+          {/* Lettered in the lane's text pen (a shade deeper on paper); the underline keeps the line's pen. */}
+          <text style={{ fill: flag.text }}>{flag.name}</text>
           {flag.isCurrent && (
             <path
               className="flag-underline"

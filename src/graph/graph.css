@@ -54,13 +54,22 @@ html[data-theme="board"],
   --pen-0: #1c1c1e;
   --pen-1: #c2406b;
   --pen-2: #2f6fde;
-  /* Lane pens also letter the branch flags and the ticket band, so these three are a
-     shade deeper than a bright marker: 5.17:1, 4.65:1 and 4.63:1 on paper. */
   --pen-3: #1e7a43;
   --pen-4: #c04f00;
   --pen-5: #7b52c7;
   --pen-6: #167f7f;
   --pen-7: #9a6a3a;
+  /* The same pens as lettering (branch names on the map, the ticket band): a shade deeper,
+     so each clears 5:1 on --paper and on --wash (layout.test.ts checks it). Only for text:
+     lines, rings and swatches keep the brighter --pen-N above. */
+  --pen-0-text: #1c1c1e;
+  --pen-1-text: #b13a61;
+  --pen-2-text: #2962c3;
+  --pen-3-text: #1d7540;
+  --pen-4-text: #ab4600;
+  --pen-5-text: #764fbf;
+  --pen-6-text: #147171;
+  --pen-7-text: #885d33;
   /* the terminal is a dark slate in both themes */
   --term-bg: #1c1c1e;
   --term-ink: #f2efe6;
@@ -92,6 +101,15 @@ html[data-theme="board"],
   --pen-5: #c7a6ff;
   --pen-6: #7ddfd6;
   --pen-7: #ffd76a;
+  /* Chalk is light enough to letter with as it is (5.5:1 or more on --paper and --wash). */
+  --pen-0-text: var(--pen-0);
+  --pen-1-text: var(--pen-1);
+  --pen-2-text: var(--pen-2);
+  --pen-3-text: var(--pen-3);
+  --pen-4-text: var(--pen-4);
+  --pen-5-text: var(--pen-5);
+  --pen-6-text: var(--pen-6);
+  --pen-7-text: var(--pen-7);
   --term-bg: #15201e;
   --term-ink: #f2efe6;
   --term-accent: #ffd76a;
@@ -393,6 +411,10 @@ html[data-theme="board"],
   font-size: 20px;
   line-height: 1;
 }
+/* Zoom in/out at the end of the range: looks like a disabled key but keeps focus (aria-disabled). */
+.zoom-btn[aria-disabled="true"] { opacity: 0.4; cursor: default; }
+.zoom-btn[aria-disabled="true"]:hover { background: var(--paper); }
+.zoom-btn[aria-disabled="true"]:active { transform: none; }
 .zoom-reset {
   font-size: 14px;
   letter-spacing: 0;
@@ -568,7 +590,12 @@ html[data-theme="board"],
   padding: 0 10px 0 18px;
   border-bottom: 2.5px solid var(--ink);
 }
-.ticket-line { min-width: 0; color: var(--line); font-size: 22px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Lane lettering. Whoever sets --line (a lane's pen) can also set --line-text to the lane's
+   --pen-N-text (Lane.text in layout.ts). Without it, the pen is mixed a third of the way
+   to ink, which also clears 6:1 on --paper and --wash in both themes. */
+.lane-text,
+.ticket-line { color: var(--line-text, color-mix(in srgb, var(--line, var(--ink)) 66%, var(--ink))); }
+.ticket-line { min-width: 0; font-size: 22px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ticket-close {
   width: 32px;
   height: 32px;
@@ -705,7 +732,7 @@ html[data-theme="board"],
 .status-A { color: var(--ok); }
 .status-M { color: var(--warn); }
 .status-D { color: var(--bad); }
-.status-R, .status-C { color: var(--pen-2); }
+.status-R, .status-C { color: var(--pen-2-text); }
 /* The editor's file tree marks a file's status the same way, in a smaller ring. */
 .tree-status {
   display: grid; place-items: center; flex: none; width: 18px; height: 18px;
@@ -762,7 +789,8 @@ html[data-theme="board"],
 /* The legend's caret points down while open (tools.css turns it right when folded). */
 .legend-caret::before { transform: translateY(-2px) rotate(43deg); }
 .diff-file summary .diff-caret::before { margin-bottom: 1px; }
-.ticket .file-row .file-open::before {
+/* Skipped when a drawn icon sits inside (has-icon), so there are never two arrows. */
+.ticket .file-row .file-open:not(.has-icon)::before {
   content: "";
   display: inline-block;
   width: 13px;

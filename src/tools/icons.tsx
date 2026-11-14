@@ -144,3 +144,30 @@ export function EmptyScopeDoodle() {
     </svg>
   );
 }
+
+/**
+ * "Open in the editor": a pen arrow leaving a little sheet, drawn at the size of the
+ * text it sits in (the ticket's file rows). Replaces the "↗" glyph, which Patrick Hand
+ * doesn't have and so came out in a crisp system symbol font.
+ */
+export function OpenFileIcon() {
+  return (
+    <svg
+      className="open-file-icon"
+      width={14}
+      height={14}
+      viewBox="0 0 14 14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M6.1 2.4H3.3c-.7 0-1 .4-1 1.1l.1 7.3c0 .6.4 1 1 1l7.2-.1c.6 0 1-.4 1-1V8" />
+      <path d="M6.6 7.5 11.7 2.3" />
+      <path d="M8.4 2.2l3.4-.1.1 3.3" />
+    </svg>
+  );
+}

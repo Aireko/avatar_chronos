@@ -3,12 +3,24 @@
 // with "New branch…" at the bottom, which turns the menu into a name field in place.
 // Keys: Up/Down/Home/End walk the menu, Enter picks, Esc steps back out of the name
 // field and then closes the menu, handing the keyboard back to the branch key.
+// A speech bubble beside the key offers Fetch only when origin has updates we have not
+// stored yet, or Pull when the branch is behind origin. Background fetch is off by default.
 import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { errorMessage, type ChronosGraph } from "../backend";
 import { BranchIcon, ChevronIcon, PlusIcon } from "../tools/icons";
 import { Presence } from "../tools/Presence";
 import { branchKeyLabel, branchMenuOrder, branchNameProblem, rovingIndex } from "../tools/toolbarKeys";
-import { branchNames, createBranch, switchBranch } from "./git";
+import {
+  fetchOrigin,
+  probeBranchSync,
+  readAutoFetch,
+  readBranchSync,
+  syncBubbleLabel,
+  syncHintFor,
+  writeAutoFetch,
+  type BranchSyncHint,
+} from "./branchSync";
+import { branchNames, createBranch, pullFrom, switchBranch } from "./git";
 
 interface Props {
   graph: ChronosGraph | undefined;
@@ -19,18 +31,24 @@ interface Props {
 
 /** Menu exit; matches pop-out (0.14s) in tools.css. */
 const EXIT_MS = 140;
+/** Quiet background fetch while Auto-fetch is on and the window is focused. */
+const FETCH_EVERY_MS = 90_000;
 
 export function BranchSwitcher({ graph, currentBranch, onGraphChange, onError }: Props) {
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
-  const [busy, setBusy] = useState<"switch" | "create" | null>(null);
+  const [busy, setBusy] = useState<"switch" | "create" | "fetch" | "pull" | null>(null);
+  const [hint, setHint] = useState<BranchSyncHint | null>(null);
+  const [autoFetch, setAutoFetch] = useState(() => readAutoFetch());
   const root = useRef<HTMLDivElement>(null);
   const key = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const field = useRef<HTMLInputElement>(null);
   const menuId = useId();
   const hintId = useId();
+  const autoFetchRef = useRef(autoFetch);
+  autoFetchRef.current = autoFetch;
 
   const names = graph ? branchNames(graph) : [];
   const ordered = branchMenuOrder(names, currentBranch);
@@ -100,15 +118,73 @@ export function BranchSwitcher({ graph, currentBranch, onGraphChange, onError }:
     };
   }, [open]);
 
-  // A new repository (or the graph going away) shuts the menu.
+  // A new repository (or the graph going away) shuts the menu and resets sync state.
   const repo = graph?.repoPath;
   useEffect(() => {
     setOpen(false);
     setCreating(false);
     setName("");
+    setHint(null);
   }, [repo]);
 
+  // Local behind → Pull. Dry-run (or a real fetch when Auto-fetch is on) → Fetch only
+  // when origin actually has updates. Otherwise the bubble stays hidden.
+  useEffect(() => {
+    if (!repo || !currentBranch) {
+      setHint(null);
+      return;
+    }
+    let gen = 0;
+
+    async function refresh(mode: "probe" | "fetch") {
+      const my = ++gen;
+      try {
+        const status =
+          mode === "fetch" ? await fetchOrigin(repo!) : await probeBranchSync(repo!, true);
+        if (my === gen) setHint(syncHintFor(status));
+      } catch {
+        if (my !== gen) return;
+        try {
+          const status = await readBranchSync(repo!);
+          if (my === gen) setHint(syncHintFor(status));
+        } catch {
+          if (my === gen) setHint(null);
+        }
+      }
+    }
+
+    void refresh("probe");
+    if (!autoFetch) {
+      return () => {
+        gen += 1;
+      };
+    }
+
+    const first = window.setTimeout(() => void refresh("fetch"), 1200);
+    const onFocus = () => {
+      if (autoFetchRef.current) void refresh("fetch");
+    };
+    window.addEventListener("focus", onFocus);
+    const tick = window.setInterval(() => {
+      if (autoFetchRef.current && document.visibilityState === "visible") void refresh("fetch");
+    }, FETCH_EVERY_MS);
+    return () => {
+      gen += 1;
+      window.clearTimeout(first);
+      window.removeEventListener("focus", onFocus);
+      window.clearInterval(tick);
+    };
+  }, [repo, currentBranch, autoFetch]);
+
   if (!graph || !repo) return null;
+
+  function toggleAutoFetch() {
+    setAutoFetch((on) => {
+      const next = !on;
+      writeAutoFetch(next);
+      return next;
+    });
+  }
 
   async function change(branch: string) {
     close();
@@ -117,6 +193,25 @@ export function BranchSwitcher({ graph, currentBranch, onGraphChange, onError }:
     try {
       onError("");
       onGraphChange(await switchBranch(repo!, branch));
+    } catch (e) {
+      onError(errorMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runSync() {
+    if (!hint || busy || !currentBranch) return;
+    const action = hint.kind;
+    setBusy(action);
+    try {
+      onError("");
+      if (action === "fetch") {
+        setHint(syncHintFor(await fetchOrigin(repo!)));
+      } else {
+        onGraphChange(await pullFrom(repo!, currentBranch));
+        setHint(syncHintFor(await readBranchSync(repo!)));
+      }
     } catch (e) {
       onError(errorMessage(e));
     } finally {
@@ -149,7 +244,9 @@ export function BranchSwitcher({ graph, currentBranch, onGraphChange, onError }:
     all[to]?.focus({ preventScroll: true });
   }
 
-  const label = branchKeyLabel(currentBranch, busy);
+  const switching = busy === "switch" || busy === "create" ? busy : null;
+  const label = branchKeyLabel(currentBranch, switching);
+  const bubbleText = hint ? (busy === hint.kind ? (hint.kind === "fetch" ? "Fetching…" : "Pulling…") : syncBubbleLabel(hint)) : null;
 
   return (
     <div
@@ -164,7 +261,7 @@ export function BranchSwitcher({ graph, currentBranch, onGraphChange, onError }:
       <button
         ref={key}
         type="button"
-        className={`btn tool-btn branch-key${busy ? " is-switching" : ""}`}
+        className={`btn tool-btn branch-key${switching ? " is-switching" : ""}`}
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
         aria-busy={busy !== null || undefined}
@@ -181,6 +278,25 @@ export function BranchSwitcher({ graph, currentBranch, onGraphChange, onError }:
           <ChevronIcon />
         </span>
       </button>
+
+      {/* In the toolbar row (not under it) so the map cannot cover the bubble. */}
+      <Presence show={hint !== null && !open} className="branch-sync" exitMs={EXIT_MS}>
+        {hint && bubbleText && (
+          <button
+            type="button"
+            className={`branch-sync-bubble${busy === hint.kind ? " is-busy" : ""}`}
+            disabled={busy !== null}
+            onClick={() => void runSync()}
+            aria-label={
+              hint.kind === "fetch"
+                ? "Fetch from origin"
+                : `Pull ${hint.behind} commit${hint.behind === 1 ? "" : "s"} from origin`
+            }
+          >
+            {bubbleText}
+          </button>
+        )}
+      </Presence>
 
       <Presence show={open} className="branch-pop" exitMs={EXIT_MS}>
         <div id={menuId} ref={menu} role="group" aria-label="Branches" onKeyDown={onMenuKey}>
@@ -247,6 +363,20 @@ export function BranchSwitcher({ graph, currentBranch, onGraphChange, onError }:
               <button type="button" className="branch-item branch-new" onClick={() => setCreating(true)}>
                 <PlusIcon />
                 New branch…
+              </button>
+              <button
+                type="button"
+                className={`branch-autofetch${autoFetch ? " is-on" : ""}`}
+                aria-pressed={autoFetch}
+                title={
+                  autoFetch
+                    ? "Quietly fetch from origin on focus and every few minutes"
+                    : "Only fetch when you click the speech bubble"
+                }
+                onClick={toggleAutoFetch}
+              >
+                <span className="branch-autofetch-switch" aria-hidden="true" />
+                Auto-fetch · {autoFetch ? "on" : "off"}
               </button>
             </div>
           )}

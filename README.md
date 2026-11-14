@@ -1,4 +1,4 @@
-# Chronos
+# Chronos 
 
 Chronos is a desktop Git explorer that works at the level of files and functions, not just commits. You open a repository, see its history drawn as a hand-sketched commit graph, and then narrow it down: show only the commits that touched one file, or one function inside that file. From there you can compare a function at an older commit with how it looks now, roll a single function back to an older version, or ask a local model to explain a commit. It can also show who wrote a file, check pull requests for bugs with a local model, and map what a change touches before you push it.
 

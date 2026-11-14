@@ -17,6 +17,9 @@ import {
   type Contributor,
   type DraftContext,
 } from "./contributors";
+import { initials } from "./initials";
+import { normalizeBlameReport } from "./normalizeBlame";
+import { usePaneReturn } from "../ai/panelHooks";
 import "./ContributorsPanel.css";
 
 interface ContributorsPanelProps {
@@ -29,8 +32,9 @@ type Scope = { kind: "file" } | { kind: "symbol"; index: number } | { kind: "lin
 
 /** Contributor rows ease in one after another; past this many they share the last delay. */
 const MAX_STAGGER = 6;
-/** How long "Copied" stays on the copy button. */
-const COPIED_MS = 1600;
+/** How long "Copied" stays on the copy button: the same hold as the commit ticket's copy
+ *  stamp, the editor's "Saved" and the AI panel. */
+const COPIED_MS = 1400;
 
 export default function ContributorsPanel({ repoPath, filePaths }: ContributorsPanelProps) {
   const [filePath, setFilePath] = useState("");
@@ -42,6 +46,10 @@ export default function ContributorsPanel({ repoPath, filePaths }: ContributorsP
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const listId = useId();
+  // Kept mounted (hidden) in the drawer: coming back neither replays the rows' entrance
+  // nor loses the scroll offset of anything scrolling inside the panel.
+  const panelRef = useRef<HTMLElement>(null);
+  usePaneReturn(panelRef);
 
   async function onBlame(event: FormEvent) {
     event.preventDefault();
@@ -49,7 +57,8 @@ export default function ContributorsPanel({ repoPath, filePaths }: ContributorsP
     setError("");
     setNotice("");
     try {
-      setReport(await blameFile(repoPath, filePath.trim(), revision));
+      // A partial answer becomes an error message here, not a crash while rendering.
+      setReport(normalizeBlameReport(await blameFile(repoPath, filePath.trim(), revision)));
       setScope({ kind: "file" });
     } catch (e) {
       setReport(undefined);
@@ -134,7 +143,7 @@ export default function ContributorsPanel({ repoPath, filePaths }: ContributorsP
   const inTauri = isTauri();
 
   return (
-    <section className="people-panel" aria-labelledby="people-title">
+    <section ref={panelRef} className="people-panel" aria-labelledby="people-title">
       <h2 id="people-title" className="people-sr-only">
         Who worked on this?
       </h2>
@@ -350,10 +359,16 @@ function PersonRow({ person, order, total, onEmail, onCopy }: PersonRowProps) {
 
   return (
     <li className="people-person" style={{ "--i": Math.min(order, MAX_STAGGER) } as CSSProperties}>
-      <div className="people-who">
-        <strong className="people-name">{person.name || "(no name)"}</strong>
-        {bot && <span className="mark dashed people-tag">bot</span>}
-        <span className="people-email">{person.email || "no email recorded"}</span>
+      <div className="people-id">
+        {/* Initials in this person's pen, the same pen as their share bar. */}
+        <span className="people-avatar" aria-hidden="true">
+          {initials(person.name, person.email)}
+        </span>
+        <div className="people-who">
+          <strong className="people-name">{person.name || "(no name)"}</strong>
+          {bot && <span className="mark dashed people-tag">bot</span>}
+          <span className="people-email">{person.email || "no email recorded"}</span>
+        </div>
       </div>
       <div className="people-share">
         <span className="people-bar" aria-hidden>

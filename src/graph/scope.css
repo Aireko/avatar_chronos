@@ -1,29 +1,51 @@
 .scope { position: relative; display: flex; align-items: center; gap: 8px; }
-.scope-tabs { display: flex; border: 2px solid var(--ink); border-radius: var(--sketch); overflow: hidden; }
+.scope-tabs {
+  position: relative; display: flex; border: 2px solid var(--ink); border-radius: var(--sketch); overflow: hidden;
+  background: var(--paper); isolation: isolate;
+}
+/* Tabs are see-through, so the shared ink (.scope-ink) shows under the chosen one. */
 .scope-tab {
+  position: relative; z-index: 1;
   height: 32px; padding: 0 12px; border: 0; border-left: 2px solid var(--ink);
-  background: var(--paper); color: var(--ink); font: inherit; cursor: pointer;
+  background: transparent; color: var(--ink); font: inherit; cursor: pointer;
 }
 .scope-tab:first-child { border-left: 0; }
-.scope-tab:hover:not(:disabled) { background: var(--wash); }
-.scope-tab.on { background: var(--ink); color: var(--paper); }
+.scope-tab:hover:not(:disabled):not(.on) { background: var(--wash); }
+.scope-tab.on { color: var(--paper); }
 .scope-tab:disabled { opacity: 0.4; cursor: default; }
+/* One block of ink that ScopeBar lays under the chosen tab and glides between tabs,
+   overshooting a hair like a marker swiped across. */
+.scope-ink {
+  position: absolute; top: 0; bottom: 0; left: 0; z-index: 0;
+  background: var(--ink); pointer-events: none;
+  transition: opacity 0.18s ease;
+}
+.scope-ink.is-gliding {
+  transition: transform 0.24s cubic-bezier(0.3, 0.9, 0.3, 1.12), width 0.24s cubic-bezier(0.3, 0.9, 0.3, 1.12),
+    opacity 0.18s ease;
+}
+/* Before a repository is open the tabs are dimmed; the ink with them (and it darkens
+   along with the lettering once one opens). */
+.scope-tabs.is-off .scope-ink { opacity: 0.4; }
+/* The ink is already dimmed, so the chosen tab's lettering stays at full strength
+   (dimming both left paper-coloured text at 40% on a 40% ink block, barely legible). */
+.scope-tab.on:disabled { opacity: 1; }
 .scope-chip {
   max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   padding: 2px 10px; border: 2px dashed var(--pen-2); border-radius: var(--sketch); font-family: var(--mono); font-size: 14px;
 }
 .scope-pop {
   position: absolute; top: calc(100% + 12px); left: 0; z-index: 60; width: 440px; max-height: 65vh;
-  display: flex; flex-direction: column; padding: 12px;
+  display: flex; flex-direction: column; gap: 8px; padding: 12px;
   border: 2.5px solid var(--ink); border-radius: var(--sketch); background: var(--paper);
   box-shadow: 4px 5px 0 var(--grid-strong);
 }
-.scope-step-panel {
-  display: flex; flex-direction: column; gap: 8px; min-height: 0; flex: 1;
-}
 .scope-title { display: flex; align-items: center; gap: 8px; font-size: 19px; }
-.scope-back { border: 0; background: none; color: var(--pen-2); font: inherit; cursor: pointer; padding: 0; }
-.scope-list { margin: 0; padding: 0; list-style: none; overflow-y: auto; min-height: 0; }
+.scope-back { border: 0; background: none; color: var(--pen-2-text); font: inherit; cursor: pointer; padding: 0; }
+.scope-list {
+  margin: 0; padding: 0; list-style: none; overflow-y: auto; min-height: 0;
+  scrollbar-width: thin; scrollbar-color: var(--soft) transparent;
+}
 .scope-list button {
   display: block; width: 100%; padding: 4px 8px; border: 0; background: none; color: var(--ink);
   font-family: var(--mono); font-size: 14px; text-align: left; cursor: pointer; overflow-wrap: anywhere;
@@ -45,11 +67,84 @@
 .scope-step { animation: scope-step-in 0.18s ease-out backwards; }
 @keyframes scope-step-in { from { opacity: 0; transform: translateX(10px); } }
 /* "Loading…" waits a beat, so a quick load never flashes it. */
-.scope-loading { animation: scope-wait 0.2s ease-out 0.18s backwards; }
-@keyframes scope-wait { from { opacity: 0; } }
+.scope-loading { animation: fade-in 0.2s ease-out 0.18s backwards; } /* fade-in: graph.css */
 
 @media (prefers-reduced-motion: reduce) {
   .scope-step,
   .scope-loading { animation: none; }
-  .scope-list button { transition: none; }
+  .scope-list button,
+  .scope-ink,
+  .scope-ink.is-gliding { transition: none; }
+}
+
+/* ============ History | Calls on the stage (FunctionViewSwitch.tsx) ============
+   The function's view switch sits in the workspace's top-left corner, level with the graph
+   dock on the right (find.css: top 14px) and on its layer (20), so a closing editor (21)
+   or side panel (22) passes over it. It lands like a chip (chip-in) and lifts off like a
+   pop-up (pop-out, 0.14s = exitMs 140 in App.tsx). Two fixed-width tabs, so its width is
+   known (--view-switch-w: 2 x 79px + the 2px outline on each side) and the neighbours
+   below can keep clear of it. */
+.workspace-main { --view-switch-w: 162px; }
+.view-switch-pop { position: absolute; top: 14px; left: 16px; z-index: 20; transform-origin: 0 0; }
+.view-switch-pop.is-entering { animation: chip-in 0.22s var(--ease-pop) backwards; } /* chip-in, pop-out: tools.css */
+.view-switch-pop.is-leaving { pointer-events: none; animation: pop-out 0.14s ease-in forwards; }
+.view-switch { position: relative; }
+.view-switch .scope-tabs { box-shadow: 3px 4px 0 var(--grid-strong); }
+.view-switch .scope-tab { width: 79px; padding: 0 6px; white-space: nowrap; }
+/* Calls without a call map stays focusable (aria-disabled), so its tip can say why. Only
+   its lettering dims (as a disabled toolbar tab's 40%): dimming the whole key would dim its
+   focus ring too. Still chosen (another function picked while Calls was on), its lettering
+   stays paper on the full ink, as the toolbar's chosen disabled tab does. */
+.view-switch .scope-tab[aria-disabled="true"] { color: color-mix(in srgb, var(--ink) 40%, transparent); cursor: default; }
+.view-switch .scope-tab.on[aria-disabled="true"] { color: var(--paper); }
+.view-switch .scope-tab[aria-disabled="true"]:hover { background: transparent; }
+/* The tip shows over the graph dock (same layer, later on the page) where the find bar
+   drops into the switch's column on a narrow map. */
+.view-switch-pop:has(.view-calls:hover),
+.view-switch-pop:has(.view-calls:focus-visible) { z-index: 21; }
+/* The tabs clip their overflow, so the tip (Tip.tsx, toolbar.css) hangs from this box,
+   which covers the switch without taking the pointer, and shows for the Calls key only. */
+.view-switch-tip { position: absolute; inset: 0; pointer-events: none; }
+/* Lined up with the switch's left edge, so it never hangs off the window's left side. */
+.view-switch .view-switch-tip > .tip { right: auto; left: -4px; translate: none; }
+.view-switch:has(.view-calls:hover) .view-switch-tip > .tip,
+.view-switch:has(.view-calls:focus-visible) .view-switch-tip > .tip {
+  opacity: 1;
+  visibility: visible;
+  transform: rotate(-0.6deg);
+  transition: opacity 0.16s ease 0.35s, transform 0.2s var(--ease-pop) 0.35s, visibility 0s linear 0.35s;
+}
+.view-switch:has(.view-calls:focus-visible) .view-switch-tip > .tip { transition-delay: 0s; }
+
+/* Keeping clear of the switch. The call map's bar starts after it, level with it: a spacer
+   as wide as the switch holds its place in the first row only, so a bar that wraps (a
+   narrow map beside a side panel) uses the full width under the switch. */
+.workspace-main:has(> .view-switch-pop) .calls-bar { padding-top: 14px; }
+.workspace-main:has(> .view-switch-pop) .calls-bar::before {
+  content: "";
+  flex: none;
+  width: calc(var(--view-switch-w) + 2px);
+  height: 36px;
+}
+/* The graph dock (find.css) stops short of it... */
+.workspace-main:has(> .view-switch-pop) > .graph-dock { max-width: calc(100% - 32px - var(--view-switch-w) - 12px); }
+/* ...and where the map is too narrow for the switch and the find bar side by side (a
+   side panel open on a window under 1200px, or a very narrow window), the find bar
+   drops below the Find key, under the switch's row, and takes the whole width there. */
+@media (max-width: 1199px) {
+  .workspace:has(> .slide-panel.is-entering) > .workspace-main:has(> .view-switch-pop) > .graph-dock { max-width: calc(100% - 32px); }
+  .workspace:has(> .slide-panel.is-entering) > .workspace-main:has(> .view-switch-pop) .find-row { flex-wrap: wrap-reverse; }
+  .workspace:has(> .slide-panel.is-entering) > .workspace-main:has(> .view-switch-pop) .find-pop { flex-basis: 100%; }
+}
+@media (max-width: 759px) {
+  .workspace-main:has(> .view-switch-pop) > .graph-dock { max-width: calc(100% - 32px); }
+  .workspace-main:has(> .view-switch-pop) .find-row { flex-wrap: wrap-reverse; }
+  .workspace-main:has(> .view-switch-pop) .find-pop { flex-basis: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .view-switch-pop.is-entering,
+  .view-switch-pop.is-leaving { animation: none; }
+  .view-switch:has(.view-calls:hover) .view-switch-tip > .tip,
+  .view-switch:has(.view-calls:focus-visible) .view-switch-tip > .tip { transition: none; transform: none; }
 }

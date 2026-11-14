@@ -9,6 +9,7 @@ import {
   callDrawPlan,
   exactName,
   fit,
+  foldKey,
   HEAD_LEN,
   layoutCallTree,
   numberLines,
@@ -104,12 +105,12 @@ describe("layoutCallTree", () => {
   const layout = layoutCallTree(sample());
   const at = (id: string) => layout.nodes.find((n) => n.node.id === id)!;
 
-  it("puts callers on the left, callees on the right and deeper hops further out", () => {
-    expect(at("n1").cx).toBeLessThan(at("n0").cx);
-    expect(at("n3").cx).toBeLessThan(at("n1").cx);
-    expect(at("n4").cx).toBeGreaterThan(at("n0").cx);
-    expect(at("n6").cx).toBeGreaterThan(at("n4").cx);
-    expect(at("n1").cx).toBe(at("n2").cx);
+  it("puts callers above, callees below and deeper hops further out", () => {
+    expect(at("n1").cy).toBeLessThan(at("n0").cy);
+    expect(at("n3").cy).toBeLessThan(at("n1").cy);
+    expect(at("n4").cy).toBeGreaterThan(at("n0").cy);
+    expect(at("n6").cy).toBeGreaterThan(at("n4").cy);
+    expect(at("n1").cy).toBe(at("n2").cy);
   });
 
   it("never overlaps two boxes and keeps everything inside the canvas", () => {
@@ -186,33 +187,32 @@ describe("layoutCallTree", () => {
       nodes: [node("n0", "root", "root", 0, null), node("n1", "only", "callee", 1, "n0")],
       edges: [edge("e0", "n0", "n1", "callee")],
     });
-    expect(Math.abs(flat.edges[0].angle)).toBeLessThan(1);
+    // The map flows down the page, so "level" is straight down: 90 degrees.
+    expect(Math.abs(flat.edges[0].angle - 90)).toBeLessThan(1);
     const steep = [angle("e0"), angle("e1"), angle("e4"), angle("e5")];
-    expect(steep.some((a) => Math.abs(a) > 5)).toBe(true);
-    // Never so steep that the head runs along the box side.
+    expect(steep.some((a) => Math.abs(a - 90) > 5)).toBe(true);
+    // Never so slanted that the head runs along the box side.
     for (const line of layout.edges) {
-      const a = Math.abs(line.angle);
-      const fromSide = Math.min(a, 180 - a);
-      expect(fromSide).toBeLessThan(65);
+      expect(Math.abs(Math.abs(line.angle) - 90)).toBeLessThan(65);
     }
   });
 
   it("puts the arrow's point on the side of the box it enters", () => {
     const e4 = layout.edges.find((e) => e.id === "e4")!;
     const target = at("n4");
-    expect(e4.tip.x).toBe(target.cx - NODE_W / 2);
-    expect(Math.abs(e4.tip.y - target.cy)).toBeLessThan(NODE_H / 2 - 6);
+    expect(e4.tip.y).toBe(target.cy - NODE_H / 2);
+    expect(Math.abs(e4.tip.x - target.cx)).toBeLessThan(NODE_W / 2 - 6);
   });
 
   it("spreads lines that meet on one side of a box instead of stacking them on one point", () => {
-    // Root has callers n1 and n2 on its left side: their arrowheads must not share a tip.
+    // Root has callers n1 and n2 on its top side: their arrowheads must not share a tip.
     const into = layout.edges.filter((e) => e.id === "e0" || e.id === "e1" || e.id === "e6");
     const tips = new Set(into.map((e) => `${e.tip.x},${e.tip.y}`));
     expect(tips.size).toBe(into.length);
     // And they stay inside the box side, in the order of the boxes they come from (no crossing).
     const rootBox = at("n0");
     for (const line of layout.edges.filter((e) => e.id === "e0")) {
-      expect(Math.abs(line.tip.y - rootBox.cy)).toBeLessThan(NODE_H / 2);
+      expect(Math.abs(line.tip.x - rootBox.cx)).toBeLessThan(NODE_W / 2);
     }
     const lone = layoutCallTree({
       ...sample(),
@@ -220,7 +220,7 @@ describe("layoutCallTree", () => {
       edges: [edge("e0", "n0", "n1", "callee")],
     });
     // A single line keeps the middle of the side.
-    expect(lone.edges[0].tip.y).toBe(lone.nodes[1].cy);
+    expect(lone.edges[0].tip.x).toBe(lone.nodes[1].cx);
   });
 
   it("lays out a function that has no neighbours", () => {
@@ -314,15 +314,19 @@ describe("callDrawPlan", () => {
   });
 
   it("caps the stagger on a wide level and the delay on a deep one", () => {
-    const wide = layoutCallTree({
-      ...sample(),
-      root: "r",
-      nodes: [
-        node("r", "root", "root", 0, null),
-        ...Array.from({ length: 12 }, (_, i) => node(`c${i}`, `c${i}`, "callee", 1, "r")),
-      ],
-      edges: Array.from({ length: 12 }, (_, i) => edge(`w${i}`, "r", `c${i}`, "callee")),
-    });
+    const wide = layoutCallTree(
+      {
+        ...sample(),
+        root: "r",
+        nodes: [
+          node("r", "root", "root", 0, null),
+          ...Array.from({ length: 12 }, (_, i) => node(`c${i}`, `c${i}`, "callee", 1, "r")),
+        ],
+        edges: Array.from({ length: 12 }, (_, i) => edge(`w${i}`, "r", `c${i}`, "callee")),
+      },
+      // Only a few callees are drawn at first; open the "N more" box so all twelve are.
+      { more: new Map([[foldKey("callee", "r"), 7]]) },
+    );
     const w = callDrawPlan(wide);
     const last = CALLS_LEAD + CALLS_MAX_STAGGER * CALLS_STEP;
     expect(w.lines.get("w6")?.delay).toBe(last);
@@ -344,5 +348,33 @@ describe("callDrawPlan", () => {
       previous = at;
     }
     expect(d.boxes.get("d7")).toBe(CALLS_MAX_DELAY);
+  });
+});
+
+describe("folding", () => {
+  const big = (n: number): CallTreeOk => ({
+    ...sample(),
+    root: "r",
+    nodes: [
+      node("r", "root", "root", 0, null),
+      ...Array.from({ length: n }, (_, i) => node(`c${i}`, `c${i}`, "callee", 1, "r")),
+    ],
+    edges: Array.from({ length: n }, (_, i) => edge(`e${i}`, "r", `c${i}`, "callee")),
+  });
+
+  it("draws a bounded number of boxes however many callees exist", () => {
+    const l = layoutCallTree(big(5000));
+    expect(l.nodes.length).toBeLessThanOrEqual(15);
+    expect(l.folds).toHaveLength(1);
+    expect(l.folds[0].hidden).toBe(5000 - 5);
+  });
+
+  it("opening a fold only adds boxes", () => {
+    const before = layoutCallTree(big(100));
+    const f = before.folds[0];
+    const after = layoutCallTree(big(100), { more: new Map([[f.key, f.step]]) });
+    const ids = new Set(after.nodes.map((n) => n.node.id));
+    expect(before.nodes.every((n) => ids.has(n.node.id))).toBe(true);
+    expect(after.nodes.length).toBe(before.nodes.length + f.step);
   });
 });

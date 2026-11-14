@@ -28,6 +28,7 @@ interface Props {
   currentBranch: string | null;
   onGraphChange: (graph: ChronosGraph) => void;
   onSelect: (hash: string) => void;
+  onOpenSideDiff: () => void;
   onClose: () => void;
 }
 
@@ -50,7 +51,22 @@ function asResult(r: ScopedActionResult): GitCommandResult {
   };
 }
 
-export function CommitDetails({ repoPath, graph, layout, commit, lane, start, scope, pathAtCommit, removed, currentBranch, onGraphChange, onSelect, onClose }: Props) {
+export function CommitDetails({
+  repoPath,
+  graph,
+  layout,
+  commit,
+  lane,
+  start,
+  scope,
+  pathAtCommit,
+  removed,
+  currentBranch,
+  onGraphChange,
+  onSelect,
+  onOpenSideDiff,
+  onClose,
+}: Props) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState<Action | null>(null);
   const [outcome, setOutcome] = useState<{ action: Action; result: GitCommandResult } | null>(null);
@@ -274,8 +290,12 @@ export function CommitDetails({ repoPath, graph, layout, commit, lane, start, sc
             </div>
           ) : (
             <>
+              <button className="key plain tall" disabled={busy !== null || isHead} onClick={onOpenSideDiff}>
+                <strong>View in editor</strong>
+                <span>{isHead ? "Nothing newer to compare" : "Side-by-side comparison"}</span>
+              </button>
               <button
-                className="key amber tall"
+                className="key plain tall"
                 disabled={busy !== null || !canRebase}
                 onClick={() => setConfirming(true)}
               >

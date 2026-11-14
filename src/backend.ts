@@ -157,6 +157,20 @@ export interface CommandRun {
   graph: ChronosGraph | null;
 }
 
+export interface ShellCommandResult {
+  ok: boolean;
+  exitCode: number;
+  command: string;
+  cwd: string;
+  stdout: string;
+  stderr: string;
+}
+
+export interface RepoFile {
+  path: string;
+  content: string;
+}
+
 /* ---------- commands ---------- */
 
 interface GraphPayloadRaw {
@@ -231,6 +245,18 @@ export async function blameFile(repoPath: string, filePath: string, revision?: s
   });
   return JSON.parse(raw.blameJson) as BlameReport;
 }
+
+export const listRepoFiles = (repoPath: string) => call<string[]>("list_repo_files", { repoPath });
+
+export const readRepoFile = (repoPath: string, relativePath: string) =>
+  call<RepoFile>("read_repo_file", { repoPath, relativePath });
+
+export const writeRepoFile = (repoPath: string, relativePath: string, content: string) =>
+  call<void>("write_repo_file", { repoPath, relativePath, content });
+
+/** Runs an arbitrary shell command with cwd set to the open repository. */
+export const runShellCommand = (cwd: string, command: string) =>
+  call<ShellCommandResult>("run_shell_command", { cwd, command });
 
 /* ---------- file / function scope ---------- */
 

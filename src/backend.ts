@@ -232,6 +232,43 @@ export async function blameFile(repoPath: string, filePath: string, revision?: s
   return JSON.parse(raw.blameJson) as BlameReport;
 }
 
+/* ---------- file / function scope ---------- */
+
+export interface ScopedActionResult {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  error: string | null;
+}
+
+export interface FunctionVersions {
+  before: string | null;
+  after: string | null;
+  beforeStart: number;
+  afterStart: number;
+}
+
+export const listFiles = (repoPath: string) => call<string[]>("list_files", { repoPath });
+
+export const functionVersions = (
+  repoPath: string,
+  revision: string,
+  pathAtRevision: string,
+  pathNow: string,
+  functionName: string,
+) => call<FunctionVersions>("function_versions", { repoPath, revision, pathAtRevision, pathNow, functionName });
+
+export const rebaseFile = (repoPath: string, revision: string, pathAtRevision: string, pathNow: string) =>
+  call<ScopedActionResult>("rebase_file", { repoPath, revision, pathAtRevision, pathNow });
+
+export const rebaseFunction = (
+  repoPath: string,
+  revision: string,
+  pathAtRevision: string,
+  pathNow: string,
+  functionName: string,
+) => call<ScopedActionResult>("rebase_function", { repoPath, revision, pathAtRevision, pathNow, functionName });
+
 /* ---------- errors ---------- */
 
 function isBackendError(error: unknown): error is BackendError {

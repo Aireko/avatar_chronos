@@ -1,6 +1,7 @@
 pub mod ai;
 pub mod review;
 mod ffi;
+mod history;
 
 use ffi::BackendError;
 use serde::Serialize;
@@ -165,6 +166,10 @@ pub fn run() {
             run_git_command,
             analyze_merge,
             blame_file,
+            history::list_files,
+            history::function_versions,
+            history::rebase_file,
+            history::rebase_function,
             ai::commands::ai_status,
             ai::commands::ai_check_connection,
             ai::commands::ai_list_models,

@@ -21,6 +21,7 @@ import { ScopeBar } from "./graph/ScopeBar";
 import { BranchSwitcher } from "./push/BranchSwitcher";
 import { PushPanel } from "./push/PushPanel";
 import { PROJECT, scopeGraph, scopeKey, type Scope } from "./graph/scope";
+import ContextViewsPanel from "./context/ContextViewsPanel";
 import { useTheme, type Theme } from "./tools/theme";
 import { crossFade } from "./tools/crossFade";
 import {
@@ -60,6 +61,7 @@ function App() {
   const [diffCompare, setDiffCompare] = useState<DiffCompare | null>(null);
   const [showTerminal, setShowTerminal] = useState(false);
   const [showPush, setShowPush] = useState(false);
+  const [showContext, setShowContext] = useState(false);
   // At most one drawer is open on the right: a tool or the commit details.
   const [tool, setTool] = useState<ToolId | null>(null);
   const [loading, setLoading] = useState(false);
@@ -219,11 +221,12 @@ function App() {
           setShowEditor(false);
           setDiffCompare(null);
         } else if (showTerminal) setShowTerminal(false);
+        else if (showContext) setShowContext(false);
         else setSelected(null);
         return;
       }
 
-      if (tool || showEditor || !layout || !selected) return;
+      if (tool || showEditor || showContext || !layout || !selected) return;
 
       const node = layout.byHash.get(selected);
       if (!node) return;
@@ -248,7 +251,7 @@ function App() {
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [layout, selected, panel, tool, showEditor, showTerminal]);
+  }, [layout, selected, panel, tool, showEditor, showTerminal, showContext]);
 
   function toggleEditor() {
     if (!graph) {
@@ -261,6 +264,7 @@ function App() {
         return false;
       }
       setPanel(null);
+      setShowContext(false);
       return true;
     });
   }
@@ -272,6 +276,22 @@ function App() {
       return;
     }
     setShowTerminal((v) => !v);
+    setShowContext(false);
+  }
+
+  function toggleContext() {
+    if (!graph) {
+      setError("Open a repository first.");
+      return;
+    }
+    setShowContext((visible) => {
+      if (!visible) {
+        setShowEditor(false);
+        setDiffCompare(null);
+        setShowTerminal(false);
+      }
+      return !visible;
+    });
   }
 
   /** The theme switch repaints everything, so the whole window cross-fades instead of snapping. */
@@ -420,10 +440,14 @@ function App() {
 
       <main className="stage">
         <div className="workspace">
-          {/* The graph or the code editor; the editor overlays only this area, so a
-              tool drawer beside it stays visible. */}
+          {/* The graph, context compiler, or code editor; the editor overlays only
+              this area, so a tool drawer beside it stays visible. */}
           <div className="workspace-main">
-          {graph && layout && scoped ? (
+          {graph && showContext ? (
+            <div className="context-panel">
+              <ContextViewsPanel key={graph.repoPath} repoPath={graph.repoPath} />
+            </div>
+          ) : graph && layout && scoped ? (
             showEditor ? null : layout.nodes.length === 0 ? (
               <div key={scopeKey(scope)} className="empty shell-empty">
                 <EmptyScopeDoodle />
@@ -559,6 +583,14 @@ function App() {
             onClick={toggleTerminal}
           >
             Terminal
+          </button>
+          <button
+            type="button"
+            className={`btn dock-key${showContext ? " primary" : ""}`}
+            aria-pressed={showContext}
+            onClick={toggleContext}
+          >
+            Context compiler
           </button>
         </div>
       </main>

@@ -35,6 +35,9 @@ jobs:
       - name: Run C tests
         run: make -C backend test
 
+      - name: Context page budget metrics
+        run: make -C backend metrics
+
   rust-tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 25

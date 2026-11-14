@@ -11,6 +11,16 @@ typedef struct {
     SourceLocation location;
 } RevisionFile;
 
+static int coverage_build_path(const char *path)
+{
+    const char *base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    return strcmp(base, "build.gradle.kts") == 0 ||
+           strcmp(base, "settings.gradle.kts") == 0 ||
+           strcmp(base, "build.gradle") == 0 ||
+           strcmp(base, "settings.gradle") == 0;
+}
+
 static int known_source_extension(const char *path)
 {
     static const char *const extensions[] = {
@@ -56,6 +66,7 @@ int index_build_revision(const GitRepository *repo, const char *selector, Reposi
     IndexCoverage coverage = {0};
     for (size_t i = 0; i < inventory.path_count; ++i) {
         const char *path = inventory.paths[i];
+        if (coverage_build_path(path)) continue;
         int supported = parser_language_for_path(path) != NULL;
         if (!supported && !known_source_extension(path)) continue;
         size_t bytes = inventory.byte_counts ? inventory.byte_counts[i] : 0;

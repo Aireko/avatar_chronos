@@ -46,6 +46,25 @@ grep -Fq '"code":"language-coverage"' "$work/mixed.json"
 grep -Fq '"severity":"info"' "$work/mixed.json"
 grep -Fq 'Indexed 5 of 6 source files (83.3%); 1 unsupported.' "$work/mixed.json"
 
+repo=$work/java
+make_repo "$repo"
+for i in $(seq 1 10); do
+    printf 'package example;\npublic class C%s { public int run() { return %s; } }\n' "$i" "$i" \
+        > "$repo/C$i.java"
+done
+printf '%s\n' 'package main' 'func main() {}' > main.go
+printf '%s\n' 'plugins { java }' > build.gradle.kts
+git add .
+git commit -qm java
+"$coverage_binary" "$repo" HEAD >"$work/java.json"
+test "$(grep -o '"sourceFiles":[0-9]*' "$work/java.json" | cut -d: -f2)" -eq 11
+test "$(grep -o '"supportedFiles":[0-9]*' "$work/java.json" | cut -d: -f2)" -eq 10
+test "$(grep -o '"unsupportedFiles":[0-9]*' "$work/java.json" | cut -d: -f2)" -eq 1
+supported_bytes=$(grep -o '"supportedBytes":[0-9]*' "$work/java.json" | cut -d: -f2)
+source_bytes=$(grep -o '"sourceBytes":[0-9]*' "$work/java.json" | cut -d: -f2)
+test $((supported_bytes * 100)) -ge $((source_bytes * 90))
+grep -Fq 'Indexed 10 of 11 source files (90.9%); 1 unsupported.' "$work/java.json"
+
 repo=$work/unsupported
 make_repo "$repo"
 printf '%s\n' 'package main' 'func main() {}' > main.go

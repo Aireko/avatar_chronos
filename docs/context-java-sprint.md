@@ -88,6 +88,22 @@ is recorded; `make -C backend test` and the coverage CI target pass.
 Exit check: No test regressions; parser/index/compile timings are recorded and
 any avoidable hot-path allocation or full-table scan is removed.
 
+## Measurements
+
+Real Android Studio Java repositories on the local machine, indexed at `HEAD`:
+
+| Repository | Files | Bytes | Coverage | Index time |
+| --- | ---: | ---: | ---: | ---: |
+| `PetShop` | 14 / 14 | 6,728 / 6,728 | 100.0% | ~4.5 s |
+| `Lab08` | 4 / 4 | 3,535 / 3,535 | 100.0% | ~1.0 s |
+
+`build.gradle.kts` and `settings.gradle.kts` are excluded from the source
+inventory because they are build configuration, not application source. The
+Java files themselves are fully covered.
+
+The synthetic Java coverage fixture in CI has 10 supported Java files and one
+unsupported Go file, so the assertion checks a mixed inventory above 90%.
+
 ## Definition of done
 
 - Java is included in the coverage diagnostic and the supported-language docs.

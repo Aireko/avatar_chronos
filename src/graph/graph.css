@@ -644,6 +644,10 @@ body { overflow: hidden; background: #fbfbf8; }
   font-family: var(--mono); font-size: 12.5px; line-height: 1.5; color: var(--ink);
   scrollbar-width: thin; scrollbar-color: var(--soft) transparent;
 }
+.side-pane-edit {
+  width: 100%; padding: 8px 12px 280px; border: 0; resize: none; outline: none;
+  background: var(--paper); color: var(--ink); white-space: pre; tab-size: 2;
+}
 .side-line { display: flex; gap: 10px; padding: 0 12px 0 8px; min-height: 1.5em; white-space: pre; }
 .side-line code { flex: 1; min-width: 0; font: inherit; }
 .side-num {

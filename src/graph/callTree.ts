@@ -24,15 +24,25 @@ export function fit(text: string, max: number): string {
 
 export const NODE_W = 208;
 export const NODE_H = 50;
-const COL_GAP = 92;
-const ROW_GAP = 16;
 const PAD_X = 36;
 const PAD_TOP = 56;
 const PAD_BOTTOM = 36;
-const COL = NODE_W + COL_GAP;
-const ROW = NODE_H + ROW_GAP;
+const LEVEL_GAP = 72;
+const ROW_GAP = 16;
+const COL = NODE_H + LEVEL_GAP;
+const ROW = NODE_W + ROW_GAP;
+/** Total width along a box side over which the lines meeting there are spread. */
+const SLOT_SPAN = 120;
+/** The most space left between two neighbouring lines on a box side. */
+const MAX_SLOT_STEP = 24;
 /** Unresolved calls shown per function before the rest fold into one "more" box. */
 const MAX_GHOSTS = 3;
+/** Callers (or callees) one box shows before the rest fold into a "N more" box. */
+const PER_PARENT = 5;
+/** Boxes drawn on each side of the chosen function, however far Reach goes. The rest fold. */
+const SIDE_BUDGET = 14;
+/** How many hidden neighbours one click on a "N more" box brings in. */
+const PAGE = 10;
 
 export interface LaidNode {
   node: CallTreeNode;
@@ -56,6 +66,27 @@ export interface LaidGhost {
   /** Ambiguous calls only: how many definitions the name could refer to. */
   candidates: number;
 }
+
+/** A "N more callers/callees" box. Clicking it brings in `step` more of them. */
+export interface LaidFold {
+  id: string;
+  /** Key into `LayoutOptions.more`. */
+  key: string;
+  parentId: string;
+  side: Side;
+  hidden: number;
+  step: number;
+  cx: number;
+  cy: number;
+  col: number;
+}
+
+export interface LayoutOptions {
+  /** Extra neighbours revealed per box, keyed by `foldKey`. */
+  more?: ReadonlyMap<string, number>;
+}
+
+export const foldKey = (side: Side, id: string) => `${side}:${id}`;
 
 export type LaidEdgeKind = "tree" | "back" | "ghost";
 
@@ -89,6 +120,7 @@ export interface Point {
 export interface CallTreeLayout {
   nodes: LaidNode[];
   ghosts: LaidGhost[];
+  folds: LaidFold[];
   edges: LaidEdge[];
   width: number;
   height: number;
@@ -98,12 +130,12 @@ export interface CallTreeLayout {
   hasCallees: boolean;
   /** The right-most column, so the draw-in can pace itself. */
   lastCol: number;
-  /** Centres of the two column headings. */
-  callerHeadX: number | null;
-  calleeHeadX: number | null;
+  /** Heights of the two level headings. */
+  callerHeadY: number | null;
+  calleeHeadY: number | null;
 }
 
-type Side = "caller" | "callee";
+export type Side = "caller" | "callee";
 
 interface Box {
   key: string;
@@ -124,11 +156,6 @@ interface Draft {
   col: number;
 }
 
-/** Total height along a box side over which the lines meeting there are spread. */
-const SLOT_SPAN = 38;
-/** The most space left between two neighbouring lines on a box side. */
-const MAX_SLOT_STEP = 11;
-
 /** Which side of each box a line uses, matching how `curve` leaves and enters. */
 const sidesOf = (a: Box, b: Box): ["l" | "r", "l" | "r"] =>
   Math.abs(a.cx - b.cx) < 1 ? ["r", "r"] : a.cx < b.cx ? ["r", "l"] : ["l", "r"];
@@ -139,13 +166,48 @@ const sidesOf = (a: Box, b: Box): ["l" | "r", "l" | "r"] =>
  * Each side is a tidy tree: leaves take consecutive rows, a parent sits level with the
  * middle of its children.
  */
-export function layoutCallTree(tree: CallTreeOk): CallTreeLayout {
+export function layoutCallTree(tree: CallTreeOk, opts: LayoutOptions = {}): CallTreeLayout {
   const byId = new Map(tree.nodes.map((n) => [n.id, n]));
   const root = byId.get(tree.root);
   if (!root) throw new Error("The call tree has no root.");
 
-  const childrenOf = (side: Side, id: string) =>
-    tree.nodes.filter((n) => n.side === side && n.parent === id);
+  const kidMap = new Map<string, CallTreeNode[]>();
+  for (const n of tree.nodes) {
+    if (n.side === "root" || n.parent === null) continue;
+    const key = foldKey(n.side, n.parent);
+    const list = kidMap.get(key);
+    if (list) list.push(n);
+    else kidMap.set(key, [n]);
+  }
+  const calls = new Map<string, number>();
+  for (const e of tree.edges) if (e.to !== null) calls.set(`${e.from}>${e.to}`, e.callCount);
+
+  // Which neighbours each box shows. Nearest levels first, busiest calls first, and each side
+  // draws at most SIDE_BUDGET boxes whatever Reach is: the rest fold into "N more" boxes.
+  const shown = new Map<string, CallTreeNode[]>();
+  const hidden = new Map<string, number>();
+  for (const side of ["caller", "callee"] as const) {
+    const queue: CallTreeNode[] = [root];
+    let left = SIDE_BUDGET;
+    // Boxes the person opened bring their extras with them, so opening one never pushes another out.
+    for (const [key, n] of opts.more ?? []) if (key.startsWith(`${side}:`)) left += n;
+    for (let i = 0; i < queue.length; i++) {
+      const parent = queue[i];
+      const key = foldKey(side, parent.id);
+      const all = kidMap.get(key);
+      if (!all) continue;
+      const weight = (n: CallTreeNode) => calls.get(side === "callee" ? `${parent.id}>${n.id}` : `${n.id}>${parent.id}`) ?? 0;
+      const sorted = [...all].sort((a, b) => weight(b) - weight(a));
+      const extra = opts.more?.get(key) ?? 0;
+      let take = Math.min(sorted.length, PER_PARENT + extra);
+      if (extra === 0) take = Math.min(take, left); // a box the person opened keeps what they asked for
+      left = Math.max(0, left - take);
+      const kept = sorted.slice(0, take);
+      shown.set(key, kept);
+      if (take < sorted.length) hidden.set(key, sorted.length - take);
+      for (const kid of kept) queue.push(kid);
+    }
+  }
 
   const ghostEdges = new Map<string, CallTreeEdge[]>();
   for (const edge of tree.edges) {
@@ -157,6 +219,7 @@ export function layoutCallTree(tree: CallTreeOk): CallTreeLayout {
 
   const pos = new Map<string, { x: number; y: number }>();
   const ghosts: LaidGhost[] = [];
+  const folds: LaidFold[] = [];
 
   const ghostsFor = (id: string): Omit<LaidGhost, "cx" | "cy" | "col">[] => {
     const list = ghostEdges.get(id) ?? [];
@@ -186,14 +249,24 @@ export function layoutCallTree(tree: CallTreeOk): CallTreeLayout {
     return out;
   };
 
+  const addFold = (side: Side, node: CallTreeNode, count: number, rows: { next: number }): number => {
+    const key = foldKey(side, node.id);
+    const cy = rows.next++ * ROW;
+    const cx = (side === "caller" ? -1 : 1) * (node.depth + 1) * COL;
+    folds.push({ id: `f:${key}`, key, parentId: node.id, side, hidden: count, step: count <= 15 ? count : PAGE, cx, cy, col: 0 });
+    return cy;
+  };
+
   /** Returns the row position (in pixels, before centring) of the node it places. */
   const place = (side: Side, node: CallTreeNode, rows: { next: number }): number => {
     const sign = side === "caller" ? -1 : 1;
     const x = sign * node.depth * COL;
-    const kids = childrenOf(side, node.id);
+    const key = foldKey(side, node.id);
+    const kids = shown.get(key) ?? [];
+    const more = hidden.get(key) ?? 0;
     const ghostKids = side === "callee" ? ghostsFor(node.id) : [];
     let y: number;
-    if (kids.length === 0 && ghostKids.length === 0) {
+    if (kids.length === 0 && ghostKids.length === 0 && more === 0) {
       y = rows.next++ * ROW;
     } else {
       const ys = kids.map((kid) => place(side, kid, rows));
@@ -202,6 +275,7 @@ export function layoutCallTree(tree: CallTreeOk): CallTreeLayout {
         ghosts.push({ ...ghost, cx: sign * (node.depth + 1) * COL, cy: gy, col: 0 });
         ys.push(gy);
       }
+      if (more > 0) ys.push(addFold(side, node, more, rows));
       y = (ys[0] + ys[ys.length - 1]) / 2;
     }
     pos.set(node.id, { x, y });
@@ -212,7 +286,9 @@ export function layoutCallTree(tree: CallTreeOk): CallTreeLayout {
   const placeSide = (side: Side) => {
     const rows = { next: 0 };
     const ghostStart = ghosts.length;
-    const kids = childrenOf(side, root.id);
+    const foldStart = folds.length;
+    const key = foldKey(side, root.id);
+    const kids = shown.get(key) ?? [];
     const rootGhosts = side === "callee" ? ghostsFor(root.id) : [];
     const ys = kids.map((kid) => place(side, kid, rows));
     for (const ghost of rootGhosts) {
@@ -220,6 +296,8 @@ export function layoutCallTree(tree: CallTreeOk): CallTreeLayout {
       ghosts.push({ ...ghost, cx: COL, cy: gy, col: 0 });
       ys.push(gy);
     }
+    const rootMore = hidden.get(key) ?? 0;
+    if (rootMore > 0) ys.push(addFold(side, root, rootMore, rows));
     if (ys.length === 0) return;
     const centre = (Math.min(...ys) + Math.max(...ys)) / 2;
     for (const kid of tree.nodes) {
@@ -228,6 +306,7 @@ export function layoutCallTree(tree: CallTreeOk): CallTreeLayout {
       if (p) p.y -= centre;
     }
     for (let i = ghostStart; i < ghosts.length; i++) ghosts[i].cy -= centre;
+    for (let i = foldStart; i < folds.length; i++) folds[i].cy -= centre;
   };
 
   pos.set(root.id, { x: 0, y: 0 });
@@ -235,14 +314,15 @@ export function layoutCallTree(tree: CallTreeOk): CallTreeLayout {
   placeSide("callee");
 
   // Shift everything into positive coordinates.
-  const xs = [...pos.values()].map((p) => p.x).concat(ghosts.map((g) => g.cx));
-  const ys = [...pos.values()].map((p) => p.y).concat(ghosts.map((g) => g.cy));
-  const shiftX = PAD_X + NODE_W / 2 - Math.min(...xs);
-  const shiftY = PAD_TOP + NODE_H / 2 - Math.min(...ys);
-  const reach = Math.max(0, ...tree.nodes.filter((n) => n.side === "caller").map((n) => n.depth));
+  const xs = [...pos.values()].map((p) => p.x).concat(ghosts.map((g) => g.cx), folds.map((f) => f.cx));
+  const ys = [...pos.values()].map((p) => p.y).concat(ghosts.map((g) => g.cy), folds.map((f) => f.cy));
+  const shiftX = PAD_TOP + NODE_H / 2 - Math.min(...xs);
+  const shiftY = PAD_X + NODE_W / 2 - Math.min(...ys);
+  const placed = tree.nodes.filter((n) => pos.has(n.id));
+  const reach = Math.max(0, ...placed.filter((n) => n.side === "caller").map((n) => n.depth));
   const colOf = (side: CallTreeNode["side"], depth: number) =>
     side === "caller" ? reach - depth : side === "callee" ? reach + depth : reach;
-  const nodes: LaidNode[] = tree.nodes.map((node) => {
+  const nodes: LaidNode[] = placed.map((node) => {
     const p = pos.get(node.id) ?? { x: 0, y: 0 };
     return { node, cx: p.x + shiftX, cy: p.y + shiftY, col: colOf(node.side, node.depth) };
   });
@@ -251,6 +331,11 @@ export function layoutCallTree(tree: CallTreeOk): CallTreeLayout {
     ghost.cx += shiftX;
     ghost.cy += shiftY;
     ghost.col = (at.get(ghost.fromId)?.col ?? reach) + 1;
+  }
+  for (const fold of folds) {
+    fold.cx += shiftX;
+    fold.cy += shiftY;
+    fold.col = colOf(fold.side, (at.get(fold.parentId)?.node.depth ?? 0) + 1);
   }
 
   // Every line, before its shape is known: which two boxes it joins and how many calls it stands for.
@@ -295,6 +380,26 @@ export function layoutCallTree(tree: CallTreeOk): CallTreeLayout {
     });
   }
 
+  for (const fold of folds) {
+    const parent = at.get(fold.parentId);
+    if (!parent) continue;
+    const p = { key: parent.node.id, cx: parent.cx, cy: parent.cy };
+    const f = { key: fold.id, cx: fold.cx, cy: fold.cy };
+    const into = fold.side === "callee"; // callees: the box calls into the fold; callers: the fold calls the box
+    drafts.push({
+      id: fold.id,
+      edgeIds: [],
+      kind: "ghost",
+      from: into ? p.key : f.key,
+      to: into ? f.key : p.key,
+      a: into ? p : f,
+      b: into ? f : p,
+      self: false,
+      callCount: 0,
+      col: Math.min(parent.col, fold.col),
+    });
+  }
+
   // Lines that meet on one side of a box are spread along it, in the order of the boxes they come
   // from or go to, so they fan out without crossing instead of piling onto a single point.
   const slots = new Map<string, { draft: Draft; end: "a" | "b"; other: number }[]>();
@@ -333,23 +438,29 @@ export function layoutCallTree(tree: CallTreeOk): CallTreeLayout {
   }));
 
   const rootAt = at.get(root.id);
-  const maxX = Math.max(...xs.map((x) => x + shiftX)) + NODE_W / 2;
-  const maxY = Math.max(...ys.map((y) => y + shiftY)) + NODE_H / 2;
+  const levelEnd = Math.max(...xs.map((x) => x + shiftX)) + NODE_H / 2;
+  const rowEnd = Math.max(...ys.map((y) => y + shiftY)) + NODE_W / 2;
   const hasCallers = tree.nodes.some((n) => n.side === "caller");
   const hasCallees = tree.nodes.some((n) => n.side === "callee") || ghosts.length > 0;
+  const rootLevel = rootAt?.cx ?? 0;
+  const headAt = (level: number) => level - NODE_H / 2 - 10;
+  // Everything above was laid out with levels along x and siblings along y; the map flows
+  // down the page, so the finished boxes swap the two.
+  const turn = <T extends { cx: number; cy: number }>(box: T): T => ({ ...box, cx: box.cy, cy: box.cx });
   return {
-    nodes,
-    ghosts,
+    nodes: nodes.map(turn),
+    ghosts: ghosts.map(turn),
+    folds: folds.map(turn),
     edges,
-    width: maxX + PAD_X + 24,
-    height: maxY + PAD_BOTTOM,
-    rootX: rootAt?.cx ?? 0,
-    rootY: rootAt?.cy ?? 0,
+    width: rowEnd + PAD_X,
+    height: levelEnd + PAD_BOTTOM,
+    rootX: rootAt?.cy ?? 0,
+    rootY: rootLevel,
     hasCallers,
     hasCallees,
-    lastCol: Math.max(reach, ...nodes.map((n) => n.col), ...ghosts.map((g) => g.col)),
-    callerHeadX: hasCallers ? (rootAt?.cx ?? 0) - COL : null,
-    calleeHeadX: hasCallees ? (rootAt?.cx ?? 0) + COL : null,
+    lastCol: Math.max(reach, ...nodes.map((n) => n.col), ...ghosts.map((g) => g.col), ...folds.map((f) => f.col)),
+    callerHeadY: hasCallers ? headAt(rootLevel - COL) : null,
+    calleeHeadY: hasCallees ? headAt(rootLevel + COL) : null,
   };
 }
 
@@ -379,10 +490,11 @@ function finish(start: Point, leave: Point, tip: Point, d: Point, pull: number) 
   const aim = { x: base.x - d.x * pull, y: base.y - d.y * pull };
   // The shaft stops inside the head, so its round cap never shows past the point.
   const end = { x: tip.x - d.x * HEAD_LEN * 0.6, y: tip.y - d.y * HEAD_LEN * 0.6 };
+  // The curve is worked out with levels along x; it is written out turned, so it runs down the page.
   const path =
-    `M ${round(start.x)} ${round(start.y)} C ${round(leave.x)} ${round(leave.y)}, ` +
-    `${round(aim.x)} ${round(aim.y)}, ${round(base.x)} ${round(base.y)} L ${round(end.x)} ${round(end.y)}`;
-  return { path, tip, angle: round((Math.atan2(d.y, d.x) * 180) / Math.PI) };
+    `M ${round(start.y)} ${round(start.x)} C ${round(leave.y)} ${round(leave.x)}, ` +
+    `${round(aim.y)} ${round(aim.x)}, ${round(base.y)} ${round(base.x)} L ${round(end.y)} ${round(end.x)}`;
+  return { path, tip: { x: tip.y, y: tip.x }, angle: round((Math.atan2(d.x, d.y) * 180) / Math.PI) };
 }
 
 /** A line from one box to another, leaving and entering through the sides that face each other. */
@@ -393,18 +505,19 @@ function curve(
   y2: number,
   self: boolean,
 ): { path: string; mid: Point; loops: boolean; tip: Point; angle: number } {
-  const half = NODE_W / 2;
+  const half = NODE_H / 2;
+  const turned = (x: number, y: number): Point => ({ x: y, y: x });
   if (self) {
     const r = x1 + half;
     const end = finish({ x: r, y: y1 - 10 }, { x: r + 60, y: y1 - 36 }, { x: r, y: y1 + 10 }, unit(-1, 0.3), 22);
-    return { ...end, mid: { x: r + 40, y: y1 }, loops: true };
+    return { ...end, mid: turned(r + 40, y1), loops: true };
   }
   if (Math.abs(x1 - x2) < 1) {
     // Same column: bow out to the right so the line does not run through the boxes between.
     const r = x1 + half;
     const bow = 64 + Math.min(Math.abs(y2 - y1) / 4, 40);
     const end = finish({ x: r, y: y1 }, { x: r + bow, y: y1 }, { x: r, y: y2 }, { x: -1, y: 0 }, bow - TAIL);
-    return { ...end, mid: { x: r + bow * 0.75, y: (y1 + y2) / 2 }, loops: true };
+    return { ...end, mid: turned(r + bow * 0.75, (y1 + y2) / 2), loops: true };
   }
   const forward = x1 < x2;
   const dir = forward ? 1 : -1;
@@ -421,7 +534,7 @@ function curve(
     unit(dir, slope),
     Math.max(16, run * 0.3),
   );
-  return { ...end, mid: { x: (sx + ex) / 2, y: (y1 + y2) / 2 }, loops: !forward };
+  return { ...end, mid: turned((sx + ex) / 2, (y1 + y2) / 2), loops: !forward };
 }
 
 /* ---------- draw-in timing (pure; see CallGraphView and callGraph.css) ----------
@@ -458,6 +571,7 @@ export function callDrawPlan(layout: CallTreeLayout, settledDepth = -1): CallDra
   const depth = new Map<string, number>();
   for (const { node } of layout.nodes) depth.set(node.id, node.depth);
   for (const ghost of layout.ghosts) depth.set(ghost.id, (depth.get(ghost.fromId) ?? 0) + 1);
+  for (const fold of layout.folds) depth.set(fold.id, (depth.get(fold.parentId) ?? 0) + 1);
   const levelOf = (id: string) => depth.get(id) ?? 0;
   const settled = (id: string) => levelOf(id) <= settledDepth;
 

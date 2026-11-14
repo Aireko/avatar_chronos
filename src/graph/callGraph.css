@@ -472,6 +472,8 @@
   .calls-line { transition: none; }
   .calls-node:hover .calls-body,
   .calls-ghost:hover .calls-body,
+  .calls-fold .calls-box { stroke-dasharray: 2 5; }
+.calls-fold .calls-ghost-name { font-weight: 600; }
   .calls-node:focus-visible .calls-body,
   .calls-ghost:focus-visible .calls-body,
   .calls-node.picked .calls-body,

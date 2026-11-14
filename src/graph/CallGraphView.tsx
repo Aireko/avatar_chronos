@@ -30,6 +30,7 @@ import {
   layoutCallTree,
   numberLines,
   summarize,
+  type LaidFold,
   type LaidGhost,
   type SourceLine,
 } from "./callTree";
@@ -68,7 +69,7 @@ type Shown =
 const DEPTHS = [1, 2, 3, 4];
 
 // Zoom works like the history map: buttons, +/-, Ctrl/Cmd+wheel, all gliding. The range runs
-// further out than the history map's, because a function with dozens of callees is tall.
+// further out than the history map's, because a function with dozens of callees is wide.
 const ZOOM_MIN = 0.25;
 const ZOOM_MAX = 2;
 const ZOOM_STEP = 0.12;
@@ -109,6 +110,8 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
   const [attempt, setAttempt] = useState(0);
   const [pick, setPick] = useState<Pick>(null);
   const [shown, setShown] = useState<Shown>({ phase: "idle" });
+  const [more, setMore] = useState<ReadonlyMap<string, number>>(new Map());
+  const anchor = useRef<{ id: string; x: number; y: number } | null>(null);
   const canvas = useRef<HTMLDivElement>(null);
   const svgEl = useRef<SVGSVGElement>(null);
   const drag = useRef({ moved: false });
@@ -127,6 +130,7 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
     let stale = false;
     setLoad({ phase: "loading" });
     setPick(null);
+    setMore(new Map());
     callTree(repoPath, target.path, target.name, { revision, maxDepth: depth })
       .then(
         (tree) => {
@@ -142,7 +146,7 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
   }, [repoPath, revision, target, depth, attempt]);
 
   const tree: CallTreeOk | null = load.phase === "done" && load.tree.status === "ok" ? load.tree : null;
-  const layout = useMemo(() => (tree ? layoutCallTree(tree) : null), [tree]);
+  const layout = useMemo(() => (tree ? layoutCallTree(tree, { more }) : null), [tree, more]);
   const nodes = useMemo(() => new Map((tree?.nodes ?? []).map((n) => [n.id, n])), [tree]);
   const edges = useMemo(() => new Map((tree?.edges ?? []).map((e) => [e.id, e])), [tree]);
 
@@ -171,6 +175,21 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
       left: Math.max(0, layout.rootX * z - el.clientWidth / 2),
       top: Math.max(0, layout.rootY * z - el.clientHeight / 2),
     });
+    // Only a new map recentres; opening a "N more" box must not.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tree]);
+
+  // After a "N more" box opens, keep the box it belongs to where it was on screen.
+  useEffect(() => {
+    const el = canvas.current;
+    const a = anchor.current;
+    if (!el || !a || !layout) return;
+    anchor.current = null;
+    const at = layout.nodes.find((n) => n.node.id === a.id);
+    if (at) {
+      el.scrollLeft = at.cx * liveZoom.current - a.x;
+      el.scrollTop = at.cy * liveZoom.current - a.y;
+    }
   }, [layout]);
 
   // The source behind the selection: the function itself, or the caller with its call lines marked.
@@ -364,6 +383,19 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
     setTarget({ path: symbol.filePath, name: exactName(symbol) });
   }
 
+  function expand(fold: LaidFold) {
+    const el = canvas.current;
+    const at = layout?.nodes.find((n) => n.node.id === fold.parentId);
+    if (el && at) {
+      anchor.current = {
+        id: at.node.id,
+        x: at.cx * liveZoom.current - el.scrollLeft,
+        y: at.cy * liveZoom.current - el.scrollTop,
+      };
+    }
+    setMore((m) => new Map(m).set(fold.key, (m.get(fold.key) ?? 0) + fold.step));
+  }
+
   function back() {
     const previous = trail[trail.length - 1];
     if (!previous) return;
@@ -498,7 +530,7 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
     setPick({ kind: "edges", ids: ghost.edgeIds });
   }
 
-  // The column headings ink in with the chosen function, unless it was already there.
+  // The level headings ink in with the chosen function, unless it was already there.
   const freshMap = plan.boxes.has(tree.root);
 
   return (
@@ -532,18 +564,35 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
             role="group"
             aria-label={`Callers and callees of ${title}`}
           >
-            {layout.callerHeadX !== null && (
-              <text className={`calls-head${freshMap ? " draw" : ""}`} x={layout.callerHeadX} y={30} textAnchor="middle">
+            {layout.callerHeadY !== null && (
+              <text className={`calls-head${freshMap ? " draw" : ""}`} x={36} y={layout.callerHeadY}>
                 Called by
               </text>
             )}
-            {layout.calleeHeadX !== null && (
-              <text className={`calls-head${freshMap ? " draw" : ""}`} x={layout.calleeHeadX} y={30} textAnchor="middle">
+            {layout.calleeHeadY !== null && (
+              <text className={`calls-head${freshMap ? " draw" : ""}`} x={36} y={layout.calleeHeadY}>
                 Calls
               </text>
             )}
 
             {layout.edges.map((line) => {
+              if (line.edgeIds.length === 0) {
+                // The short line to a "N more" box: not a call, so not clickable.
+                const pen = plan.lines.get(line.id);
+                return (
+                  <g
+                    key={line.id}
+                    className={`calls-edge ghost${pen ? " draw" : ""}${pen?.inward ? " is-inward" : ""}`}
+                    style={{ ...drawDelay(pen?.delay), pointerEvents: "none" }}
+                    aria-hidden="true"
+                  >
+                    <path className="calls-line" d={line.path} />
+                    <g transform={`translate(${line.tip.x} ${line.tip.y}) rotate(${line.angle})`}>
+                      <path className="calls-arrowhead" d={HEAD_PATH} />
+                    </g>
+                  </g>
+                );
+              }
               const selected = edgeSelected(line.edgeIds);
               const first = edges.get(line.edgeIds[0]);
               const label = first
@@ -614,10 +663,40 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
               );
             })}
 
+            {layout.folds.map((fold) => {
+              const what = fold.side === "caller" ? "callers" : "callees";
+              const action = fold.step === fold.hidden ? "show all" : `show ${fold.step} more`;
+              const open = () => expand(fold);
+              return (
+                <g
+                  key={fold.id}
+                  className={`calls-ghost calls-fold${plan.boxes.has(fold.id) ? " draw" : ""}`}
+                  style={drawDelay(plan.boxes.get(fold.id))}
+                  transform={`translate(${fold.cx - NODE_W / 2} ${fold.cy - NODE_H / 2})`}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`${fold.hidden} more ${what} not drawn. ${action}`}
+                  onClick={open}
+                  onKeyDown={activate(open)}
+                >
+                  <rect className="calls-pad" width={NODE_W} height={NODE_H} rx={10} />
+                  <g className="calls-body">
+                    <rect className="calls-box" width={NODE_W} height={NODE_H} rx={10} />
+                    <text className="calls-ghost-name" x={12} y={21}>
+                      +{fold.hidden.toLocaleString()} more {what}
+                    </text>
+                    <text className="calls-file" x={12} y={39}>
+                      {action}
+                    </text>
+                  </g>
+                </g>
+              );
+            })}
+
             {layout.nodes.map(({ node, cx, cy }) => {
               const isRoot = node.side === "root";
               const selected = pickedNode?.id === node.id;
-              const outerX = node.side === "caller" ? 0 : NODE_W;
+              const outerY = node.side === "caller" ? 0 : NODE_H;
               const choose = () => setPick({ kind: "node", id: node.id });
               return (
                 <g
@@ -647,7 +726,7 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
                       {fit(`${baseName(node.filePath)}:${node.startLine}`, 30)}
                     </text>
                     {node.hasMore && (
-                      <g className="calls-more" transform={`translate(${outerX} ${NODE_H / 2})`}>
+                      <g className="calls-more" transform={`translate(${NODE_W / 2} ${outerY})`}>
                         <circle r={10} />
                         <text textAnchor="middle" y={4}>
                           …

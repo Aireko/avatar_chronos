@@ -111,6 +111,9 @@ export function ScopeBar({ graph, scope, onChange, view = "history", onViewChang
   function open(next: Picking) {
     setQuery("");
     setError("");
+    // Going back to the file step (or opening Function fresh) must drop the previous
+    // file's function list, or that selection hangs around as a leftover in the dialog.
+    if (next.kind === "function" && next.path === null) setFunctions([]);
     setPicking(next);
     // Moving between steps removes the button that was clicked; keep focus in the picker.
     filter.current?.focus();
@@ -175,6 +178,11 @@ export function ScopeBar({ graph, scope, onChange, view = "history", onViewChang
 
   const active = picking ? picking.kind : scope.kind;
   const q = query.trim().toLowerCase();
+  // Only mark the active file while choosing a *file* scope. During the function
+  // wizard's file step, an old scope.path would otherwise look like a stuck selection
+  // after you pick a file and then go back with "‹ files".
+  const highlightedFile =
+    picking?.kind === "file" && scope.kind !== "project" ? scope.path : null;
   const isCurrent = (name: string) => scope.kind === "function" && scope.path === functionPath && scope.name === name;
   const callsOff =
     scope.kind !== "function"
@@ -248,9 +256,10 @@ export function ScopeBar({ graph, scope, onChange, view = "history", onViewChang
 
       <Presence show={picking !== null} className="scope-pop" exitMs={140}>
         {picking && (
-          <>
-            {/* Keyed by the step (files, then a file's functions), so moving between steps slides the new one in. */}
-            <div key={wantFiles ? "files" : `fn:${functionPath}`} className="scope-title scope-step">
+          // One key for the whole step. Title + list used to share the same sibling key
+          // ("files" / "fn:…"), so React left old titles stacked when you picked again.
+          <div key={wantFiles ? "files" : `fn:${functionPath}`} className="scope-step-panel scope-step">
+            <div className="scope-title">
               {picking.kind === "file" && "Choose a file"}
               {picking.kind === "function" && picking.path === null && "Choose the file the function is in"}
               {picking.kind === "function" && picking.path !== null && (
@@ -276,9 +285,8 @@ export function ScopeBar({ graph, scope, onChange, view = "history", onViewChang
             {loading && <p className="quiet scope-note scope-loading">Loading…</p>}
             {error && <p className="scope-note scope-bad" role="alert">{error}</p>}
             <ul
-              key={wantFiles ? "files" : `fn:${functionPath}`}
               ref={list}
-              className="scope-list scope-step"
+              className="scope-list"
               onKeyDown={onListKey}
               aria-label={wantFiles ? "Files" : "Functions"}
             >
@@ -286,8 +294,8 @@ export function ScopeBar({ graph, scope, onChange, view = "history", onViewChang
                 fileMatches.slice(0, MAX_SHOWN).map((f) => (
                   <li key={f}>
                     <button
-                      className={scope.kind !== "project" && scope.path === f ? "on" : undefined}
-                      aria-current={scope.kind !== "project" && scope.path === f ? "true" : undefined}
+                      className={highlightedFile === f ? "on" : undefined}
+                      aria-current={highlightedFile === f ? "true" : undefined}
                       onClick={() => pickFile(f)}
                     >
                       {f}
@@ -314,7 +322,7 @@ export function ScopeBar({ graph, scope, onChange, view = "history", onViewChang
             {wantFiles && fileMatches.length > MAX_SHOWN && (
               <p className="quiet scope-note">{fileMatches.length - MAX_SHOWN} more. Keep typing to narrow it down.</p>
             )}
-          </>
+          </div>
         )}
       </Presence>
     </div>

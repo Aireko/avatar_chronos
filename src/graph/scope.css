@@ -14,9 +14,12 @@
 }
 .scope-pop {
   position: absolute; top: calc(100% + 12px); left: 0; z-index: 60; width: 440px; max-height: 65vh;
-  display: flex; flex-direction: column; gap: 8px; padding: 12px;
+  display: flex; flex-direction: column; padding: 12px;
   border: 2.5px solid var(--ink); border-radius: var(--sketch); background: var(--paper);
   box-shadow: 4px 5px 0 var(--grid-strong);
+}
+.scope-step-panel {
+  display: flex; flex-direction: column; gap: 8px; min-height: 0; flex: 1;
 }
 .scope-title { display: flex; align-items: center; gap: 8px; font-size: 19px; }
 .scope-back { border: 0; background: none; color: var(--pen-2); font: inherit; cursor: pointer; padding: 0; }

@@ -37,6 +37,22 @@ int main(void)
     assert(chronos_read_source("..", "HEAD", "../outside.c", 0, 1, &source) < 0);
     assert(source == NULL);
 
+    const char *paths[] = {"backend/src/avatar.c", "backend/src/avatar.c"};
+    const char *names[] = {"chronos_compile_views", "chronos_read_source"};
+    char *multi = NULL;
+    status = chronos_compile_multi_views("..", "HEAD", "task", paths, names, 2, 8, 65536,
+                                         &multi);
+    assert(status >= 0);
+    assert(multi != NULL);
+    assert(strstr(multi, "\"targetCount\":2") != NULL);
+    assert(strstr(multi, "\"id\":\"targets\"") != NULL);
+    assert(strstr(multi, "Target: chronos_compile_views") != NULL);
+    assert(strstr(multi, "Target: chronos_read_source") != NULL);
+    chronos_free_string(multi);
+    assert(chronos_compile_multi_views("..", "HEAD", "task", paths, names, 0, 8, 2048,
+                                       &multi) < 0);
+    assert(multi == NULL);
+
     puts("context compiler C API tests passed");
     return 0;
 }

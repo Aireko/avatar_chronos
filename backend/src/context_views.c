@@ -8,6 +8,7 @@
 
 #define T_ENTRY_ONBOARDING "Entry point: %s in %s."
 #define T_ENTRY_TASK "Task anchor: %s in %s."
+#define T_TARGET "Target: %s in %s."
 #define T_FLOW "Flow: %s -> %s (%zu hops, relevance %.2f)."
 #define T_EDIT "Likely edit location: %s in %s."
 #define T_TEST "Likely test location: %s in %s."
@@ -37,6 +38,7 @@ typedef struct {
 } SectionBuilder;
 
 enum {
+    SECTION_TARGET,
     SECTION_ENTRY,
     SECTION_FLOW,
     SECTION_EDIT,
@@ -316,6 +318,19 @@ static int is_test_like(const GraphSymbol *symbol)
                              (strlen(name) >= 5 && strcmp(name + strlen(name) - 5, "_test") == 0)));
 }
 
+static int build_target_section(BriefBuilder *builder, const ContextFlowSet *flows,
+                                ContextFlowMode mode)
+{
+    if (mode != CONTEXT_FLOW_TASK || flows->seed_count <= 1) return CHRONOS_OK;
+    SectionBuilder *section = &builder->sections[SECTION_TARGET];
+    size_t limit = flows->seed_count < 32 ? flows->seed_count : 32;
+    for (size_t i = 0; i < limit; ++i) {
+        int status = add_source_item(builder, section, flows->seeds[i], T_TARGET);
+        if (status < 0) return status;
+    }
+    return CHRONOS_OK;
+}
+
 static int build_entry_section(BriefBuilder *builder, const ContextFlowSet *flows,
                                ContextFlowMode mode)
 {
@@ -508,10 +523,11 @@ static int build_brief(BriefBuilder *builder, const ContextFlowSet *flows,
                        ContextBrief *out)
 {
     static const char *const ids[SECTION_COUNT] = {
-        "entry-points", "top-flows", "edit-locations", "test-locations", "unresolved"
+        "targets", "entry-points", "top-flows", "edit-locations",
+        "test-locations", "unresolved"
     };
     static const char *const titles[SECTION_COUNT] = {
-        "Entry points", "Top flows", "Likely edit locations",
+        "Targets", "Entry points", "Top flows", "Likely edit locations",
         "Likely test locations", "Unresolved relationships"
     };
     for (size_t i = 0; i < SECTION_COUNT; ++i) {
@@ -520,7 +536,9 @@ static int build_brief(BriefBuilder *builder, const ContextFlowSet *flows,
     }
     if (mode == CONTEXT_FLOW_TASK) builder->sections[SECTION_ENTRY].title = "Task anchors";
 
-    int status = build_entry_section(builder, flows, mode);
+    int status = build_target_section(builder, flows, mode);
+    if (status < 0) return status;
+    status = build_entry_section(builder, flows, mode);
     if (status < 0) return status;
     status = build_flow_section(builder, flows);
     if (status < 0) return status;

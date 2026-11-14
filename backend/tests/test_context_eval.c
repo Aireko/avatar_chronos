@@ -293,6 +293,14 @@ static size_t count_items(const ContextBrief *brief)
     return count;
 }
 
+static int brief_text_contains(const ContextBrief *brief, const char *needle)
+{
+    for (size_t i = 0; i < brief->section_count; ++i)
+        for (size_t j = 0; j < brief->sections[i].item_count; ++j)
+            if (strstr(brief->sections[i].items[j].text, needle) != NULL) return 1;
+    return 0;
+}
+
 static int bridge_has(const ContextBridgeSet *set, ContextBridgeKind kind, const char *label)
 {
     for (size_t i = 0; i < set->count; ++i)
@@ -461,6 +469,46 @@ int main(int argc, char **argv)
     free(change_brief);
     free(change_graph);
     context_views_free(&change_views);
+
+    SymbolVersionRef main_ref;
+    assert(find_symbol(index, "main", &main_ref));
+    const ContextFlowSeed multi_seeds[] = {
+        {CONTEXT_FLOW_SEED_SYMBOL, &main_ref, NULL},
+        {CONTEXT_FLOW_SEED_SYMBOL, &gamma_ref, NULL}
+    };
+    const ContextFlowRequest multi_flow = {
+        .mode = CONTEXT_FLOW_TASK, .seeds = multi_seeds, .seed_count = 2,
+        .max_hops = 4, .max_flows = 8, .max_nodes = 8
+    };
+    ContextViewsRequest multi_request = {&multi_flow, {12, 4096}};
+    ContextViews multi_views = {0};
+    assert(context_build_views(index, &multi_request, &multi_views) == CHRONOS_OK);
+    assert(multi_views.graph.evidence == multi_views.brief.evidence);
+    assert(count_items(&multi_views.brief) <= 12);
+    assert(multi_views.brief.used_source_bytes <= 4096);
+    assert(brief_text_contains(&multi_views.brief, "Target: main in app/main.c."));
+    assert(brief_text_contains(&multi_views.brief, "Target: gamma in lib/remote.c."));
+    char *multi_brief = serialize_brief(&multi_views.brief);
+    char *multi_graph = serialize_graph(&multi_views.graph);
+    golden_compare("multi-brief.json", multi_brief, write_golden);
+    golden_compare("multi-graph.json", multi_graph, write_golden);
+    const RequiredCall multi_required[] = {
+        {"main", "alpha", 1},
+        {"beta", "gamma", 1},
+        {"main", "missing", 0}
+    };
+    size_t multi_retained = retained_calls(index, &multi_views.graph, &multi_views.brief,
+                                           multi_required,
+                                           sizeof multi_required / sizeof multi_required[0]);
+    assert(multi_retained == 3);
+    assert(unresolved_edges(&multi_views.graph) == 1);
+    printf("eval multi-symbol: compiler=%zu tokens baseline=%zu tokens retained=%zu/3 unresolved=%zu targets=2\n",
+           estimate_tokens(brief_prompt_bytes(&multi_views.brief)),
+           estimate_tokens(onboarding_baseline + TASK_PROMPT_BYTES),
+           multi_retained, unresolved_edges(&multi_views.graph));
+    free(multi_brief);
+    free(multi_graph);
+    context_views_free(&multi_views);
 
     IndexContext context = {0};
     assert(index_collect_context(index, &gamma_ref, &context) == CHRONOS_OK);

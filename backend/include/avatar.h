@@ -64,6 +64,19 @@ CHRONOS_API int chronos_compile_views(const char* repo_path,
                                       size_t max_source_bytes,
                                       char** out_json);
 
+/* Multi-target variant of chronos_compile_views(). Task mode compiles 1..64
+ * path/qualified targets into one combined brief and graph with one evidence
+ * catalog and one global budget. Onboarding ignores the target arrays. */
+CHRONOS_API int chronos_compile_multi_views(const char* repo_path,
+                                            const char* revision,
+                                            const char* mode,
+                                            const char* const* paths,
+                                            const char* const* qualified_names,
+                                            size_t target_count,
+                                            size_t max_items,
+                                            size_t max_source_bytes,
+                                            char** out_json);
+
 /* Reads pinned source bytes for start_byte..end_byte and returns a heap JSON
  * object with repository, revision, path, range and source. revision may be
  * empty for HEAD. Free the result with chronos_free_string(). */

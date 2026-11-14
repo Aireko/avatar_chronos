@@ -349,8 +349,14 @@ export interface ContextViews {
   schemaVersion: number;
   repositoryId: string;
   revision: ContextRevision;
+  targetCount?: number;
   brief: ContextBriefDocument;
   graph: ContextGraphDocument;
+}
+
+export interface ContextTarget {
+  path: string;
+  qualifiedName: string;
 }
 
 export interface CompileViewsOptions {
@@ -383,6 +389,33 @@ export async function compileViews(
     mode: options.mode ?? "onboarding",
     path: options.path?.trim() || null,
     qualifiedName: options.qualifiedName?.trim() || null,
+    maxItems: options.maxItems ?? null,
+    maxSourceBytes: options.maxSourceBytes ?? null,
+  });
+  return JSON.parse(raw.viewsJson) as ContextViews;
+}
+
+export interface CompileMultiViewsOptions {
+  revision?: string;
+  mode?: "onboarding" | "task" | "review";
+  targets?: ContextTarget[];
+  maxItems?: number;
+  maxSourceBytes?: number;
+}
+
+/** Compiles multiple task targets into one combined brief/graph. */
+export async function compileMultiViews(
+  repoPath: string,
+  options: CompileMultiViewsOptions = {},
+): Promise<ContextViews> {
+  const raw = await call<{ viewsJson: string }>("compile_multi_views", {
+    repoPath,
+    revision: options.revision?.trim() || "HEAD",
+    mode: options.mode ?? "task",
+    targets: (options.targets ?? []).map((target) => ({
+      path: target.path.trim(),
+      qualifiedName: target.qualifiedName.trim(),
+    })),
     maxItems: options.maxItems ?? null,
     maxSourceBytes: options.maxSourceBytes ?? null,
   });

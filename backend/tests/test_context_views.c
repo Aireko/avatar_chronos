@@ -292,6 +292,29 @@ int main(void)
     assert_brief_json(&task_views.brief, 0);
     context_views_free(&task_views);
 
+    SymbolVersionRef main_ref;
+    assert(find_symbol(index, "main", &main_ref));
+    const ContextFlowSeed multiple[] = {
+        {CONTEXT_FLOW_SEED_SYMBOL, &main_ref, NULL},
+        {CONTEXT_FLOW_SEED_SYMBOL, &gamma_ref, NULL}
+    };
+    const ContextFlowRequest multi = {
+        .mode = CONTEXT_FLOW_TASK, .seeds = multiple, .seed_count = 2,
+        .max_hops = 4, .max_flows = 8, .max_nodes = 8
+    };
+    request.flow = &multi;
+    request.budget = (ContextBudget){12, 4096};
+    ContextViews multi_views = {0};
+    assert(context_build_views(index, &request, &multi_views) == CHRONOS_OK);
+    const ContextBriefSection *targets = find_section(&multi_views.brief, "targets");
+    assert(targets != NULL && targets->item_count == 2);
+    assert(strcmp(targets->items[0].text, "Target: main in app/main.c.") == 0);
+    assert(strcmp(targets->items[1].text, "Target: gamma in lib/remote.c.") == 0);
+    assert(multi_views.graph.evidence == multi_views.brief.evidence);
+    assert(item_count(&multi_views.brief) <= request.budget.max_items);
+    assert_brief_json(&multi_views.brief, 0);
+    context_views_free(&multi_views);
+
     index_free(index);
     puts("agent brief and UI graph view tests passed");
     return 0;

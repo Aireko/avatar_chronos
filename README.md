@@ -190,6 +190,13 @@ panel compiles a brief and opens its matching graph; the Brief and Graph tabs
 resolve evidence through the same catalog, and an evidence button loads the
 pinned callsite range with `read_source`.
 
+Multi-symbol review is available through `compile_multi_views` and the
+multi-target rows in the panel. Task mode accepts up to 64 exact
+path/qualified-name targets. All targets share one evidence catalog, one
+combined graph, and one global item/source budget. The brief gains a `targets`
+section so each requested symbol has its own evidence-backed item, while top
+flows and edit locations are ranked across the combined set.
+
 ### Evaluation and supported resolution
 
 `test_context_eval` is the hand-labeled evaluation set. It covers onboarding,

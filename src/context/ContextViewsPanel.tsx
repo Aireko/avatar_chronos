@@ -1,11 +1,13 @@
 import { useMemo, useState, type ReactNode } from "react";
 import {
+  compileMultiViews,
   compileViews,
   errorMessage,
   readSource,
   type ContextEvidence,
   type ContextGraphEdge,
   type ContextGraphNode,
+  type ContextTarget,
   type ContextViews,
   type SourceResponse,
 } from "../backend";
@@ -25,8 +27,7 @@ const preStyle = {
 function ContextViewsPanel({ repoPath }: { repoPath: string }) {
   const [revision, setRevision] = useState("HEAD");
   const [mode, setMode] = useState<FlowMode>("onboarding");
-  const [targetPath, setTargetPath] = useState("");
-  const [qualifiedName, setQualifiedName] = useState("");
+  const [targets, setTargets] = useState<ContextTarget[]>([{ path: "", qualifiedName: "" }]);
   const [maxItems, setMaxItems] = useState(12);
   const [maxSourceBytes, setMaxSourceBytes] = useState(4096);
   const [views, setViews] = useState<ContextViews>();
@@ -86,23 +87,42 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
     );
   }
 
+  const filledTargets = targets.filter(
+    (target) => target.path.trim() !== "" && target.qualifiedName.trim() !== "",
+  );
   const disabled =
-    busy ||
-    repoPath.trim() === "" ||
-    (mode === "task" && (targetPath.trim() === "" || qualifiedName.trim() === ""));
+    busy || repoPath.trim() === "" || (mode === "task" && filledTargets.length === 0);
+
+  function updateTarget(index: number, patch: Partial<ContextTarget>) {
+    setTargets((previous) =>
+      previous.map((target, i) => (i === index ? { ...target, ...patch } : target)),
+    );
+  }
+
+  function addTarget() {
+    setTargets((previous) => [...previous, { path: "", qualifiedName: "" }]);
+  }
+
+  function removeTarget(index: number) {
+    setTargets((previous) =>
+      previous.length > 1 ? previous.filter((_, i) => i !== index) : previous,
+    );
+  }
 
   async function onCompile() {
     setBusy(true);
     setError("");
     try {
-      const result = await compileViews(repoPath, {
-        revision,
-        mode,
-        path: mode === "task" ? targetPath : undefined,
-        qualifiedName: mode === "task" ? qualifiedName : undefined,
-        maxItems,
-        maxSourceBytes,
-      });
+      const result =
+        mode === "task"
+          ? await compileMultiViews(repoPath, {
+              revision,
+              mode: "task",
+              targets: filledTargets,
+              maxItems,
+              maxSourceBytes,
+            })
+          : await compileViews(repoPath, { revision, mode, maxItems, maxSourceBytes });
       setViews(result);
       setTab("brief");
       setExpandedScopes(new Set());
@@ -204,19 +224,39 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
       </div>
 
       {mode === "task" && (
-        <div className="row">
-          <input
-            value={targetPath}
-            onChange={(e) => setTargetPath(e.currentTarget.value)}
-            placeholder="path, e.g. src-tauri/src/lib.rs"
-            style={{ flex: 1 }}
-          />
-          <input
-            value={qualifiedName}
-            onChange={(e) => setQualifiedName(e.currentTarget.value)}
-            placeholder="qualified name, e.g. run"
-            style={{ flex: 1 }}
-          />
+        <div>
+          {targets.map((target, index) => (
+            <div className="row" key={index}>
+              <input
+                value={target.path}
+                onChange={(e) => updateTarget(index, { path: e.currentTarget.value })}
+                placeholder="path, e.g. src-tauri/src/lib.rs"
+                style={{ flex: 1 }}
+              />
+              <input
+                value={target.qualifiedName}
+                onChange={(e) =>
+                  updateTarget(index, { qualifiedName: e.currentTarget.value })
+                }
+                placeholder="qualified name, e.g. run"
+                style={{ flex: 1 }}
+              />
+              <button
+                onClick={() => removeTarget(index)}
+                disabled={targets.length === 1}
+                title="remove target"
+              >
+                remove
+              </button>
+            </div>
+          ))}
+          <button onClick={addTarget} disabled={targets.length >= 64}>
+            Add target
+          </button>
+          <small style={{ marginLeft: 8 }}>
+            {filledTargets.length} target{filledTargets.length === 1 ? "" : "s"} will share one
+            evidence catalog and budget.
+          </small>
         </div>
       )}
 

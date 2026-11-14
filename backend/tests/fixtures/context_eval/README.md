@@ -10,6 +10,7 @@ fixture.
 | --- | --- | --- | --- |
 | Onboarding | `onboarding` | `main -> alpha`, `beta -> gamma`, unresolved `main -> missing` | 1 |
 | Change impact | task seed `gamma` | `gamma` source, `beta -> gamma`, `gamma -> alpha`, `gamma -> helper` | 1 |
+| Multi-symbol | task seeds `main`, `gamma` | target source items for both, `main -> alpha`, `beta -> gamma`, unresolved `main -> missing` | 1 |
 | Symbol review | `ReviewContext` for `gamma` | incoming `beta -> gamma`, outgoing `gamma -> alpha`, `gamma -> helper` | 0 |
 | Chronos bridge | bridge discovery | invoke/registration/dispatch/FFI edges for `backend_version` and `export_graph` | 0 |
 
@@ -21,6 +22,8 @@ fixture.
 - `onboarding-graph.json`
 - `change-brief.json`
 - `change-graph.json`
+- `multi-brief.json`
+- `multi-graph.json`
 - `review-context.json`
 
 Regenerate after an intentional output change:

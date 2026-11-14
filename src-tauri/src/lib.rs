@@ -3,7 +3,7 @@ pub mod review;
 mod ffi;
 
 use ffi::BackendError;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use tauri::{Emitter, Manager};
@@ -115,6 +115,13 @@ struct ViewsPayload {
     views_json: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CompileTarget {
+    path: String,
+    qualified_name: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SourcePayload {
@@ -184,6 +191,35 @@ async fn compile_views(
     .map_err(join_error)?
 }
 
+/// Compiles multiple task targets into one combined brief and graph.
+#[tauri::command]
+async fn compile_multi_views(
+    repo_path: String,
+    revision: Option<String>,
+    mode: String,
+    targets: Vec<CompileTarget>,
+    max_items: Option<u32>,
+    max_source_bytes: Option<u32>,
+) -> Result<ViewsPayload, BackendError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let pairs: Vec<(String, String)> = targets
+            .into_iter()
+            .map(|target| (target.path, target.qualified_name))
+            .collect();
+        let views_json = ffi::compile_multi_views(
+            &repo_path,
+            revision.as_deref().unwrap_or("HEAD"),
+            &mode,
+            &pairs,
+            max_items.unwrap_or(0) as usize,
+            max_source_bytes.unwrap_or(0) as usize,
+        )?;
+        Ok(ViewsPayload { views_json })
+    })
+    .await
+    .map_err(join_error)?
+}
+
 /// Reads the pinned source range behind an evidence ID/location.
 #[tauri::command]
 async fn read_source(
@@ -232,6 +268,7 @@ pub fn run() {
             analyze_merge,
             blame_file,
             compile_views,
+            compile_multi_views,
             read_source,
             ai::commands::ai_status,
             ai::commands::ai_check_connection,

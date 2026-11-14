@@ -36,6 +36,17 @@ unsafe extern "C" {
         max_source_bytes: usize,
         out_json: *mut *mut c_char,
     ) -> c_int;
+    fn chronos_compile_multi_views(
+        repo_path: *const c_char,
+        revision: *const c_char,
+        mode: *const c_char,
+        paths: *const *const c_char,
+        qualified_names: *const *const c_char,
+        target_count: usize,
+        max_items: usize,
+        max_source_bytes: usize,
+        out_json: *mut *mut c_char,
+    ) -> c_int;
     fn chronos_read_source(
         repo_path: *const c_char,
         revision: *const c_char,
@@ -207,6 +218,55 @@ pub fn compile_views(
             mode.as_ptr(),
             path.as_ptr(),
             qualified.as_ptr(),
+            max_items,
+            max_source_bytes,
+            &mut out,
+        )
+    };
+    if status < 0 {
+        return Err(BackendError::from_status(status));
+    }
+    if out.is_null() {
+        return Err(BackendError::new(-4, "the C backend returned no context views"));
+    }
+    // SAFETY: `out` is a backend-allocated NUL-terminated string.
+    let json = unsafe { string_from_c(out) };
+    unsafe { chronos_free_string(out) };
+    Ok(json)
+}
+
+/// Compiles multiple task targets into one combined brief and graph.
+pub fn compile_multi_views(
+    repo_path: &str,
+    revision: &str,
+    mode: &str,
+    targets: &[(String, String)],
+    max_items: usize,
+    max_source_bytes: usize,
+) -> Result<String, BackendError> {
+    let repo = c_string(repo_path, "repo path")?;
+    let rev = c_string(revision, "revision")?;
+    let mode = c_string(mode, "mode")?;
+    let mut paths = Vec::with_capacity(targets.len());
+    let mut qualified = Vec::with_capacity(targets.len());
+    for (path, name) in targets {
+        paths.push(c_string(path, "path")?);
+        qualified.push(c_string(name, "qualified name")?);
+    }
+    let path_ptrs: Vec<*const c_char> = paths.iter().map(|value| value.as_ptr()).collect();
+    let qualified_ptrs: Vec<*const c_char> =
+        qualified.iter().map(|value| value.as_ptr()).collect();
+    let _guard = lock();
+    let mut out: *mut c_char = std::ptr::null_mut();
+    // SAFETY: the string arrays and their pointers are valid for the call.
+    let status = unsafe {
+        chronos_compile_multi_views(
+            repo.as_ptr(),
+            rev.as_ptr(),
+            mode.as_ptr(),
+            path_ptrs.as_ptr(),
+            qualified_ptrs.as_ptr(),
+            targets.len(),
             max_items,
             max_source_bytes,
             &mut out,

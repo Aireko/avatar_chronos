@@ -2600,6 +2600,93 @@ static const GraphSymbol* find_views_symbol(const RepositoryIndex* index,
     return found;
 }
 
+#define MAX_VIEW_TARGETS 64
+
+static int compile_views_from_index(const RepositoryIndex* index,
+                                    ContextFlowMode mode,
+                                    const ContextFlowSeed* seeds,
+                                    size_t seed_count,
+                                    size_t max_items,
+                                    size_t max_source_bytes,
+                                    char** out_json)
+{
+    ContextViews views;
+    ContextFlowRequest flow;
+    ContextViewsRequest request;
+    char* brief_json = NULL;
+    char* graph_json = NULL;
+    sbuf_t result = {0};
+    int rc, views_status;
+
+    memset(&views, 0, sizeof views);
+    memset(&flow, 0, sizeof flow);
+    *out_json = NULL;
+    flow.mode = mode;
+    flow.seeds = seeds;
+    flow.seed_count = seed_count;
+    flow.max_hops = 3;
+    flow.max_flows = 8;
+    flow.max_nodes = 8;
+    request = (ContextViewsRequest){&flow, {max_items, max_source_bytes}};
+
+    views_status = context_build_views(index, &request, &views);
+    if (views_status < 0) {
+        set_error("view build failed (status %d)", views_status);
+        rc = views_status;
+        goto done;
+    }
+
+    int brief_len = context_brief_write_json(&views.brief, NULL, 0);
+    int graph_len = context_graph_write_json(&views.graph, NULL, 0);
+    if (brief_len < 0 || graph_len < 0) {
+        rc = brief_len < 0 ? brief_len : graph_len;
+        set_error("context JSON sizing failed (status %d)", rc);
+        goto done;
+    }
+    brief_json = (char*)malloc((size_t)brief_len + 1);
+    graph_json = (char*)malloc((size_t)graph_len + 1);
+    if (!brief_json || !graph_json) {
+        rc = CHRONOS_ERR_NOMEM;
+        set_error("out of memory");
+        goto done;
+    }
+    if (context_brief_write_json(&views.brief, brief_json, (size_t)brief_len + 1) != brief_len ||
+        context_graph_write_json(&views.graph, graph_json, (size_t)graph_len + 1) != graph_len) {
+        rc = CHRONOS_ERR_IO;
+        set_error("context JSON serialization failed");
+        goto done;
+    }
+
+    sb_puts(&result, "{\"schemaVersion\":1,\"repositoryId\":");
+    json_str(&result, index_revision(index)->repository_id);
+    sb_puts(&result, ",\"revision\":{\"repositoryId\":");
+    json_str(&result, index_revision(index)->repository_id);
+    sb_puts(&result, ",\"commitSha\":");
+    json_str(&result, index_revision(index)->commit_sha);
+    sb_puts(&result, "},\"targetCount\":");
+    sb_put_i64(&result, (long long)seed_count);
+    sb_puts(&result, ",\"brief\":");
+    sb_putn(&result, brief_json, (size_t)brief_len);
+    sb_puts(&result, ",\"graph\":");
+    sb_putn(&result, graph_json, (size_t)graph_len);
+    sb_puts(&result, "}");
+    if (result.oom || !result.data) {
+        rc = CHRONOS_ERR_NOMEM;
+        set_error("out of memory");
+        goto done;
+    }
+    *out_json = result.data;
+    result.data = NULL;
+    rc = views_status == CHRONOS_PARTIAL ? CHRONOS_PARTIAL : CHRONOS_OK;
+
+done:
+    sb_free(&result);
+    free(brief_json);
+    free(graph_json);
+    context_views_free(&views);
+    return rc;
+}
+
 int chronos_compile_views(const char* repo_path,
                           const char* revision,
                           const char* mode,
@@ -2611,17 +2698,11 @@ int chronos_compile_views(const char* repo_path,
 {
     char* top = NULL;
     RepositoryIndex* index = NULL;
-    ContextViews views;
     ContextFlowSeed seed;
-    ContextFlowRequest flow;
-    ContextViewsRequest request;
-    char* brief_json = NULL;
-    char* graph_json = NULL;
-    sbuf_t result = {0};
-    int rc, views_status;
+    ContextFlowMode flow_mode;
+    int rc;
 
     clear_error();
-    memset(&views, 0, sizeof views);
     memset(&seed, 0, sizeof seed);
     if (!out_json) { set_error("out_json is required"); return CHRONOS_ERR_ARGS; }
     *out_json = NULL;
@@ -2629,11 +2710,10 @@ int chronos_compile_views(const char* repo_path,
     if (!validate_revision(revision)) return CHRONOS_ERR_ARGS;
     if (!mode || !*mode) mode = "onboarding";
 
-    memset(&flow, 0, sizeof flow);
     if (strcmp(mode, "onboarding") == 0) {
-        flow.mode = CONTEXT_FLOW_ONBOARDING;
+        flow_mode = CONTEXT_FLOW_ONBOARDING;
     } else if (strcmp(mode, "task") == 0 || strcmp(mode, "review") == 0) {
-        flow.mode = CONTEXT_FLOW_TASK;
+        flow_mode = CONTEXT_FLOW_TASK;
         if (!path || !*path || !qualified_name || !*qualified_name) {
             set_error("task mode requires path and qualified_name");
             return CHRONOS_ERR_ARGS;
@@ -2655,7 +2735,7 @@ int chronos_compile_views(const char* repo_path,
         return rc;
     }
 
-    if (flow.mode == CONTEXT_FLOW_TASK) {
+    if (flow_mode == CONTEXT_FLOW_TASK) {
         int ambiguous = 0;
         const GraphSymbol* target = find_views_symbol(index, path, qualified_name, &ambiguous);
         if (!target) {
@@ -2665,69 +2745,98 @@ int chronos_compile_views(const char* repo_path,
             return CHRONOS_ERR_ARGS;
         }
         seed = (ContextFlowSeed){CONTEXT_FLOW_SEED_SYMBOL, &target->ref, NULL};
-        flow.seeds = &seed;
-        flow.seed_count = 1;
     }
-    flow.max_hops = 3;
-    flow.max_flows = 8;
-    flow.max_nodes = 8;
-    request = (ContextViewsRequest){&flow, {max_items, max_source_bytes}};
+    rc = compile_views_from_index(index, flow_mode,
+                                  flow_mode == CONTEXT_FLOW_TASK ? &seed : NULL,
+                                  flow_mode == CONTEXT_FLOW_TASK ? 1 : 0,
+                                  max_items, max_source_bytes, out_json);
+    index_free(index);
+    free(top);
+    return rc;
+}
 
-    views_status = context_build_views(index, &request, &views);
-    if (views_status < 0) {
-        set_error("view build failed (status %d)", views_status);
-        rc = views_status;
-        goto done;
+int chronos_compile_multi_views(const char* repo_path,
+                                const char* revision,
+                                const char* mode,
+                                const char* const* paths,
+                                const char* const* qualified_names,
+                                size_t target_count,
+                                size_t max_items,
+                                size_t max_source_bytes,
+                                char** out_json)
+{
+    char* top = NULL;
+    RepositoryIndex* index = NULL;
+    ContextFlowSeed* seeds = NULL;
+    ContextFlowMode flow_mode;
+    int rc;
+
+    clear_error();
+    if (!out_json) { set_error("out_json is required"); return CHRONOS_ERR_ARGS; }
+    *out_json = NULL;
+    if (!revision || !*revision) revision = "HEAD";
+    if (!validate_revision(revision)) return CHRONOS_ERR_ARGS;
+    if (!mode || !*mode) mode = "onboarding";
+
+    if (strcmp(mode, "onboarding") == 0) {
+        flow_mode = CONTEXT_FLOW_ONBOARDING;
+        target_count = 0;
+    } else if (strcmp(mode, "task") == 0 || strcmp(mode, "review") == 0) {
+        flow_mode = CONTEXT_FLOW_TASK;
+        if (target_count == 0 || target_count > MAX_VIEW_TARGETS ||
+            !paths || !qualified_names) {
+            set_error("task mode requires 1..%d path/qualified targets", MAX_VIEW_TARGETS);
+            return CHRONOS_ERR_ARGS;
+        }
+    } else {
+        set_error("mode must be onboarding or task");
+        return CHRONOS_ERR_ARGS;
     }
 
+    rc = resolve_repo(repo_path, &top);
+    if (rc != CHRONOS_OK) return rc;
     {
-        int brief_len = context_brief_write_json(&views.brief, NULL, 0);
-        int graph_len = context_graph_write_json(&views.graph, NULL, 0);
-        if (brief_len < 0 || graph_len < 0) {
-            rc = brief_len < 0 ? brief_len : graph_len;
-            set_error("context JSON sizing failed (status %d)", rc);
-            goto done;
-        }
-        brief_json = (char*)malloc((size_t)brief_len + 1);
-        graph_json = (char*)malloc((size_t)graph_len + 1);
-        if (!brief_json || !graph_json) {
-            rc = CHRONOS_ERR_NOMEM;
-            set_error("out of memory");
-            goto done;
-        }
-        if (context_brief_write_json(&views.brief, brief_json, (size_t)brief_len + 1) != brief_len ||
-            context_graph_write_json(&views.graph, graph_json, (size_t)graph_len + 1) != graph_len) {
-            rc = CHRONOS_ERR_IO;
-            set_error("context JSON serialization failed");
-            goto done;
-        }
-
-        sb_puts(&result, "{\"schemaVersion\":1,\"repositoryId\":");
-        json_str(&result, index_revision(index)->repository_id);
-        sb_puts(&result, ",\"revision\":{\"repositoryId\":");
-        json_str(&result, index_revision(index)->repository_id);
-        sb_puts(&result, ",\"commitSha\":");
-        json_str(&result, index_revision(index)->commit_sha);
-        sb_puts(&result, "},\"brief\":");
-        sb_putn(&result, brief_json, (size_t)brief_len);
-        sb_puts(&result, ",\"graph\":");
-        sb_putn(&result, graph_json, (size_t)graph_len);
-        sb_puts(&result, "}");
-        if (result.oom || !result.data) {
-            rc = CHRONOS_ERR_NOMEM;
-            set_error("out of memory");
-            goto done;
-        }
-        *out_json = result.data;
-        result.data = NULL;
-        rc = views_status == CHRONOS_PARTIAL ? CHRONOS_PARTIAL : CHRONOS_OK;
+        GitRepository repo = {top, top};
+        rc = index_build_revision(&repo, revision, &index);
+    }
+    if (rc < 0) {
+        set_error("index build failed (status %d)", rc);
+        free(top);
+        return rc;
     }
 
-done:
-    sb_free(&result);
-    free(brief_json);
-    free(graph_json);
-    context_views_free(&views);
+    if (flow_mode == CONTEXT_FLOW_TASK) {
+        seeds = (ContextFlowSeed*)calloc(target_count, sizeof *seeds);
+        if (!seeds) {
+            index_free(index);
+            free(top);
+            return CHRONOS_ERR_NOMEM;
+        }
+        for (size_t i = 0; i < target_count; ++i) {
+            if (!paths[i] || !*paths[i] || !qualified_names[i] || !*qualified_names[i]) {
+                set_error("target %zu requires path and qualified_name", i + 1);
+                free(seeds);
+                index_free(index);
+                free(top);
+                return CHRONOS_ERR_ARGS;
+            }
+            int ambiguous = 0;
+            const GraphSymbol* target = find_views_symbol(index, paths[i], qualified_names[i],
+                                                          &ambiguous);
+            if (!target) {
+                set_error(ambiguous ? "target %zu is ambiguous" : "target %zu not found", i + 1);
+                free(seeds);
+                index_free(index);
+                free(top);
+                return CHRONOS_ERR_ARGS;
+            }
+            seeds[i] = (ContextFlowSeed){CONTEXT_FLOW_SEED_SYMBOL, &target->ref, NULL};
+        }
+    }
+
+    rc = compile_views_from_index(index, flow_mode, seeds, target_count,
+                                  max_items, max_source_bytes, out_json);
+    free(seeds);
     index_free(index);
     free(top);
     return rc;

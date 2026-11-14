@@ -51,6 +51,7 @@ fn build_c_backend() {
     for (name, directory) in [
         ("c", "tree-sitter-c/src"),
         ("rust", "tree-sitter-rust/src"),
+        ("python", "tree-sitter-python/src"),
         ("javascript", "tree-sitter-javascript/src"),
         ("typescript", "tree-sitter-typescript/typescript/src"),
         ("tsx", "tree-sitter-typescript/tsx/src"),

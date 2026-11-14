@@ -740,6 +740,7 @@ int chronos_parse_commit_header(const char* line, commit_t* c)
 
 const TSLanguage *tree_sitter_c(void);
 const TSLanguage *tree_sitter_rust(void);
+const TSLanguage *tree_sitter_python(void);
 const TSLanguage *tree_sitter_typescript(void);
 const TSLanguage *tree_sitter_tsx(void);
 const TSLanguage *tree_sitter_javascript(void);
@@ -755,6 +756,7 @@ static const Language *find_language(const char *path)
     static const Language languages[] = {
         {".c", "c", tree_sitter_c}, {".h", "c", tree_sitter_c},
         {".rs", "rust", tree_sitter_rust}, {".ts", "typescript", tree_sitter_typescript},
+        {".py", "python", tree_sitter_python}, {".pyi", "python", tree_sitter_python},
         {".tsx", "typescript", tree_sitter_tsx}, {".js", "javascript", tree_sitter_javascript},
         {".jsx", "javascript", tree_sitter_javascript}, {".mjs", "javascript", tree_sitter_javascript},
         {".cjs", "javascript", tree_sitter_javascript}
@@ -939,7 +941,15 @@ static int observe_node(ParseState *state, TSNode node, size_t *parent)
                 }
             }
         }
+    } else if (strcmp(type, "function_definition") == 0 &&
+               strcmp(state->file->language, "python") == 0) {
+        name = field(node, "name");
+        if (*parent && state->file->symbols[*parent - 1].kind == PARSER_CLASS)
+            kind = PARSER_METHOD;
+        const char *suffix = strrchr(state->file->file_path, '.');
+        if (strcmp(suffix, ".pyi") == 0) form = PARSER_DECLARATION;
     } else if (strcmp(type, "class_declaration") == 0 ||
+               strcmp(type, "class_definition") == 0 ||
                strcmp(type, "abstract_class_declaration") == 0 ||
                strcmp(type, "struct_item") == 0 || strcmp(type, "enum_item") == 0 ||
                strcmp(type, "trait_item") == 0 || strcmp(type, "impl_item") == 0 ||
@@ -965,7 +975,7 @@ static int observe_node(ParseState *state, TSNode node, size_t *parent)
             name = field(node, "name");
             if (!is_type(name, "identifier")) name = (TSNode){0};
         }
-    } else if (strcmp(type, "call_expression") == 0) {
+    } else if (strcmp(type, "call_expression") == 0 || strcmp(type, "call") == 0) {
         return add_call(state, node, field(node, "function"), *parent);
     }
     if (!ts_node_is_null(name) && !ts_node_is_missing(name))

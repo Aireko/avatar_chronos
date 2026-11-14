@@ -1,20 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import "@fontsource/barlow/400.css";
-import "@fontsource/barlow/500.css";
-import "@fontsource/barlow/600.css";
-import "@fontsource/barlow-semi-condensed/500.css";
-import "@fontsource/barlow-semi-condensed/600.css";
-import "@fontsource/barlow-semi-condensed/700.css";
+import "@fontsource/patrick-hand/400.css";
 import { backendVersion, errorMessage, exportGraph, type ChronosGraph } from "./backend";
 import { CommitDetails } from "./graph/CommitDetails";
 import { CommitGraph, type PanelMode } from "./graph/CommitGraph";
 import { carryIds, layoutGraph } from "./graph/layout";
 import "./graph/graph.css";
 
+type Theme = "paper" | "board";
+
 function App() {
-  const [online, setOnline] = useState<boolean | null>(null);
+  const [theme, setTheme] = useState<Theme>("paper");
   const [version, setVersion] = useState("");
-  const [repoPath, setRepoPath] = useState("");
+  const [connected, setConnected] = useState<boolean | null>(null);
+  const [path, setPath] = useState("");
   const [graph, setGraph] = useState<ChronosGraph>();
   const [selected, setSelected] = useState<string | null>(null);
   const [panel, setPanel] = useState<{ mode: PanelMode; id: number } | null>(null);
@@ -27,31 +25,43 @@ function App() {
     [graph],
   );
   const selectedNode = selected && layout ? layout.byHash.get(selected) : undefined;
+  const currentBranch = graph?.branches.find((b) => b.isHead)?.name ?? null;
 
   useEffect(() => {
     backendVersion().then(
       (v) => {
         setVersion(v);
-        setOnline(true);
+        setConnected(true);
       },
       (e: unknown) => {
-        setOnline(false);
+        setConnected(false);
         setError(errorMessage(e));
       },
     );
   }, []);
 
-  async function open() {
-    const path = repoPath.trim();
-    if (!path) return;
+  /** Swap in fresh history. Within the same repository, commits keep their identity so changes animate. */
+  function applyGraph(next: ChronosGraph) {
+    ids.current = carryIds(graph?.commits ?? [], ids.current, next.commits);
+    setGraph(next);
+    setSelected((current) => (current && next.commits.some((c) => c.hash === current) ? current : null));
+  }
+
+  async function load(target: string) {
+    const repo = target.trim();
+    if (!repo) return;
     setLoading(true);
     setError("");
     try {
-      const { graph: next } = await exportGraph(path);
-      ids.current = new Map();
-      setGraph(next);
-      setSelected(null);
-      setPanel(null);
+      const { graph: next } = await exportGraph(repo);
+      if (graph && next.repoPath === graph.repoPath) {
+        applyGraph(next);
+      } else {
+        ids.current = new Map();
+        setGraph(next);
+        setSelected(null);
+        setPanel(null);
+      }
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -59,15 +69,13 @@ function App() {
     }
   }
 
-  /** Clicking a commit shows its bubbles; the ticket only opens from a bubble. */
+  /** Clicking a commit shows its action bar; the details panel only opens from that bar. */
   function pick(hash: string | null) {
     setSelected(hash);
     setPanel(null);
   }
 
-  const openPanel = (mode: PanelMode) => setPanel({ mode, id: Date.now() });
-
-  // Esc closes the ticket first, then the bubbles. Arrow keys travel along the branch.
+  // Esc closes the panel first, then clears the selection. Arrow keys move along the branch.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement) return;
@@ -97,53 +105,45 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [layout, selected, panel]);
 
-  /** Swap in a refreshed map (after a rebase), keeping the selection if that commit survived. */
-  function applyGraph(next: ChronosGraph) {
-    ids.current = carryIds(graph?.commits ?? [], ids.current, next.commits);
-    setGraph(next);
-    setSelected((current) => (current && next.commits.some((c) => c.hash === current) ? current : null));
-  }
-
   return (
-    <div className="app">
-      <header className="bar">
-        <div className="wordmark">
-          <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true">
-            <circle cx="15" cy="15" r="12" fill="#fcfdfe" stroke="#16203a" strokeWidth="4" />
-            <path d="M15 8.5 V15 L20 18" fill="none" stroke="#e5484d" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-          Chronos
-        </div>
+    <div className="app" data-theme={theme}>
+      <header className="toolbar">
+        <span className="app-name">Chronos</span>
         <form
-          className="path-form"
+          className="open-form"
           onSubmit={(e) => {
             e.preventDefault();
-            void open();
+            void load(path);
           }}
         >
           <input
-            className="path-input"
-            value={repoPath}
-            onChange={(e) => setRepoPath(e.currentTarget.value)}
-            placeholder="Folder path of a Git repository"
+            className="field"
+            value={path}
+            onChange={(e) => setPath(e.currentTarget.value)}
+            placeholder="Repository folder path"
             aria-label="Repository folder path"
             spellCheck={false}
           />
-          <button className="key amber" type="submit" disabled={loading || !repoPath.trim()}>
-            {loading ? "Opening" : graph ? "Reload" : "Open"}
+          <button className="btn primary" type="submit" disabled={loading || !path.trim()}>
+            Open
           </button>
         </form>
-        <span
-          className={`link-state${online === true ? " on" : online === false ? " off" : ""}`}
-          title={online ? `Connected to ${version}` : "The C backend is not connected"}
-        />
+        <button className="btn" disabled={loading || !graph} onClick={() => graph && void load(graph.repoPath)}>
+          Reload
+        </button>
+        <button className="btn" onClick={() => setTheme(theme === "paper" ? "board" : "paper")}>
+          {theme === "paper" ? "Blackboard" : "Paper"}
+        </button>
         {loading && <div className="progress" />}
       </header>
 
       {error && (
-        <button className="toast" onClick={() => setError("")} title="Dismiss">
-          {error}
-        </button>
+        <div className="banner" role="alert">
+          <span>{error}</span>
+          <button className="btn" onClick={() => setError("")}>
+            Dismiss
+          </button>
+        </div>
       )}
 
       <main className="stage">
@@ -154,21 +154,12 @@ function App() {
             selected={selected}
             panelOpen={panel !== null}
             onSelect={pick}
-            onAction={openPanel}
+            onAction={(mode) => setPanel({ mode, id: Date.now() })}
           />
         ) : (
           <div className="empty">
-            <svg width="300" height="96" viewBox="0 0 300 96" aria-hidden="true">
-              <path d="M24 30 H276" stroke="#16203a" strokeWidth="15" strokeLinecap="round" fill="none" />
-              <path d="M96 30 H112 L148 66 H212" stroke="#16203a" strokeWidth="15" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-              <path d="M24 30 H276" stroke="#e5484d" strokeWidth="9" strokeLinecap="round" fill="none" />
-              <path d="M96 30 H112 L148 66 H212" stroke="#2f5de3" strokeWidth="9" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-              <circle cx="24" cy="30" r="14" fill="#e5484d" stroke="#16203a" strokeWidth="3" />
-              <circle cx="96" cy="30" r="14" fill="#e5484d" stroke="#16203a" strokeWidth="3" />
-              <circle cx="212" cy="66" r="14" fill="#2f5de3" stroke="#16203a" strokeWidth="3" />
-              <circle cx="276" cy="30" r="14" fill="#e5484d" stroke="#16203a" strokeWidth="3" />
-            </svg>
-            <p>Paste the folder path of a Git repository above, then press Open to see its history as a map.</p>
+            <h1>Open a repository</h1>
+            <p>Write the folder path of a Git repository in the bar above, then choose Open.</p>
           </div>
         )}
 
@@ -176,7 +167,7 @@ function App() {
           <CommitDetails
             key={`${selectedNode.commit.hash}:${panel.id}`}
             start={panel.mode}
-            repoPath={repoPath.trim()}
+            repoPath={graph.repoPath}
             graph={graph}
             layout={layout}
             commit={selectedNode.commit}
@@ -190,6 +181,24 @@ function App() {
           />
         )}
       </main>
+
+      <footer className="statusbar">
+        {graph ? (
+          <>
+            <span className="status-path" title={graph.repoPath}>
+              {graph.repoPath}
+            </span>
+            <span>{currentBranch ? `On ${currentBranch}` : "Detached HEAD"}</span>
+            <span>{graph.commits.length} commits</span>
+            <span>{graph.branches.length} branches</span>
+          </>
+        ) : (
+          <span className="status-path">No repository open</span>
+        )}
+        <span className={connected === false ? "status-bad" : ""}>
+          {connected === false ? "Backend not connected" : version}
+        </span>
+      </footer>
     </div>
   );
 }

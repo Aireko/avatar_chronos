@@ -1,6 +1,6 @@
 import { useEffect, useRef, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import type { ChronosGraph } from "../backend";
-import { INSPECTOR_W, STATION_R, type GraphLayout, type GraphNode } from "./layout";
+import { STATION_R, type GraphLayout } from "./layout";
 
 export type PanelMode = "details" | "diff" | "rebase";
 
@@ -15,28 +15,10 @@ interface Props {
 
 const R = STATION_R;
 
-/** A flat ball in the branch colour. Merges get a white centre; the first commit is a rounded block. */
-function Ball({ node }: { node: GraphNode }) {
-  if (node.kind === "origin") {
-    return <rect className="ball" x={-R} y={-R} width={R * 2} height={R * 2} rx={6} />;
-  }
-  if (node.kind === "interchange") {
-    return (
-      <>
-        <circle className="ball" r={R + 2} />
-        <circle className="ball-core" r={5} />
-      </>
-    );
-  }
-  return <circle className="ball" r={R} />;
-}
-
 export function CommitGraph({ graph, layout, selected, panelOpen, onSelect, onAction }: Props) {
   const viewport = useRef<HTMLDivElement>(null);
   const drag = useRef({ moved: false });
   const shownRepo = useRef<string | null>(null);
-
-  const visibleWidth = (el: HTMLDivElement) => Math.max(240, el.clientWidth - (panelOpen ? INSPECTOR_W : 0));
 
   // Mouse wheel moves along the timeline; Shift+wheel moves between rows.
   useEffect(() => {
@@ -51,7 +33,7 @@ export function CommitGraph({ graph, layout, selected, panelOpen, onSelect, onAc
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
 
-  // A new repository opens at its newest commits. When "head" moves (after a rebase), follow it.
+  // A new repository opens at its newest commits. When head moves (after a rebase), follow it.
   useEffect(() => {
     const el = viewport.current;
     if (!el) return;
@@ -63,25 +45,20 @@ export function CommitGraph({ graph, layout, selected, panelOpen, onSelect, onAc
     }
     const node = graph.head ? layout.byHash.get(graph.head) : undefined;
     if (!node) return;
-    el.scrollTo({
-      left: node.x - visibleWidth(el) / 2,
-      top: node.y - el.clientHeight / 2,
-      behavior: "smooth",
-    });
+    el.scrollTo({ left: node.x - el.clientWidth / 2, top: node.y - el.clientHeight / 2, behavior: "smooth" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [graph.repoPath, graph.head]);
 
-  // Glide to the selected commit when it is off screen or hidden under the ticket.
+  // Bring the selected commit into view when it is off screen.
   useEffect(() => {
     const el = viewport.current;
     const node = selected ? layout.byHash.get(selected) : undefined;
     if (!el || !node) return;
-    const w = visibleWidth(el);
-    const offX = node.x < el.scrollLeft + 150 || node.x > el.scrollLeft + w - 150;
-    const offY = node.y < el.scrollTop + 130 || node.y > el.scrollTop + el.clientHeight - 90;
+    const offX = node.x < el.scrollLeft + 150 || node.x > el.scrollLeft + el.clientWidth - 150;
+    const offY = node.y < el.scrollTop + 130 || node.y > el.scrollTop + el.clientHeight - 80;
     if (offX || offY) {
       el.scrollTo({
-        left: offX ? node.x - w / 2 : el.scrollLeft,
+        left: offX ? node.x - el.clientWidth / 2 : el.scrollLeft,
         top: offY ? node.y - el.clientHeight / 2 : el.scrollTop,
         behavior: "smooth",
       });
@@ -114,11 +91,13 @@ export function CommitGraph({ graph, layout, selected, panelOpen, onSelect, onAc
     window.addEventListener("pointerup", up);
   }
 
-  // Only the newest stretch animates in sequence; older history is simply there.
+  // Only the newest stretch is drawn in sequence; older history is simply there.
   const lastCol = layout.nodes.length - 1;
   const delayFor = (col: number) => Math.max(0, col - (lastCol - 12)) * 70;
-  const pathStyle = (d: string, order: number) =>
+  const casingStyle = (d: string, order: number) =>
     ({ d: `path("${d}")`, animationDelay: `${delayFor(order)}ms` }) as CSSProperties;
+  const lineStyle = (d: string, order: number, color: string) =>
+    ({ d: `path("${d}")`, animationDelay: `${delayFor(order)}ms`, stroke: color }) as CSSProperties;
 
   const solid = layout.edges.filter((e) => !e.ghost);
   const ghosts = layout.edges.filter((e) => e.ghost);
@@ -126,27 +105,23 @@ export function CommitGraph({ graph, layout, selected, panelOpen, onSelect, onAc
   const menuNode = selected && !panelOpen ? layout.byHash.get(selected) : undefined;
   const currentBranch = graph.branches.find((b) => b.isHead)?.name ?? null;
   const menuIsHead = menuNode?.commit.hash === graph.head;
-  const menu: { mode: PanelMode; label: string; dx: number; dy: number; disabled: boolean; hint: string }[] = [
+  const menu: { mode: PanelMode; label: string; disabled: boolean; hint: string }[] = [
+    { mode: "details", label: "Details", disabled: false, hint: "Author, date and changed files" },
+    {
+      mode: "diff",
+      label: "Diff",
+      disabled: menuIsHead,
+      hint: menuIsHead ? "Nothing newer to compare" : "What your branch changed since this commit",
+    },
     {
       mode: "rebase",
       label: "Rebase",
-      dx: -88,
-      dy: -50,
       disabled: menuIsHead || !currentBranch,
       hint: menuIsHead
         ? "You are already on this commit"
         : currentBranch
-          ? `Move ${currentBranch} onto this commit`
+          ? `Rebase ${currentBranch} onto this commit`
           : "Check out a branch first",
-    },
-    { mode: "details", label: "Details", dx: 0, dy: -94, disabled: false, hint: "Who, when and which files" },
-    {
-      mode: "diff",
-      label: "Diff",
-      dx: 88,
-      dy: -50,
-      disabled: menuIsHead,
-      hint: menuIsHead ? "Nothing newer to compare" : "What your branch changed since this commit",
     },
   ];
 
@@ -162,16 +137,16 @@ export function CommitGraph({ graph, layout, selected, panelOpen, onSelect, onAc
       <div className="map-sheet" style={{ width: layout.width, height: layout.height }}>
         <svg className="map-svg" width={layout.width} height={layout.height}>
           {ghosts.map((edge) => (
-            <path key={edge.key} d={edge.d} pathLength={1} className="tube-ghost" stroke={edge.color} />
+            <path key={edge.key} d={edge.d} pathLength={1} className="tube-ghost" style={{ stroke: edge.color }} />
           ))}
-          {/* Outlines first, then colours, so an outline never cuts across another line's colour. */}
+          {/* Paper-coloured casings first, then the pen lines, so joins stay clean. */}
           {solid.map((edge) => (
             <path
-              key={`o-${edge.key}`}
+              key={`c-${edge.key}`}
               d={edge.d}
               pathLength={1}
-              className="tube-outline"
-              style={pathStyle(edge.d, edge.order)}
+              className="tube-casing"
+              style={casingStyle(edge.d, edge.order)}
             />
           ))}
           {solid.map((edge) => (
@@ -180,9 +155,22 @@ export function CommitGraph({ graph, layout, selected, panelOpen, onSelect, onAc
               d={edge.d}
               pathLength={1}
               className="tube"
-              stroke={edge.color}
-              style={pathStyle(edge.d, edge.order)}
+              style={lineStyle(edge.d, edge.order, edge.color)}
             />
+          ))}
+          {/* Where a line crosses another branch's row, it hops over with a small gap. */}
+          {layout.bridges.map((bridge) => (
+            <g key={bridge.key} className="bridge" style={{ animationDelay: `${delayFor(bridge.order) + 400}ms` }}>
+              <line className="bridge-gap" x1={bridge.x} x2={bridge.x} y1={bridge.y - 9} y2={bridge.y + 9} />
+              <line
+                className="bridge-line"
+                x1={bridge.x}
+                x2={bridge.x}
+                y1={bridge.y - 12}
+                y2={bridge.y + 12}
+                style={{ stroke: bridge.color }}
+              />
+            </g>
           ))}
 
           {layout.nodes.map((node) => {
@@ -208,37 +196,36 @@ export function CommitGraph({ graph, layout, selected, panelOpen, onSelect, onAc
                 }}
               >
                 <title>{node.commit.message}</title>
-                <circle className="node-hit" r={30} />
+                <circle className="node-hit" r={26} />
+                <path className="halo" d={node.halo} />
                 <g className="station" style={{ animationDelay: `${delayFor(node.col) + 320}ms` }}>
-                  <circle className="pick-edge" r={R + 9} />
-                  <circle className="pick" r={R + 9} />
-                  <Ball node={node} />
+                  <path className="ring" d={node.shape} />
+                  {node.kind === "interchange" && <circle className="ring-core" r={3.6} />}
                 </g>
 
                 {isHead && (
-                  <g className="head-pin" transform={`translate(0 ${-(R + 12)})`}>
-                    <g className="head-bob">
-                      <text y={-13}>head</text>
-                      <path d="M 0 -8 V 2 M -5 -3 L 0 3 L 5 -3" />
-                    </g>
+                  <g className="head-note">
+                    <text y={-(R + 24)}>head</text>
+                    <path d={`M 1 ${-(R + 19)} q 3 5 -1 11 m -5 -5 q 3 4 5 6 q 3 -3 5 -7`} />
                   </g>
                 )}
 
                 {node.flags.map((flag) => (
                   <g key={flag.name} className="flag" transform={`translate(0 ${flag.dy})`}>
-                    {flag.isHead && (
-                      <rect className="flag-current" x={-flag.w / 2 - 4} y={-16} width={flag.w + 8} height={32} rx={10} />
+                    <text style={{ fill: flag.color }}>{flag.name}</text>
+                    {flag.isCurrent && (
+                      <path
+                        className="flag-underline"
+                        d={`M ${-flag.w / 2} 5 q ${flag.w / 4} 3.5 ${flag.w / 2} 0.5 t ${flag.w / 2} -0.5`}
+                        style={{ stroke: flag.color }}
+                      />
                     )}
-                    <rect className="flag-face" x={-flag.w / 2} y={-12} width={flag.w} height={24} rx={7} fill={flag.color} />
-                    <text y={4.5} fill={flag.on}>
-                      {flag.name}
-                    </text>
                   </g>
                 ))}
 
-                <text className="map-label" y={R + 30}>
+                <text className="map-label" y={R + 24}>
                   {node.label.map((line, i) => (
-                    <tspan key={i} x={0} dy={i === 0 ? 0 : 16}>
+                    <tspan key={i} x={0} dy={i === 0 ? 0 : 18}>
                       {line}
                     </tspan>
                   ))}
@@ -252,19 +239,17 @@ export function CommitGraph({ graph, layout, selected, panelOpen, onSelect, onAc
           <div
             key={menuNode.id}
             className="menu"
-            style={{ left: menuNode.x, top: menuNode.y }}
+            style={{
+              left: menuNode.x,
+              top: menuNode.y - (R + 34) - menuNode.flags.length * 25 - (menuIsHead ? 32 : 0),
+            }}
+            role="toolbar"
+            aria-label="Commit actions"
             onClick={(e) => e.stopPropagation()}
             onPointerDown={(e) => e.stopPropagation()}
           >
             {menu.map((item) => (
-              <button
-                key={item.mode}
-                className={`bubble ${item.mode}`}
-                style={{ "--dx": `${item.dx}px`, "--dy": `${item.dy}px` } as CSSProperties}
-                disabled={item.disabled}
-                title={item.hint}
-                onClick={() => onAction(item.mode)}
-              >
+              <button key={item.mode} disabled={item.disabled} title={item.hint} onClick={() => onAction(item.mode)}>
                 {item.label}
               </button>
             ))}

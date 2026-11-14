@@ -1,40 +1,34 @@
 import type { Branch, Commit } from "../backend";
 
 /* ---------- geometry ---------- */
-export const COL_W = 190; // distance between commits along a row
-export const LANE_H = 132; // distance between rows
-export const STATION_R = 15; // ball radius
-export const PAD_L = 120;
-export const PAD_R = 260;
-export const PAD_T = 130; // room above the top row for name flags and action bubbles
-export const PAD_B = 90;
-export const INSPECTOR_W = 450; // width the ticket covers, including its margin
+export const COL_W = 200; // distance between commits along a row
+export const LANE_H = 124; // distance between rows
+export const STATION_R = 11; // commit circle radius
+export const PAD_L = 110;
+export const PAD_R = 240;
+export const PAD_T = 150; // room above the top row for names, the head note and the action bar
+export const PAD_B = 84;
 
-const CORRIDOR = 80; // lines may only turn up/down this far from a column centre...
-const CORRIDOR_STEP = 15; // ...or one step further, so two turns never share a path
-const CORNER = 14; // corner radius of a turn
-const MAX_LABEL_W = 128; // commit messages stay narrower than the corridor
-const MAX_FLAG_W = 112; // so do branch name flags (plus their padding)
+const CORRIDOR = 84; // lines may only turn up/down this far from a column centre...
+const CORRIDOR_STEP = 12; // ...or one step further, so two turns never share a path
+const CORNER = 30; // how wide a turn sweeps
+const WOBBLE = 2.2; // how far a "straight" pen stroke may drift, in pixels
+const MAX_LABEL_W = 140; // commit messages stay narrower than the corridor
+const MAX_FLAG_W = 120; // so do branch names
 
-const LABEL_FONT = '500 14px "Barlow Semi Condensed", "Barlow", "Segoe UI", sans-serif';
-const FLAG_FONT = '600 14px "Barlow Semi Condensed", "Barlow", "Segoe UI", sans-serif';
+const LABEL_FONT = '400 16px "Patrick Hand", "Comic Sans MS", cursive';
+const FLAG_FONT = '400 19px "Patrick Hand", "Comic Sans MS", cursive';
 
-/* ---------- branch colours (colour + readable text colour on top of it) ---------- */
+/* ---------- pen colours: defined per theme in graph.css ---------- */
 export interface LineStyle {
   color: string;
   on: string;
 }
 
-export const LINES: LineStyle[] = [
-  { color: "#E5484D", on: "#FFFFFF" },
-  { color: "#2F5DE3", on: "#FFFFFF" },
-  { color: "#1F9D6B", on: "#FFFFFF" },
-  { color: "#F2A900", on: "#16203A" },
-  { color: "#7B4FD6", on: "#FFFFFF" },
-  { color: "#0E9AA7", on: "#FFFFFF" },
-  { color: "#D6409F", on: "#FFFFFF" },
-  { color: "#8B5E3C", on: "#FFFFFF" },
-];
+export const LINES: LineStyle[] = Array.from({ length: 8 }, (_, i) => ({
+  color: `var(--pen-${i})`,
+  on: "var(--paper)",
+}));
 export const lineStyle = (index: number) => LINES[index % LINES.length];
 
 /* ---------- types ---------- */
@@ -54,12 +48,11 @@ export interface Flag {
   w: number;
   dy: number;
   color: string;
-  on: string;
-  isHead: boolean;
+  isCurrent: boolean; // the checked-out branch
 }
 
 export interface GraphNode {
-  id: string; // stable identity, so a replayed commit keeps its ball across a rebase
+  id: string; // stable identity, so a replayed commit keeps its circle across a rebase
   commit: Commit;
   col: number;
   lane: number; // which branch line it belongs to
@@ -68,6 +61,8 @@ export interface GraphNode {
   y: number;
   color: string;
   kind: StationKind;
+  shape: string; // hand-drawn circle outline
+  halo: string; // highlighter blob shown when selected
   label: string[];
   flags: Flag[];
 }
@@ -80,14 +75,68 @@ export interface GraphEdge {
   order: number; // column of the newer end, used to time the draw-in
 }
 
+/** Where a vertical line passes over a row line that belongs to another branch. */
+export interface Bridge {
+  key: string;
+  x: number;
+  y: number;
+  color: string;
+  order: number;
+}
+
 export interface GraphLayout {
   nodes: GraphNode[];
   edges: GraphEdge[];
+  bridges: Bridge[];
   lanes: Lane[];
   width: number;
   height: number;
   byHash: Map<string, GraphNode>;
   childrenOf: Map<string, string[]>;
+}
+
+/* ---------- hand-drawn shapes ---------- */
+/** Repeatable "randomness": the same key always gives the same wobble. Returns -0.5 to 0.5. */
+function rng(seed: string): () => number {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  if (h === 0) h = 1;
+  return () => {
+    h ^= h << 13;
+    h ^= h >>> 17;
+    h ^= h << 5;
+    return (h >>> 0) / 4294967296 - 0.5;
+  };
+}
+
+const n1 = (v: number) => Math.round(v * 10) / 10;
+
+/** One pen stroke from A to B that bows very slightly to one side. */
+function bow(ax: number, ay: number, bx: number, by: number, rnd: () => number): string {
+  const len = Math.hypot(bx - ax, by - ay) || 1;
+  const drift = rnd() * 2 * WOBBLE * Math.min(1, len / 60);
+  const nx = -(by - ay) / len;
+  const ny = (bx - ax) / len;
+  return `Q ${n1((ax + bx) / 2 + nx * drift)} ${n1((ay + by) / 2 + ny * drift)} ${n1(bx)} ${n1(by)}`;
+}
+
+/** A circle drawn by hand: a closed curve through points that are not quite on the circle. */
+function blob(radius: number, rnd: () => number, points = 9): string {
+  const pts: [number, number][] = [];
+  for (let i = 0; i < points; i++) {
+    const angle = (i / points) * Math.PI * 2 + rnd() * 0.25;
+    const r = radius * (1.06 + rnd() * 0.16);
+    pts.push([Math.cos(angle) * r, Math.sin(angle) * r]);
+  }
+  const mid = (a: [number, number], b: [number, number]) => `${n1((a[0] + b[0]) / 2)} ${n1((a[1] + b[1]) / 2)}`;
+  let d = `M ${mid(pts[points - 1], pts[0])}`;
+  for (let i = 0; i < points; i++) {
+    d += ` Q ${n1(pts[i][0])} ${n1(pts[i][1])} ${mid(pts[i], pts[(i + 1) % points])}`;
+  }
+  return `${d} Z`;
 }
 
 /* ---------- text helpers (measured in real pixels) ---------- */
@@ -97,7 +146,7 @@ function textWidth(text: string, font: string): number {
   if (measureCtx === undefined) {
     measureCtx = typeof document === "undefined" ? null : document.createElement("canvas").getContext("2d");
   }
-  if (!measureCtx) return text.length * 7;
+  if (!measureCtx) return text.length * 8;
   measureCtx.font = font;
   return measureCtx.measureText(text).width;
 }
@@ -153,7 +202,7 @@ export function formatAge(unixSeconds: number): string {
 
 /* ---------- identities that survive a rebase ---------- */
 /**
- * A rebase gives replayed commits new hashes. To let their balls glide instead
+ * A rebase gives replayed commits new hashes. To let their circles glide instead
  * of vanish and reappear, a new commit inherits the identity of a commit that
  * just disappeared with the same author and message.
  */
@@ -231,22 +280,44 @@ interface Chain {
   row: number;
 }
 
-/* ---------- line shapes ---------- */
-// Every path uses the same command sequence (M L Q L Q L) so one shape can morph into another.
-function straight(p: GraphNode, c: GraphNode): string {
-  const a = p.x + (c.x - p.x) / 3;
-  const b = p.x + ((c.x - p.x) * 2) / 3;
-  return `M ${p.x} ${p.y} L ${a} ${p.y} Q ${a} ${p.y} ${a} ${p.y} L ${b} ${c.y} Q ${b} ${c.y} ${b} ${c.y} L ${c.x} ${c.y}`;
+interface Spec {
+  key: string;
+  parent: GraphNode;
+  child: GraphNode;
+  color: string;
+  kind: "along" | "fork" | "merge";
+  xv: number; // x of the vertical run, for lines that change rows
 }
 
-/** Along the row, a rounded turn, straight up or down at xv, a rounded turn, along the row. */
-function elbow(p: GraphNode, c: GraphNode, xv: number): string {
+/* ---------- line shapes ---------- */
+// Every path is "M" followed by five strokes, so one shape can morph into another.
+function straight(p: GraphNode, c: GraphNode, rnd: () => number): string {
+  let d = `M ${p.x} ${p.y}`;
+  let ax = p.x;
+  let ay = p.y;
+  for (let i = 1; i <= 5; i++) {
+    const bx = p.x + ((c.x - p.x) * i) / 5;
+    const by = p.y + ((c.y - p.y) * i) / 5;
+    d += ` ${bow(ax, ay, bx, by, rnd)}`;
+    ax = bx;
+    ay = by;
+  }
+  return d;
+}
+
+/** Along the row, a sweeping turn, up or down at xv, a sweeping turn, along the row. */
+function elbow(p: GraphNode, c: GraphNode, xv: number, rnd: () => number): string {
   const s = c.y > p.y ? 1 : -1;
   const r = Math.min(CORNER, Math.abs(c.y - p.y) / 2);
-  return (
-    `M ${p.x} ${p.y} L ${xv - r} ${p.y} Q ${xv} ${p.y} ${xv} ${p.y + s * r} ` +
-    `L ${xv} ${c.y - s * r} Q ${xv} ${c.y} ${xv + r} ${c.y} L ${c.x} ${c.y}`
-  );
+  const x = xv + rnd() * 2; // the pen never lands on exactly the same spot
+  return [
+    `M ${p.x} ${p.y}`,
+    bow(p.x, p.y, x - r, p.y, rnd),
+    `Q ${n1(x)} ${p.y} ${n1(x)} ${n1(p.y + s * r)}`,
+    bow(x, p.y + s * r, x, c.y - s * r, rnd),
+    `Q ${n1(x)} ${c.y} ${n1(x + r)} ${c.y}`,
+    bow(x + r, c.y, c.x, c.y, rnd),
+  ].join(" ");
 }
 
 /* ---------- main entry ---------- */
@@ -286,7 +357,7 @@ export function layoutGraph(
 
   /* 2. One column per commit, oldest on the left. */
   const colOf = new Map<string, number>();
-  [...commits].reverse().forEach((c, col) => colOf.set(c.hash, col));
+  [...commits].reverse().forEach((c, column) => colOf.set(c.hash, column));
   const col = (hash: string) => colOf.get(hash) ?? 0;
 
   /* 3. How much of a row does each line need? From where it branches off to where it ends or merges. */
@@ -336,14 +407,15 @@ export function layoutGraph(
   }
   const rowCount = Math.max(1, rowSpans.length);
 
-  /* 5. Balls. */
+  /* 5. Commit circles. */
   const nodes: GraphNode[] = [...commits].reverse().map((commit, column) => {
     const lane = chainOf.get(commit.hash) ?? 0;
     const row = chains[lane]?.row ?? 0;
+    const id = idOf(commit.hash);
     const kind: StationKind =
       commit.parents.length === 0 ? "origin" : commit.parents.length > 1 ? "interchange" : "stop";
     return {
-      id: idOf(commit.hash),
+      id,
       commit,
       col: column,
       lane,
@@ -352,6 +424,8 @@ export function layoutGraph(
       y: PAD_T + row * LANE_H,
       color: lineStyle(lane).color,
       kind,
+      shape: blob(STATION_R, rng(`circle:${id}`)),
+      halo: blob(STATION_R + 11, rng(`halo:${id}`), 7),
       label: wrapLabel(commit.message),
       flags: [],
     };
@@ -359,20 +433,17 @@ export function layoutGraph(
   const byHash = new Map(nodes.map((n) => [n.commit.hash, n] as const));
 
   /* 6. Lines. Turns happen only in the corridors between columns, where there is no text. */
-  const crossing: GraphEdge[] = [];
-  const along: GraphEdge[] = [];
+  const specs: Spec[] = [];
+  const ghosts: GraphEdge[] = [];
   const childrenOf = new Map<string, string[]>();
-  const forkSlot = new Map<string, number>();
-  const mergeSlot = new Map<string, number>();
-
   for (const child of nodes) {
     child.commit.parents.forEach((parentHash, index) => {
       const parent = byHash.get(parentHash);
       const key = `${idOf(parentHash)}>${child.id}`;
       if (!parent) {
-        along.push({
+        ghosts.push({
           key,
-          d: `M ${child.x - COL_W * 0.55} ${child.y} L ${child.x} ${child.y}`,
+          d: `M ${child.x - COL_W * 0.5} ${child.y} L ${child.x} ${child.y}`,
           color: child.color,
           ghost: true,
           order: child.col,
@@ -382,61 +453,115 @@ export function layoutGraph(
       const kids = childrenOf.get(parentHash) ?? [];
       kids.push(child.commit.hash);
       childrenOf.set(parentHash, kids);
-
-      const color = index > 0 ? parent.color : child.color; // a merged-in line keeps its own colour
-      if (parent.row === child.row) {
-        along.push({ key, d: straight(parent, child), color, ghost: false, order: child.col });
-      } else if (index === 0) {
-        // Branching off: turn just after the parent, then run along the new row.
-        const k = forkSlot.get(parentHash) ?? 0;
-        forkSlot.set(parentHash, k + 1);
-        const xv = parent.x + CORRIDOR + Math.min(k, 1) * CORRIDOR_STEP;
-        crossing.push({ key, d: elbow(parent, child, xv), color, ghost: false, order: child.col });
-      } else {
-        // Merging in: run along the old row, then turn just before the merge commit.
-        const k = mergeSlot.get(child.commit.hash) ?? 0;
-        mergeSlot.set(child.commit.hash, k + 1);
-        const xv = child.x - CORRIDOR - Math.min(k, 1) * CORRIDOR_STEP;
-        crossing.push({ key, d: elbow(parent, child, xv), color, ghost: false, order: child.col });
-      }
+      specs.push({
+        key,
+        parent,
+        child,
+        color: index > 0 ? parent.color : child.color, // a merged-in line keeps its own colour
+        kind: parent.row === child.row ? "along" : index === 0 ? "fork" : "merge",
+        xv: 0,
+      });
     });
   }
-  // Lines that change rows are drawn first, so the row they leave or join stays one clean colour.
-  const edges = [...crossing, ...along];
 
-  /* 7. Name flags: above a line's first commit, and above the commit each branch points at. */
-  const pending = new Map<string, { name: string; style: LineStyle; isHead: boolean }[]>();
-  const addFlag = (hash: string, name: string, style: LineStyle, isHead: boolean) => {
+  // When several lines leave (or join) the same commit in the same direction, the one that
+  // travels furthest turns first. That way none of them has to cross another's row.
+  const groups = new Map<string, Spec[]>();
+  for (const s of specs) {
+    if (s.kind === "along") continue;
+    const owner = s.kind === "fork" ? s.parent.commit.hash : s.child.commit.hash;
+    const direction = s.child.row > s.parent.row ? "down" : "up";
+    const groupKey = `${s.kind}:${owner}:${direction}`;
+    const list = groups.get(groupKey) ?? [];
+    list.push(s);
+    groups.set(groupKey, list);
+  }
+  const reach = (s: Spec) => Math.abs(s.child.row - s.parent.row);
+  groups.forEach((list) => {
+    list.sort((a, b) => reach(b) - reach(a));
+    list.forEach((s, k) => {
+      const step = Math.min(k, 1) * CORRIDOR_STEP;
+      s.xv = s.kind === "fork" ? s.parent.x + CORRIDOR + step : s.child.x - CORRIDOR - step;
+    });
+  });
+
+  // How far each branch line reaches along its row, so crossings can be found.
+  const extent: [number, number][] = chains.map((chain) => {
+    const xs = chain.hashes.map((h) => byHash.get(h)?.x ?? 0);
+    return [Math.min(...xs), Math.max(...xs)];
+  });
+  for (const s of specs) {
+    if (s.kind === "along") continue;
+    for (const lane of [s.parent.lane, s.child.lane]) {
+      extent[lane][0] = Math.min(extent[lane][0], s.xv);
+      extent[lane][1] = Math.max(extent[lane][1], s.xv);
+    }
+  }
+  const rowExtents: [number, number][][] = [];
+  chains.forEach((chain, i) => {
+    if (!rowExtents[chain.row]) rowExtents[chain.row] = [];
+    rowExtents[chain.row].push(extent[i]);
+  });
+
+  const crossing: GraphEdge[] = [];
+  const along: GraphEdge[] = [];
+  const bridges: Bridge[] = [];
+  for (const s of specs) {
+    const rnd = rng(`line:${s.key}`);
+    if (s.kind === "along") {
+      along.push({ key: s.key, d: straight(s.parent, s.child, rnd), color: s.color, ghost: false, order: s.child.col });
+      continue;
+    }
+    crossing.push({
+      key: s.key,
+      d: elbow(s.parent, s.child, s.xv, rnd),
+      color: s.color,
+      ghost: false,
+      order: s.child.col,
+    });
+    const lo = Math.min(s.parent.row, s.child.row) + 1;
+    const hi = Math.max(s.parent.row, s.child.row) - 1;
+    for (let row = lo; row <= hi; row++) {
+      if ((rowExtents[row] ?? []).some(([a, b]) => a < s.xv - 1 && b > s.xv + 1)) {
+        bridges.push({ key: `${s.key}@${row}`, x: s.xv, y: PAD_T + row * LANE_H, color: s.color, order: s.child.col });
+      }
+    }
+  }
+  // Lines that change rows are drawn first, so the row they leave or join stays one clean colour.
+  const edges = [...ghosts, ...crossing, ...along];
+
+  /* 7. Names: above a line's first commit, and above the commit each branch points at. */
+  const pending = new Map<string, { name: string; color: string; isCurrent: boolean }[]>();
+  const addFlag = (hash: string, name: string, color: string, isCurrent: boolean) => {
     const list = pending.get(hash) ?? [];
     const existing = list.find((f) => f.name === name);
     if (existing) {
-      existing.isHead = existing.isHead || isHead;
+      existing.isCurrent = existing.isCurrent || isCurrent;
     } else {
-      list.push({ name, style, isHead });
+      list.push({ name, color, isCurrent });
     }
     pending.set(hash, list);
   };
-  for (const chain of chains) {
-    addFlag(chain.hashes[chain.hashes.length - 1], chain.name, lineStyle(chain.index), false);
-  }
   for (const b of ordered) {
     const node = byHash.get(b.commitHash);
     if (!node) continue;
     const own = chains.find((c) => c.name === b.name);
-    addFlag(b.commitHash, b.name, lineStyle(own ? own.index : node.lane), b.isHead);
+    addFlag(b.commitHash, b.name, lineStyle(own ? own.index : node.lane).color, b.isHead);
+  }
+  for (const chain of chains) {
+    addFlag(chain.hashes[chain.hashes.length - 1], chain.name, lineStyle(chain.index).color, false);
   }
   for (const node of nodes) {
     const isHeadNode = node.commit.hash === head;
-    const list = (pending.get(node.commit.hash) ?? []).slice(0, isHeadNode ? 2 : 3);
-    node.flags = list.map((f, k) => {
+    const lift = isHeadNode ? 32 : 0; // leave room for the "head" note
+    node.flags = (pending.get(node.commit.hash) ?? []).slice(0, isHeadNode ? 2 : 3).map((f, k) => {
       const name = fitText(f.name, FLAG_FONT, MAX_FLAG_W);
       return {
         name,
-        w: textWidth(name, FLAG_FONT) + 22,
-        dy: -(STATION_R + 27) - (isHeadNode ? 32 : 0) - k * 28,
-        color: f.style.color,
-        on: f.style.on,
-        isHead: f.isHead,
+        w: textWidth(name, FLAG_FONT),
+        dy: -(STATION_R + 16) - lift - k * 25,
+        color: f.color,
+        isCurrent: f.isCurrent,
       };
     });
   }
@@ -457,6 +582,7 @@ export function layoutGraph(
   return {
     nodes,
     edges,
+    bridges,
     lanes,
     width: PAD_L + lastCol * COL_W + PAD_R,
     height: PAD_T + (rowCount - 1) * LANE_H + PAD_B,

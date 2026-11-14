@@ -120,7 +120,7 @@ export function CommitDetails({ repoPath, graph, layout, commit, lane, start, on
           <h2 className="ticket-title">{commit.message}</h2>
           {(isHead || otherBranches.length > 0 || tags.length > 0) && (
             <div className="marks">
-              {isHead && <span className="mark solid">You are here</span>}
+              {isHead && <span className="mark solid">HEAD</span>}
               {otherBranches.map((b) => (
                 <span key={b.name} className="mark">
                   {b.name}

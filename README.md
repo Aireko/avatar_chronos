@@ -73,12 +73,13 @@ On Windows, run the C test script in WSL with a Linux C compiler.
 
 `index_build_revision` reads a pinned Git revision. The tree contains the project
 root, tracked source directories, supported files, and parsed symbols with their
-lexical parents. Supported extensions cover C, Rust, JavaScript, TypeScript, and
-TSX. Working-tree edits are outside the selected commit.
+lexical parents. Supported extensions cover C, Rust, JavaScript, TypeScript, TSX,
+and Python. Working-tree edits are outside the selected commit.
 
 `index_map_calls` projects direct callsites between any two scopes. Resolution
-uses unique syntactic names in the indexed language. Imports, dynamic dispatch,
-and function pointers require additional semantic analysis. Partial parse coverage
+uses unique syntactic names in the indexed language. Python module-level imports
+and aliases are resolved statically; dynamic dispatch, wildcard imports, and
+function pointers require additional semantic analysis. Partial parse coverage
 is reported alongside the relationships that could be extracted.
 
 `index_compare_revisions` matches symbols by exact path and qualified name and

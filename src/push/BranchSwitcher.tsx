@@ -3,12 +3,21 @@
 // with "New branch…" at the bottom, which turns the menu into a name field in place.
 // Keys: Up/Down/Home/End walk the menu, Enter picks, Esc steps back out of the name
 // field and then closes the menu, handing the keyboard back to the branch key.
+// A speech bubble beside the key offers Fetch (until the first check) or Pull when the
+// branch is behind its upstream.
 import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { errorMessage, type ChronosGraph } from "../backend";
 import { BranchIcon, ChevronIcon, PlusIcon } from "../tools/icons";
 import { Presence } from "../tools/Presence";
 import { branchKeyLabel, branchMenuOrder, branchNameProblem, rovingIndex } from "../tools/toolbarKeys";
-import { branchNames, createBranch, switchBranch } from "./git";
+import {
+  fetchOrigin,
+  readBranchSync,
+  syncBubbleLabel,
+  syncHintFor,
+  type BranchSyncHint,
+} from "./branchSync";
+import { branchNames, createBranch, pullFrom, switchBranch } from "./git";
 
 interface Props {
   graph: ChronosGraph | undefined;
@@ -19,18 +28,23 @@ interface Props {
 
 /** Menu exit; matches pop-out (0.14s) in tools.css. */
 const EXIT_MS = 140;
+/** Quiet background fetch while the window is focused. */
+const FETCH_EVERY_MS = 90_000;
 
 export function BranchSwitcher({ graph, currentBranch, onGraphChange, onError }: Props) {
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
-  const [busy, setBusy] = useState<"switch" | "create" | null>(null);
+  const [busy, setBusy] = useState<"switch" | "create" | "fetch" | "pull" | null>(null);
+  const [hint, setHint] = useState<BranchSyncHint | null>(null);
   const root = useRef<HTMLDivElement>(null);
   const key = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const field = useRef<HTMLInputElement>(null);
   const menuId = useId();
   const hintId = useId();
+  const syncBusy = useRef(false);
+  const fetchedRef = useRef(false);
 
   const names = graph ? branchNames(graph) : [];
   const ordered = branchMenuOrder(names, currentBranch);
@@ -100,13 +114,68 @@ export function BranchSwitcher({ graph, currentBranch, onGraphChange, onError }:
     };
   }, [open]);
 
-  // A new repository (or the graph going away) shuts the menu.
+  // A new repository (or the graph going away) shuts the menu and resets sync state.
   const repo = graph?.repoPath;
   useEffect(() => {
     setOpen(false);
     setCreating(false);
     setName("");
+    setHint(null);
+    fetchedRef.current = false;
   }, [repo]);
+
+  // A different branch means a fresh Fetch nudge until the next check.
+  useEffect(() => {
+    fetchedRef.current = false;
+    setHint(null);
+  }, [currentBranch]);
+
+  // Read status (and periodically fetch) so the bubble can offer Fetch or Pull.
+  useEffect(() => {
+    if (!repo || !currentBranch) {
+      setHint(null);
+      return;
+    }
+    let cancelled = false;
+
+    async function refresh(doFetch: boolean) {
+      if (syncBusy.current || cancelled) return;
+      syncBusy.current = true;
+      try {
+        const status = doFetch ? await fetchOrigin(repo!) : await readBranchSync(repo!);
+        if (cancelled) return;
+        if (doFetch) fetchedRef.current = true;
+        setHint(syncHintFor(status, fetchedRef.current));
+      } catch {
+        // Offline / no origin on a background fetch: keep the last hint.
+        if (!cancelled && !doFetch) {
+          try {
+            const status = await readBranchSync(repo!);
+            if (!cancelled) setHint(syncHintFor(status, fetchedRef.current));
+          } catch {
+            if (!cancelled) setHint(null);
+          }
+        }
+      } finally {
+        syncBusy.current = false;
+      }
+    }
+
+    void refresh(false);
+    // First quiet fetch shortly after open, then on focus / interval.
+    const first = window.setTimeout(() => void refresh(true), 1200);
+    const onFocus = () => void refresh(true);
+    window.addEventListener("focus", onFocus);
+    const tick = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refresh(true);
+    }, FETCH_EVERY_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(first);
+      window.removeEventListener("focus", onFocus);
+      window.clearInterval(tick);
+    };
+  }, [repo, currentBranch]);
 
   if (!graph || !repo) return null;
 
@@ -117,6 +186,28 @@ export function BranchSwitcher({ graph, currentBranch, onGraphChange, onError }:
     try {
       onError("");
       onGraphChange(await switchBranch(repo!, branch));
+    } catch (e) {
+      onError(errorMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runSync() {
+    if (!hint || busy || !currentBranch) return;
+    const action = hint.kind;
+    setBusy(action);
+    try {
+      onError("");
+      if (action === "fetch") {
+        const status = await fetchOrigin(repo!);
+        fetchedRef.current = true;
+        setHint(syncHintFor(status, true));
+      } else {
+        onGraphChange(await pullFrom(repo!, currentBranch));
+        setHint(null);
+        fetchedRef.current = true;
+      }
     } catch (e) {
       onError(errorMessage(e));
     } finally {
@@ -149,7 +240,9 @@ export function BranchSwitcher({ graph, currentBranch, onGraphChange, onError }:
     all[to]?.focus({ preventScroll: true });
   }
 
-  const label = branchKeyLabel(currentBranch, busy);
+  const switching = busy === "switch" || busy === "create" ? busy : null;
+  const label = branchKeyLabel(currentBranch, switching);
+  const bubbleText = hint ? (busy === hint.kind ? (hint.kind === "fetch" ? "Fetching…" : "Pulling…") : syncBubbleLabel(hint)) : null;
 
   return (
     <div
@@ -164,7 +257,7 @@ export function BranchSwitcher({ graph, currentBranch, onGraphChange, onError }:
       <button
         ref={key}
         type="button"
-        className={`btn tool-btn branch-key${busy ? " is-switching" : ""}`}
+        className={`btn tool-btn branch-key${switching ? " is-switching" : ""}`}
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
         aria-busy={busy !== null || undefined}
@@ -181,6 +274,24 @@ export function BranchSwitcher({ graph, currentBranch, onGraphChange, onError }:
           <ChevronIcon />
         </span>
       </button>
+
+      <Presence show={hint !== null && !open} className="branch-sync" exitMs={EXIT_MS}>
+        {hint && bubbleText && (
+          <button
+            type="button"
+            className={`branch-sync-bubble${busy === hint.kind ? " is-busy" : ""}`}
+            disabled={busy !== null}
+            onClick={() => void runSync()}
+            aria-label={
+              hint.kind === "fetch"
+                ? "Fetch from origin"
+                : `Pull ${hint.behind} commit${hint.behind === 1 ? "" : "s"} from origin`
+            }
+          >
+            {bubbleText}
+          </button>
+        )}
+      </Presence>
 
       <Presence show={open} className="branch-pop" exitMs={EXIT_MS}>
         <div id={menuId} ref={menu} role="group" aria-label="Branches" onKeyDown={onMenuKey}>

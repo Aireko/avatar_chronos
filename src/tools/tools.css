@@ -101,3 +101,40 @@
   .dock-panel.is-leaving { animation: none; }
   .dock-toggles { transition: none; }
 }
+
+/* ============ small pop-ups: the File / Function picker and the branch legend ============ */
+
+/* Scope tabs slide their ink highlight across instead of snapping. */
+.scope-tab { transition: background-color 0.18s ease, color 0.18s ease; }
+/* The chosen file or function lands in the toolbar like a fresh stamp. */
+.scope-chip { animation: chip-in 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards; }
+@keyframes chip-in { from { opacity: 0; transform: translateX(-6px) scale(0.96); } }
+
+/* The picker drops down from the tabs with a slight tilt, and lifts away again. */
+.scope-pop { transform-origin: 24px 0; }
+.scope-pop.is-entering { animation: pop-in 0.2s cubic-bezier(0.2, 0.9, 0.25, 1.15) backwards; }
+.scope-pop.is-leaving { pointer-events: none; animation: pop-out 0.14s ease-in forwards; }
+@keyframes pop-in { from { opacity: 0; transform: translateY(-8px) rotate(-0.8deg) scale(0.97); } }
+@keyframes pop-out { to { opacity: 0; transform: translateY(-6px) rotate(0.5deg) scale(0.98); } }
+
+/* The legend's branch list rolls up into its header and back down. A one-row grid
+   animates from 0fr to 1fr, which works for any number of branches. */
+.legend-drawer { display: grid; grid-template-rows: 1fr; overflow: hidden; }
+/* The list keeps its padding and border, so an inner box is what shrinks to nothing. */
+.legend-roll { min-height: 0; overflow: hidden; }
+.legend-drawer.is-entering { animation: roll-down 0.22s ease-out backwards; }
+.legend-drawer.is-leaving { animation: roll-up 0.18s ease-in forwards; }
+@keyframes roll-down { from { grid-template-rows: 0fr; opacity: 0; } }
+@keyframes roll-up { to { grid-template-rows: 0fr; opacity: 0; } }
+.legend-caret { display: inline-block; transition: transform 0.2s ease; }
+.branch-legend.collapsed .legend-caret { transform: rotate(-90deg); }
+
+@media (prefers-reduced-motion: reduce) {
+  .scope-tab,
+  .legend-caret { transition: none; }
+  .scope-chip,
+  .scope-pop.is-entering,
+  .scope-pop.is-leaving,
+  .legend-drawer.is-entering,
+  .legend-drawer.is-leaving { animation: none; }
+}

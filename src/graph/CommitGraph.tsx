@@ -8,6 +8,7 @@ import {
 import type { ChronosGraph } from "../backend";
 import { STATION_R, type GraphLayout } from "./layout";
 import { scopeNoun, type Scope } from "./scope";
+import { Presence } from "../tools/Presence";
 
 export type PanelMode = "details" | "diff" | "rebase";
 
@@ -376,21 +377,23 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
             onClick={() => setLegendOpen((v) => !v)}
           >
             <span>Branches</span>
-            <span aria-hidden="true">{legendOpen ? "▾" : "▸"}</span>
+            <span className="legend-caret" aria-hidden="true">▾</span>
           </button>
-          {legendOpen && (
-            <ul className="legend-list">
-              {layout.lanes.map((lane) => (
-                <li key={lane.name} className="legend-row" title={lane.isHead ? `${lane.name} (current)` : lane.name}>
-                  <span className="legend-swatch" style={{ background: lane.color }} />
-                  <span className="legend-name">
-                    {lane.name}
-                    {lane.isHead ? " · head" : ""}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
+          <Presence show={legendOpen} className="legend-drawer">
+            <div className="legend-roll">
+              <ul className="legend-list">
+                {layout.lanes.map((lane) => (
+                  <li key={lane.name} className="legend-row" title={lane.isHead ? `${lane.name} (current)` : lane.name}>
+                    <span className="legend-swatch" style={{ background: lane.color }} />
+                    <span className="legend-name">
+                      {lane.name}
+                      {lane.isHead ? " · head" : ""}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </Presence>
         </div>
 
         <div className="zoom-controls" role="toolbar" aria-label="Zoom">

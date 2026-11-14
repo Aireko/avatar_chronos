@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Presence } from "../tools/Presence";
 import { blameFile, errorMessage, listFiles, type ChronosGraph } from "../backend";
 import { PROJECT, functionChoices, scopeTarget, type FunctionChoice, type Scope } from "./scope";
 import "./scope.css";
@@ -151,55 +152,57 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
         </span>
       )}
 
-      {picking && (
-        <div className="scope-pop">
-          <div className="scope-title">
-            {picking.kind === "file" && "Choose a file"}
-            {picking.kind === "function" && picking.path === null && "Choose the file the function is in"}
-            {picking.kind === "function" && picking.path !== null && (
-              <>
-                <button className="scope-back" onClick={() => open({ kind: "function", path: null })}>
-                  ‹ files
-                </button>
-                Functions in {picking.path}
-              </>
-            )}
-          </div>
-          <input
-            className="field"
-            autoFocus
-            value={query}
-            onChange={(e) => setQuery(e.currentTarget.value)}
-            placeholder="Type to filter"
-            spellCheck={false}
-          />
-          {loading && <p className="quiet scope-note">Loading…</p>}
-          {error && <p className="scope-note scope-bad">{error}</p>}
-          <ul className="scope-list">
-            {wantFiles &&
-              fileMatches.slice(0, MAX_SHOWN).map((f) => (
-                <li key={f}>
-                  <button onClick={() => pickFile(f)}>{f}</button>
-                </li>
-              ))}
-            {!wantFiles &&
-              functionMatches.slice(0, MAX_SHOWN).map((f) => (
-                <li key={f.name}>
-                  <button onClick={() => pickFunction(f.name)}>
-                    {f.name}
-                    <span className="quiet"> {f.kind}{f.atHead ? "" : " (no longer in the file)"}</span>
+      <Presence show={picking !== null} className="scope-pop" exitMs={140}>
+        {picking && (
+          <>
+            <div className="scope-title">
+              {picking.kind === "file" && "Choose a file"}
+              {picking.kind === "function" && picking.path === null && "Choose the file the function is in"}
+              {picking.kind === "function" && picking.path !== null && (
+                <>
+                  <button className="scope-back" onClick={() => open({ kind: "function", path: null })}>
+                    ‹ files
                   </button>
-                </li>
-              ))}
-          </ul>
-          {!loading && !wantFiles && functionMatches.length === 0 && (
-            <p className="quiet scope-note">No functions found.</p>
-          )}
-          {wantFiles && fileMatches.length > MAX_SHOWN && (
-            <p className="quiet scope-note">{fileMatches.length - MAX_SHOWN} more. Keep typing to narrow it down.</p>
-          )}
-        </div>
-      )}
+                  Functions in {picking.path}
+                </>
+              )}
+            </div>
+            <input
+              className="field"
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.currentTarget.value)}
+              placeholder="Type to filter"
+              spellCheck={false}
+            />
+            {loading && <p className="quiet scope-note">Loading…</p>}
+            {error && <p className="scope-note scope-bad">{error}</p>}
+            <ul className="scope-list">
+              {wantFiles &&
+                fileMatches.slice(0, MAX_SHOWN).map((f) => (
+                  <li key={f}>
+                    <button onClick={() => pickFile(f)}>{f}</button>
+                  </li>
+                ))}
+              {!wantFiles &&
+                functionMatches.slice(0, MAX_SHOWN).map((f) => (
+                  <li key={f.name}>
+                    <button onClick={() => pickFunction(f.name)}>
+                      {f.name}
+                      <span className="quiet"> {f.kind}{f.atHead ? "" : " (no longer in the file)"}</span>
+                    </button>
+                  </li>
+                ))}
+            </ul>
+            {!loading && !wantFiles && functionMatches.length === 0 && (
+              <p className="quiet scope-note">No functions found.</p>
+            )}
+            {wantFiles && fileMatches.length > MAX_SHOWN && (
+              <p className="quiet scope-note">{fileMatches.length - MAX_SHOWN} more. Keep typing to narrow it down.</p>
+            )}
+          </>
+        )}
+      </Presence>
     </div>
   );
 }

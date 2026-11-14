@@ -47,6 +47,36 @@ unsafe extern "C" {
         max_source_bytes: usize,
         out_json: *mut *mut c_char,
     ) -> c_int;
+    fn chronos_views_open(
+        repo_path: *const c_char,
+        revision: *const c_char,
+        mode: *const c_char,
+        paths: *const *const c_char,
+        qualified_names: *const *const c_char,
+        target_count: usize,
+        max_items: usize,
+        max_source_bytes: usize,
+        out_handle: *mut u64,
+    ) -> c_int;
+    fn chronos_views_brief(handle: u64, out_json: *mut *mut c_char) -> c_int;
+    fn chronos_views_page(
+        handle: u64,
+        kind: c_int,
+        parent_scope_id: *const c_char,
+        node_offset: usize,
+        edge_offset: usize,
+        evidence_offset: usize,
+        max_nodes: usize,
+        max_edges: usize,
+        max_evidence: usize,
+        out_json: *mut *mut c_char,
+    ) -> c_int;
+    fn chronos_views_source(
+        handle: u64,
+        evidence_id: *const c_char,
+        out_json: *mut *mut c_char,
+    ) -> c_int;
+    fn chronos_views_close(handle: u64);
     fn chronos_read_source(
         repo_path: *const c_char,
         revision: *const c_char,
@@ -282,6 +312,139 @@ pub fn compile_multi_views(
     let json = unsafe { string_from_c(out) };
     unsafe { chronos_free_string(out) };
     Ok(json)
+}
+
+/// Opens a lazy context session and returns its opaque handle.
+pub fn open_views(
+    repo_path: &str,
+    revision: &str,
+    mode: &str,
+    targets: &[(String, String)],
+    max_items: usize,
+    max_source_bytes: usize,
+) -> Result<u64, BackendError> {
+    let repo = c_string(repo_path, "repo path")?;
+    let rev = c_string(revision, "revision")?;
+    let mode = c_string(mode, "mode")?;
+    let mut paths = Vec::with_capacity(targets.len());
+    let mut qualified = Vec::with_capacity(targets.len());
+    for (path, name) in targets {
+        paths.push(c_string(path, "path")?);
+        qualified.push(c_string(name, "qualified name")?);
+    }
+    let path_ptrs: Vec<*const c_char> = paths.iter().map(|value| value.as_ptr()).collect();
+    let qualified_ptrs: Vec<*const c_char> =
+        qualified.iter().map(|value| value.as_ptr()).collect();
+    let _guard = lock();
+    let mut handle: u64 = 0;
+    // SAFETY: string arrays and the output handle are valid for the call.
+    let status = unsafe {
+        chronos_views_open(
+            repo.as_ptr(),
+            rev.as_ptr(),
+            mode.as_ptr(),
+            path_ptrs.as_ptr(),
+            qualified_ptrs.as_ptr(),
+            targets.len(),
+            max_items,
+            max_source_bytes,
+            &mut handle,
+        )
+    };
+    if status < 0 {
+        return Err(BackendError::from_status(status));
+    }
+    if handle == 0 {
+        return Err(BackendError::new(-4, "the C backend returned no session handle"));
+    }
+    Ok(handle)
+}
+
+pub fn views_brief(handle: u64) -> Result<String, BackendError> {
+    let _guard = lock();
+    let mut out: *mut c_char = std::ptr::null_mut();
+    // SAFETY: handle is a live session and out is writable.
+    let status = unsafe { chronos_views_brief(handle, &mut out) };
+    if status < 0 {
+        return Err(BackendError::from_status(status));
+    }
+    if out.is_null() {
+        return Err(BackendError::new(-4, "the C backend returned no brief"));
+    }
+    // SAFETY: out is a backend-allocated NUL-terminated string.
+    let json = unsafe { string_from_c(out) };
+    unsafe { chronos_free_string(out) };
+    Ok(json)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn views_page(
+    handle: u64,
+    kind: i32,
+    parent_scope_id: Option<&str>,
+    node_offset: usize,
+    edge_offset: usize,
+    evidence_offset: usize,
+    max_nodes: usize,
+    max_edges: usize,
+    max_evidence: usize,
+) -> Result<String, BackendError> {
+    let parent = match parent_scope_id {
+        Some(value) => Some(c_string(value, "parent scope")?),
+        None => None,
+    };
+    let parent_ptr = parent.as_ref().map_or(std::ptr::null(), |value| value.as_ptr());
+    let _guard = lock();
+    let mut out: *mut c_char = std::ptr::null_mut();
+    // SAFETY: handle is a live session, parent is valid or NULL, out is writable.
+    let status = unsafe {
+        chronos_views_page(
+            handle,
+            kind as c_int,
+            parent_ptr,
+            node_offset,
+            edge_offset,
+            evidence_offset,
+            max_nodes,
+            max_edges,
+            max_evidence,
+            &mut out,
+        )
+    };
+    if status < 0 {
+        return Err(BackendError::from_status(status));
+    }
+    if out.is_null() {
+        return Err(BackendError::new(-4, "the C backend returned no page"));
+    }
+    // SAFETY: out is a backend-allocated NUL-terminated string.
+    let json = unsafe { string_from_c(out) };
+    unsafe { chronos_free_string(out) };
+    Ok(json)
+}
+
+pub fn views_source(handle: u64, evidence_id: &str) -> Result<String, BackendError> {
+    let evidence = c_string(evidence_id, "evidence id")?;
+    let _guard = lock();
+    let mut out: *mut c_char = std::ptr::null_mut();
+    // SAFETY: handle is a live session, evidence is valid, out is writable.
+    let status = unsafe { chronos_views_source(handle, evidence.as_ptr(), &mut out) };
+    if status < 0 {
+        return Err(BackendError::from_status(status));
+    }
+    if out.is_null() {
+        return Err(BackendError::new(-4, "the C backend returned no source"));
+    }
+    // SAFETY: out is a backend-allocated NUL-terminated string.
+    let json = unsafe { string_from_c(out) };
+    unsafe { chronos_free_string(out) };
+    Ok(json)
+}
+
+pub fn close_views(handle: u64) {
+    let _guard = lock();
+    // SAFETY: closing an invalid handle is a no-op in C.
+    unsafe { chronos_views_close(handle) };
 }
 
 /// Reads pinned source bytes for one evidence location.

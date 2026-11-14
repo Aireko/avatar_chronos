@@ -24,6 +24,7 @@
 #include "avatar_util.h"
 #include "parser_internal.h"
 #include "context_views.h"
+#include "context_page.h"
 #include "index.h"
 
 /* Internal short names for the public AVATAR_* codes in avatar.h. */
@@ -2975,6 +2976,241 @@ int chronos_compile_multi_views(const char* repo_path,
     index_free(index);
     free(top);
     return rc;
+}
+
+#define MAX_VIEW_SESSIONS 4
+
+static ContextSession* g_view_sessions[MAX_VIEW_SESSIONS];
+
+static int view_session_slot(uint64_t handle)
+{
+    if (handle == 0 || handle > MAX_VIEW_SESSIONS) return -1;
+    int slot = (int)(handle - 1);
+    return g_view_sessions[slot] != NULL ? slot : -1;
+}
+
+static int view_session_free_slot(void)
+{
+    for (int i = 0; i < MAX_VIEW_SESSIONS; ++i)
+        if (g_view_sessions[i] == NULL) return i;
+    return -1;
+}
+
+static int view_mode(const char* mode, ContextFlowMode* out)
+{
+    if (!mode || !*mode || strcmp(mode, "onboarding") == 0) {
+        *out = CONTEXT_FLOW_ONBOARDING;
+        return 1;
+    }
+    if (strcmp(mode, "task") == 0 || strcmp(mode, "review") == 0) {
+        *out = CONTEXT_FLOW_TASK;
+        return 1;
+    }
+    return 0;
+}
+
+int chronos_views_open(const char* repo_path,
+                       const char* revision,
+                       const char* mode,
+                       const char* const* paths,
+                       const char* const* qualified_names,
+                       size_t target_count,
+                       size_t max_items,
+                       size_t max_source_bytes,
+                       uint64_t* out_handle)
+{
+    char* top = NULL;
+    RepositoryIndex* index = NULL;
+    ContextFlowSeed* seeds = NULL;
+    ContextFlowMode flow_mode;
+    int rc;
+
+    clear_error();
+    if (!out_handle) { set_error("out_handle is required"); return CHRONOS_ERR_ARGS; }
+    *out_handle = 0;
+    if (!revision || !*revision) revision = "HEAD";
+    if (!validate_revision(revision)) return CHRONOS_ERR_ARGS;
+    if (!view_mode(mode, &flow_mode)) {
+        set_error("mode must be onboarding or task");
+        return CHRONOS_ERR_ARGS;
+    }
+    if (flow_mode == CONTEXT_FLOW_ONBOARDING) {
+        target_count = 0;
+    } else if (target_count == 0 || target_count > MAX_VIEW_TARGETS ||
+               !paths || !qualified_names) {
+        set_error("task mode requires 1..%d path/qualified targets", MAX_VIEW_TARGETS);
+        return CHRONOS_ERR_ARGS;
+    }
+    int slot = view_session_free_slot();
+    if (slot < 0) {
+        set_error("too many open context sessions");
+        return CHRONOS_ERR_IO;
+    }
+
+    rc = resolve_repo(repo_path, &top);
+    if (rc != CHRONOS_OK) return rc;
+    {
+        GitRepository repo = {top, top};
+        rc = index_build_revision(&repo, revision, &index);
+    }
+    free(top);
+    if (rc < 0) {
+        set_error("index build failed (status %d)", rc);
+        return rc;
+    }
+
+    if (flow_mode == CONTEXT_FLOW_TASK) {
+        seeds = (ContextFlowSeed*)calloc(target_count, sizeof *seeds);
+        if (!seeds) {
+            index_free(index);
+            return CHRONOS_ERR_NOMEM;
+        }
+        for (size_t i = 0; i < target_count; ++i) {
+            if (!paths[i] || !*paths[i] || !qualified_names[i] || !*qualified_names[i]) {
+                set_error("target %zu requires path and qualified_name", i + 1);
+                free(seeds);
+                index_free(index);
+                return CHRONOS_ERR_ARGS;
+            }
+            int ambiguous = 0;
+            const GraphSymbol* target = find_views_symbol(index, paths[i], qualified_names[i],
+                                                          &ambiguous);
+            if (!target) {
+                set_error(ambiguous ? "target %zu is ambiguous" : "target %zu not found", i + 1);
+                free(seeds);
+                index_free(index);
+                return CHRONOS_ERR_ARGS;
+            }
+            seeds[i] = (ContextFlowSeed){CONTEXT_FLOW_SEED_SYMBOL, &target->ref, NULL};
+        }
+    }
+
+    ContextFlowRequest flow = {
+        .mode = flow_mode,
+        .seeds = seeds,
+        .seed_count = target_count,
+        .max_hops = 3,
+        .max_flows = 8,
+        .max_nodes = 8
+    };
+    ContextViewsRequest request = {&flow, {max_items, max_source_bytes}};
+    ContextSession* session = NULL;
+    rc = context_session_open(index, &request, &session);
+    if (rc < 0) {
+        set_error("context session failed (status %d)", rc);
+        free(seeds);
+        index_free(index);
+        return rc;
+    }
+    free(seeds);
+    g_view_sessions[slot] = session;
+    *out_handle = (uint64_t)slot + 1;
+    return rc;
+}
+
+int chronos_views_brief(uint64_t handle, char** out_json)
+{
+    if (!out_json) return CHRONOS_ERR_ARGS;
+    *out_json = NULL;
+    int slot = view_session_slot(handle);
+    if (slot < 0) return CHRONOS_ERR_ARGS;
+    int length = context_session_brief(g_view_sessions[slot], NULL, 0);
+    if (length < 0) {
+        set_error("brief serialization failed (status %d)", length);
+        return length;
+    }
+    char* json = (char*)malloc((size_t)length + 1);
+    if (!json) return CHRONOS_ERR_NOMEM;
+    if (context_session_brief(g_view_sessions[slot], json, (size_t)length + 1) != length) {
+        free(json);
+        set_error("brief serialization failed");
+        return CHRONOS_ERR_IO;
+    }
+    *out_json = json;
+    return CHRONOS_OK;
+}
+
+int chronos_views_page(uint64_t handle,
+                       int kind,
+                       const char* parent_scope_id,
+                       size_t node_offset,
+                       size_t edge_offset,
+                       size_t evidence_offset,
+                       size_t max_nodes,
+                       size_t max_edges,
+                       size_t max_evidence,
+                       char** out_json)
+{
+    if (!out_json) return CHRONOS_ERR_ARGS;
+    *out_json = NULL;
+    int slot = view_session_slot(handle);
+    if (slot < 0) return CHRONOS_ERR_ARGS;
+    if (kind < 0 || kind > 3) return CHRONOS_ERR_ARGS;
+    ContextPageRequest request = {
+        .kind = (ContextPageKind)kind,
+        .parent_scope_id = parent_scope_id,
+        .node_offset = node_offset,
+        .edge_offset = edge_offset,
+        .evidence_offset = evidence_offset,
+        .max_nodes = max_nodes,
+        .max_edges = max_edges,
+        .max_evidence = max_evidence
+    };
+    ContextPage page = {0};
+    int rc = context_session_page(g_view_sessions[slot], &request, &page);
+    if (rc < 0) {
+        set_error("page extraction failed (status %d)", rc);
+        return rc;
+    }
+    int length = context_page_write_json(&page, NULL, 0);
+    if (length < 0) {
+        context_page_free(&page);
+        set_error("page serialization failed (status %d)", length);
+        return length;
+    }
+    char* json = (char*)malloc((size_t)length + 1);
+    if (!json) {
+        context_page_free(&page);
+        return CHRONOS_ERR_NOMEM;
+    }
+    if (context_page_write_json(&page, json, (size_t)length + 1) != length) {
+        free(json);
+        context_page_free(&page);
+        set_error("page serialization failed");
+        return CHRONOS_ERR_IO;
+    }
+    context_page_free(&page);
+    *out_json = json;
+    return CHRONOS_OK;
+}
+
+int chronos_views_source(uint64_t handle, const char* evidence_id, char** out_json)
+{
+    if (!out_json || !evidence_id) return CHRONOS_ERR_ARGS;
+    *out_json = NULL;
+    int slot = view_session_slot(handle);
+    if (slot < 0) return CHRONOS_ERR_ARGS;
+    ContextSource source = {0};
+    int rc = context_session_source(g_view_sessions[slot], evidence_id, &source);
+    if (rc < 0) return rc;
+    int length = context_source_write_json(&source, NULL, 0);
+    if (length < 0) return length;
+    char* json = (char*)malloc((size_t)length + 1);
+    if (!json) return CHRONOS_ERR_NOMEM;
+    if (context_source_write_json(&source, json, (size_t)length + 1) != length) {
+        free(json);
+        return CHRONOS_ERR_IO;
+    }
+    *out_json = json;
+    return rc;
+}
+
+void chronos_views_close(uint64_t handle)
+{
+    int slot = view_session_slot(handle);
+    if (slot < 0) return;
+    context_session_close(g_view_sessions[slot]);
+    g_view_sessions[slot] = NULL;
 }
 
 int chronos_read_source(const char* repo_path,

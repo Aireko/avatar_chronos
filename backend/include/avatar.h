@@ -2,6 +2,7 @@
 #define CHRONOS_AVATAR_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -76,6 +77,33 @@ CHRONOS_API int chronos_compile_multi_views(const char* repo_path,
                                             size_t max_items,
                                             size_t max_source_bytes,
                                             char** out_json);
+
+/* Opaque app session: compile once, then fetch the brief, pages and evidence
+ * source lazily. Handles are process-local and must be closed. Calls are
+ * serialized by the existing Rust backend lock. */
+CHRONOS_API int chronos_views_open(const char* repo_path,
+                                   const char* revision,
+                                   const char* mode,
+                                   const char* const* paths,
+                                   const char* const* qualified_names,
+                                   size_t target_count,
+                                   size_t max_items,
+                                   size_t max_source_bytes,
+                                   uint64_t* out_handle);
+CHRONOS_API int chronos_views_brief(uint64_t handle, char** out_json);
+CHRONOS_API int chronos_views_page(uint64_t handle,
+                                   int kind,
+                                   const char* parent_scope_id,
+                                   size_t node_offset,
+                                   size_t edge_offset,
+                                   size_t evidence_offset,
+                                   size_t max_nodes,
+                                   size_t max_edges,
+                                   size_t max_evidence,
+                                   char** out_json);
+CHRONOS_API int chronos_views_source(uint64_t handle, const char* evidence_id,
+                                     char** out_json);
+CHRONOS_API void chronos_views_close(uint64_t handle);
 
 /* Reads pinned source bytes for start_byte..end_byte and returns a heap JSON
  * object with repository, revision, path, range and source. revision may be

@@ -495,6 +495,133 @@ export async function compileViews(
   return JSON.parse(raw.viewsJson) as ContextViews;
 }
 
+export type ContextPageKind = "root" | "module" | "file" | "symbol";
+
+export interface ContextPageNode {
+  id: string;
+  kind: ContextScopeKind;
+  parentId: string | null;
+  label: string;
+  symbol: { revision: ContextRevision; id: string } | null;
+  coverage: ContextCoverage;
+  state: ContextRelationState;
+  childCount: number;
+  edgeCount: number;
+}
+
+export interface ContextPageEdge {
+  id: string;
+  from: string;
+  to: string | null;
+  kind: ContextEvidenceKind | "bridge" | "flow";
+  state: ContextRelationState;
+  evidenceId: string;
+  call: ContextCall | null;
+}
+
+export interface ContextPageCollection<T> {
+  status: ContextCoverage;
+  items: T[] | null;
+  total: number;
+  nextOffset: number;
+}
+
+export interface ContextPageDocument {
+  schemaVersion: number;
+  page: {
+    kind: ContextPageKind;
+    parentScope: string | null;
+    nodeOffset: number;
+    edgeOffset: number;
+    evidenceOffset: number;
+    limits: { maxNodes: number; maxEdges: number; maxEvidence: number };
+  };
+  repositoryId: string;
+  revision: ContextRevision;
+  nodes: ContextPageCollection<ContextPageNode>;
+  edges: ContextPageCollection<ContextPageEdge>;
+  evidence: ContextPageCollection<ContextEvidence>;
+  counts: { children: number; edges: number };
+  diagnostics: unknown[];
+}
+
+export interface ContextSourceDocument {
+  status: "present" | "absent" | "unavailable";
+  location: ContextLocation | null;
+  source: string | null;
+}
+
+export interface OpenViewsOptions extends CompileViewsOptions {
+  targets?: ContextTarget[];
+}
+
+export interface SessionLoad {
+  sessionId: number;
+  brief: ContextBriefDocument;
+}
+
+export interface LoadViewsPageOptions {
+  kind: ContextPageKind;
+  parentScope?: string | null;
+  nodeOffset?: number;
+  edgeOffset?: number;
+  evidenceOffset?: number;
+  maxNodes?: number;
+  maxEdges?: number;
+  maxEvidence?: number;
+}
+
+export async function openViews(
+  repoPath: string,
+  options: OpenViewsOptions = {},
+): Promise<SessionLoad> {
+  const raw = await call<{ sessionId: number; briefJson: string }>("open_views", {
+    repoPath,
+    revision: options.revision?.trim() || "HEAD",
+    mode: options.mode ?? "onboarding",
+    targets: (options.targets ?? []).map((target) => ({
+      path: target.path.trim(),
+      qualifiedName: target.qualifiedName.trim(),
+    })),
+    maxItems: options.maxItems ?? null,
+    maxSourceBytes: options.maxSourceBytes ?? null,
+  });
+  return { sessionId: raw.sessionId, brief: JSON.parse(raw.briefJson) as ContextBriefDocument };
+}
+
+export async function loadViewsPage(
+  sessionId: number,
+  options: LoadViewsPageOptions,
+): Promise<ContextPageDocument> {
+  const raw = await call<{ pageJson: string }>("views_page", {
+    sessionId,
+    kind: options.kind,
+    parentScope: options.parentScope ?? null,
+    nodeOffset: options.nodeOffset ?? 0,
+    edgeOffset: options.edgeOffset ?? 0,
+    evidenceOffset: options.evidenceOffset ?? 0,
+    maxNodes: options.maxNodes ?? null,
+    maxEdges: options.maxEdges ?? null,
+    maxEvidence: options.maxEvidence ?? null,
+  });
+  return JSON.parse(raw.pageJson) as ContextPageDocument;
+}
+
+export async function readSessionSource(
+  sessionId: number,
+  evidenceId: string,
+): Promise<ContextSourceDocument> {
+  const raw = await call<{ sourceJson: string }>("views_source", {
+    sessionId,
+    evidenceId,
+  });
+  return JSON.parse(raw.sourceJson) as ContextSourceDocument;
+}
+
+export async function closeViews(sessionId: number): Promise<void> {
+  await call<void>("close_views", { sessionId });
+}
+
 export interface CompileMultiViewsOptions {
   revision?: string;
   mode?: "onboarding" | "task" | "review";

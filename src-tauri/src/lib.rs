@@ -213,6 +213,19 @@ struct SourcePayload {
     source_json: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionPayload {
+    session_id: u64,
+    brief_json: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PagePayload {
+    page_json: String,
+}
+
 /// Who wrote each line of `file_path` (relative to the repository root) at
 /// `revision` (default HEAD), plus the functions found in the file.
 #[tauri::command]
@@ -391,6 +404,96 @@ async fn compile_multi_views(
     .map_err(join_error)?
 }
 
+/// Opens a lazy context session and returns the budgeted brief.
+#[tauri::command]
+async fn open_views(
+    repo_path: String,
+    revision: Option<String>,
+    mode: String,
+    targets: Vec<CompileTarget>,
+    max_items: Option<u32>,
+    max_source_bytes: Option<u32>,
+) -> Result<SessionPayload, BackendError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let pairs: Vec<(String, String)> = targets
+            .into_iter()
+            .map(|target| (target.path, target.qualified_name))
+            .collect();
+        let handle = ffi::open_views(
+            &repo_path,
+            revision.as_deref().unwrap_or("HEAD"),
+            &mode,
+            &pairs,
+            max_items.unwrap_or(0) as usize,
+            max_source_bytes.unwrap_or(0) as usize,
+        )?;
+        match ffi::views_brief(handle) {
+            Ok(brief_json) => Ok(SessionPayload { session_id: handle, brief_json }),
+            Err(error) => {
+                ffi::close_views(handle);
+                Err(error)
+            }
+        }
+    })
+    .await
+    .map_err(join_error)?
+}
+
+/// Loads one lazy graph page from an open session.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn views_page(
+    session_id: u64,
+    kind: String,
+    parent_scope: Option<String>,
+    node_offset: Option<u64>,
+    edge_offset: Option<u64>,
+    evidence_offset: Option<u64>,
+    max_nodes: Option<u32>,
+    max_edges: Option<u32>,
+    max_evidence: Option<u32>,
+) -> Result<PagePayload, BackendError> {
+    let kind = match kind.as_str() {
+        "root" => 0,
+        "module" => 1,
+        "file" => 2,
+        "symbol" => 3,
+        _ => return Err(BackendError::new(-1, "unknown page kind")),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let page_json = ffi::views_page(
+            session_id,
+            kind,
+            parent_scope.as_deref(),
+            node_offset.unwrap_or(0) as usize,
+            edge_offset.unwrap_or(0) as usize,
+            evidence_offset.unwrap_or(0) as usize,
+            max_nodes.unwrap_or(0) as usize,
+            max_edges.unwrap_or(0) as usize,
+            max_evidence.unwrap_or(0) as usize,
+        )?;
+        Ok(PagePayload { page_json })
+    })
+    .await
+    .map_err(join_error)?
+}
+
+/// Loads source for one evidence ID from an open session.
+#[tauri::command]
+async fn views_source(session_id: u64, evidence_id: String) -> Result<SourcePayload, BackendError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let source_json = ffi::views_source(session_id, &evidence_id)?;
+        Ok(SourcePayload { source_json })
+    })
+    .await
+    .map_err(join_error)?
+}
+
+#[tauri::command]
+fn close_views(session_id: u64) {
+    ffi::close_views(session_id);
+}
+
 /// Reads the pinned source range behind an evidence ID/location.
 #[tauri::command]
 async fn read_source(
@@ -448,6 +551,10 @@ pub fn run() {
             history::rebase_function,
             compile_views,
             compile_multi_views,
+            open_views,
+            views_page,
+            views_source,
+            close_views,
             read_source,
             ai::commands::ai_status,
             ai::commands::ai_check_connection,

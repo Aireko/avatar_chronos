@@ -27,7 +27,14 @@ int main(void)
     assert(views == NULL);
     assert(chronos_compile_views("..", "HEAD", "task", "", "", 8, 2048, &views) < 0);
     assert(views == NULL);
+    assert(chronos_compile_views("/no/such/repository", "HEAD", "onboarding", "", "", 8, 2048,
+                                 &views) < 0);
+    assert(views == NULL);
     assert(chronos_read_source("..", "HEAD", "backend/include/avatar.h", 20, 10, &source) < 0);
+    assert(source == NULL);
+    assert(chronos_read_source("..", "HEAD", "backend/include/avatar.h", 0, 999999, &source) < 0);
+    assert(source == NULL);
+    assert(chronos_read_source("..", "HEAD", "../outside.c", 0, 1, &source) < 0);
     assert(source == NULL);
 
     puts("context compiler C API tests passed");

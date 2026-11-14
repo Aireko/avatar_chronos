@@ -13,6 +13,8 @@ import {
 type ViewTab = "brief" | "graph";
 type FlowMode = "onboarding" | "task";
 
+const MAX_EDGE_ROWS = 200;
+
 const preStyle = {
   maxHeight: 320,
   overflow: "auto",
@@ -29,6 +31,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
   const [maxSourceBytes, setMaxSourceBytes] = useState(4096);
   const [views, setViews] = useState<ContextViews>();
   const [tab, setTab] = useState<ViewTab>("brief");
+  const [expandedScopes, setExpandedScopes] = useState<Set<string>>(new Set());
   const [source, setSource] = useState<SourceResponse>();
   const [selectedEvidence, setSelectedEvidence] = useState<ContextEvidence>();
   const [busy, setBusy] = useState(false);
@@ -61,6 +64,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
 
   function renderScope(node: ContextGraphNode): ReactNode {
     const children = childrenByParent.get(node.id) ?? [];
+    const open = expandedScopes.has(node.id);
     const label = (
       <>
         <strong>{node.kind}</strong> {node.label}{" "}
@@ -69,13 +73,15 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
         </small>
       </>
     );
-    if (children.length === 0) return <li key={node.id}>{label}</li>;
     return (
       <li key={node.id}>
-        <details>
-          <summary>{label}</summary>
-          <ul style={{ textAlign: "left" }}>{children.map(renderScope)}</ul>
-        </details>
+        {children.length > 0 && (
+          <button onClick={() => toggleScope(node.id)} style={{ marginRight: 6 }}>
+            {open ? "−" : "+"}
+          </button>
+        )}
+        {label}
+        {open && <ul style={{ textAlign: "left" }}>{children.map(renderScope)}</ul>}
       </li>
     );
   }
@@ -99,6 +105,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
       });
       setViews(result);
       setTab("brief");
+      setExpandedScopes(new Set());
       setSource(undefined);
       setSelectedEvidence(undefined);
     } catch (e) {
@@ -139,8 +146,26 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
     return nodeById.get(id)?.label ?? id;
   }
 
+  function toggleScope(id: string) {
+    setExpandedScopes((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function evidenceLabel(id: string): string {
+    const evidence = evidenceById.get(id);
+    if (!evidence?.location) return "open evidence";
+    const location = evidence.location;
+    return `${location.filePath}:${location.range.startLine}`;
+  }
+
   const brief = views?.brief;
   const graph = views?.graph;
+  const graphEdges = graph?.edges.items ?? [];
+  const visibleEdges = graphEdges.slice(0, MAX_EDGE_ROWS);
 
   return (
     <section>
@@ -243,7 +268,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
                                 title={id}
                                 style={{ marginRight: 4, marginTop: 4 }}
                               >
-                                open evidence
+                                {evidenceLabel(id)}
                               </button>
                             ))}
                           </div>
@@ -277,11 +302,17 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
                   loaded by evidence ID, not embedded in this payload.
                 </small>
               </p>
+              <p>
+                <small>
+                  {graph.evidence.items?.length ?? 0} evidence entries ·{" "}
+                  {brief?.omittedEvidenceIds.length ?? 0} brief evidence IDs omitted by budget
+                </small>
+              </p>
               <div className="row" style={{ alignItems: "flex-start" }}>
                 <div style={{ flex: 1, minWidth: 280 }}>
                   <h4>Scopes</h4>
                   <p>
-                    <small>Modules start collapsed; expand to files and symbols.</small>
+                    <small>Modules start collapsed; use +/− to expand to files and symbols.</small>
                   </p>
                   <ul style={{ textAlign: "left" }}>{rootScopes.map(renderScope)}</ul>
                 </div>
@@ -297,7 +328,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {(graph.edges.items ?? []).map((edge: ContextGraphEdge) => (
+                      {visibleEdges.map((edge: ContextGraphEdge) => (
                         <tr key={edge.id}>
                           <td>{nodeLabel(edge.from)}</td>
                           <td>{nodeLabel(edge.to)}</td>
@@ -311,6 +342,13 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
                       ))}
                     </tbody>
                   </table>
+                  {graphEdges.length > visibleEdges.length && (
+                    <p>
+                      <small>
+                        Showing the first {MAX_EDGE_ROWS} of {graphEdges.length} edges.
+                      </small>
+                    </p>
+                  )}
                 </div>
               </div>
             </div>

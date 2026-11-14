@@ -2040,11 +2040,6 @@ static void copy_name(char* dst, size_t cap, const char* src)
     dst[n] = '\0';
 }
 
-static int is_blank(const char* s)
-{
-    return *skip_ws(s) == '\0';
-}
-
 enum { SCAN_CODE, SCAN_COMMENT, SCAN_TEMPLATE };
 
 typedef struct {
@@ -2593,6 +2588,7 @@ static const GraphSymbol* find_views_symbol(const RepositoryIndex* index,
     for (size_t i = 0; i < count; ++i) {
         if (scopes[i].kind != INDEX_SYMBOL || !scopes[i].symbol) continue;
         const GraphSymbol* symbol = scopes[i].symbol;
+        if (symbol->form != PARSER_DEFINITION) continue;
         if (strcmp(symbol->location.file_path, path) != 0 ||
             strcmp(symbol->qualified_name, qualified_name) != 0) continue;
         if (found) {

@@ -157,6 +157,60 @@ fn create_bug_check(app: &tauri::AppHandle) -> review::BugCheck {
     bug_check
 }
 
+/// Compiles the budgeted agent brief and module-oriented UI graph.
+#[tauri::command]
+async fn compile_views(
+    repo_path: String,
+    revision: Option<String>,
+    mode: String,
+    path: Option<String>,
+    qualified_name: Option<String>,
+    max_items: Option<u32>,
+    max_source_bytes: Option<u32>,
+) -> Result<ViewsPayload, BackendError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let views_json = ffi::compile_views(
+            &repo_path,
+            revision.as_deref().unwrap_or("HEAD"),
+            &mode,
+            path.as_deref().unwrap_or(""),
+            qualified_name.as_deref().unwrap_or(""),
+            max_items.unwrap_or(0) as usize,
+            max_source_bytes.unwrap_or(0) as usize,
+        )?;
+        Ok(ViewsPayload { views_json })
+    })
+    .await
+    .map_err(join_error)?
+}
+
+/// Reads the pinned source range behind an evidence ID/location.
+#[tauri::command]
+async fn read_source(
+    repo_path: String,
+    revision: Option<String>,
+    file_path: String,
+    start_byte: u64,
+    end_byte: u64,
+) -> Result<SourcePayload, BackendError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let start = usize::try_from(start_byte)
+            .map_err(|_| BackendError::new(-1, "start byte is too large for this platform"))?;
+        let end = usize::try_from(end_byte)
+            .map_err(|_| BackendError::new(-1, "end byte is too large for this platform"))?;
+        let source_json = ffi::read_source(
+            &repo_path,
+            revision.as_deref().unwrap_or("HEAD"),
+            &file_path,
+            start,
+            end,
+        )?;
+        Ok(SourcePayload { source_json })
+    })
+    .await
+    .map_err(join_error)?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()

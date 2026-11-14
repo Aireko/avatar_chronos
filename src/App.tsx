@@ -19,6 +19,7 @@ import { Terminal } from "./graph/Terminal";
 import { ScopeBar } from "./graph/ScopeBar";
 import { PROJECT, scopeGraph, scopeKey, type Scope } from "./graph/scope";
 import { ExplorerIcon, FolderIcon, PeopleIcon, ReloadIcon, ReviewIcon, SparkIcon, ThemeIcon } from "./tools/icons";
+import { Presence } from "./tools/Presence";
 import { ToolDrawer, type ToolId } from "./tools/ToolDrawer";
 
 const TOOLS: { id: ToolId; label: string; title: string; hint: string; icon: () => ReactElement }[] = [
@@ -355,19 +356,8 @@ function App() {
           {/* The graph or the code editor; the editor overlays only this area, so a
               tool drawer beside it stays visible. */}
           <div className="workspace-main">
-          {graph && layout && scoped && showEditor ? (
-            <CodeEditor
-              repoPath={graph.repoPath}
-              graph={scoped.graph}
-              layout={layout}
-              selected={selected}
-              compare={diffCompare}
-              onSelect={pick}
-              onCompare={setDiffCompare}
-              onClose={closeEditor}
-            />
-          ) : graph && layout && scoped ? (
-            layout.nodes.length === 0 ? (
+          {graph && layout && scoped ? (
+            showEditor ? null : layout.nodes.length === 0 ? (
               <div className="empty">
                 <h1>Nothing here</h1>
                 <p>No loaded commit touches this {scope.kind}.</p>
@@ -395,8 +385,24 @@ function App() {
               <p>Choose Browse to pick a Git repository folder, or write its path in the bar above, then choose Open.</p>
             </div>
           )}
+
+          <Presence show={Boolean(graph && layout && scoped && showEditor)} className="editor-layer" exitMs={160}>
+            {graph && layout && scoped && (
+              <CodeEditor
+                repoPath={graph.repoPath}
+                graph={scoped.graph}
+                layout={layout}
+                selected={selected}
+                compare={diffCompare}
+                onSelect={pick}
+                onCompare={setDiffCompare}
+                onClose={closeEditor}
+              />
+            )}
+          </Presence>
           </div>
 
+          <Presence show={Boolean(graph && layout && scoped && selectedNode && panel && !showEditor)} className="slide-panel">
           {graph && layout && scoped && selectedNode && panel && !showEditor && (
             <CommitDetails
               key={`${selectedNode.commit.hash}:${panel.id}`}
@@ -419,26 +425,33 @@ function App() {
               onClose={() => setPanel(null)}
             />
           )}
+          </Presence>
 
-          {activeTool && !panel && (
-            <ToolDrawer title={activeTool.title} onClose={() => setTool(null)}>
-              {activeTool.id === "ai" && <AiPanel />}
-              {activeTool.id === "reviews" && <BugCheckPanel />}
-              {activeTool.id === "people" && (
-                <ContributorsPanel repoPath={graph?.repoPath ?? path} filePaths={filePaths} />
-              )}
-            </ToolDrawer>
-          )}
+          <Presence show={Boolean(activeTool && !panel)} className="slide-panel">
+            {activeTool && (
+              <ToolDrawer title={activeTool.title} onClose={() => setTool(null)}>
+                <div key={activeTool.id} className="tool-swap">
+                  {activeTool.id === "ai" && <AiPanel />}
+                  {activeTool.id === "reviews" && <BugCheckPanel />}
+                  {activeTool.id === "people" && (
+                    <ContributorsPanel repoPath={graph?.repoPath ?? path} filePaths={filePaths} />
+                  )}
+                </div>
+              </ToolDrawer>
+            )}
+          </Presence>
         </div>
 
-        {graph && showTerminal && (
-          <Terminal
-            repoPath={graph.repoPath}
-            repoLabel={repoLabel}
-            onGraphChange={applyGraph}
-            onClose={() => setShowTerminal(false)}
-          />
-        )}
+        <Presence show={Boolean(graph && showTerminal)} className="dock-panel" exitMs={200}>
+          {graph && (
+            <Terminal
+              repoPath={graph.repoPath}
+              repoLabel={repoLabel}
+              onGraphChange={applyGraph}
+              onClose={() => setShowTerminal(false)}
+            />
+          )}
+        </Presence>
 
         <div className="dock-toggles" role="toolbar" aria-label="Views">
           <button

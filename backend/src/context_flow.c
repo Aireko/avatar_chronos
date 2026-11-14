@@ -69,6 +69,14 @@ static int entry_point_path(const char *path)
     return 0;
 }
 
+static int python_package_entry(const GraphSymbol *symbol)
+{
+    return strcmp(symbol->language, "python") == 0 &&
+           symbol->kind == PARSER_FUNCTION && symbol->form == PARSER_DEFINITION &&
+           symbol->parent == NULL &&
+           strcmp(path_basename(symbol->location.file_path), "__main__.py") == 0;
+}
+
 static int header_path(const char *path)
 {
     const char *ext = path ? strrchr(path, '.') : NULL;
@@ -124,7 +132,8 @@ static int resolve_seeds(const RepositoryIndex *index, const ContextFlowRequest 
             const char *path = symbol->location.file_path;
             if (header_path(path) || test_path(path)) continue;
             if (entry_point_name(symbol->name) ||
-                entry_point_path(symbol->location.file_path)) {
+                entry_point_path(symbol->location.file_path) ||
+                python_package_entry(symbol)) {
                 if (!add_seed(out, i)) return CHRONOS_OUT_OF_MEMORY;
             }
         }

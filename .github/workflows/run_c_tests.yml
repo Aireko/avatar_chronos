@@ -35,6 +35,9 @@ jobs:
       - name: Run C tests
         run: make -C backend test
 
+      - name: Run language coverage diagnostic
+        run: make -C backend coverage-diagnostic
+
       - name: Context page budget metrics
         run: make -C backend metrics
 

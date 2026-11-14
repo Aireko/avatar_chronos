@@ -36,6 +36,60 @@ EOF
 cat > save_b.c <<'EOF'
 int save(void) { return 2; }
 EOF
+cat > example.py <<'EOF'
+def helper():
+    return 1
+
+def work():
+    return helper()
+EOF
+mkdir -p pkg/sub
+printf 'def helper():\n    return 3\n' > pkg/helpers.py
+printf 'def helper():\n    return 4\n' > decoy.py
+cat > pkg/sub/consumer.py <<'EOF'
+from ..helpers import helper as local
+import pkg.helpers as tools
+from .. import helpers
+
+def symbol_alias():
+    return local()
+
+def module_alias():
+    return tools.helper()
+
+def relative_module():
+    return helpers.helper()
+
+def unbound():
+    return helper()
+EOF
+mkdir -p src/com/example/util
+cat > src/com/example/Service.java <<'EOF'
+package com.example;
+
+import com.example.util.Helper;
+import static com.example.util.Util.help;
+
+public class Service {
+    public int run() {
+        return Helper.work() + help();
+    }
+}
+EOF
+cat > src/com/example/util/Helper.java <<'EOF'
+package com.example.util;
+
+public class Helper {
+    public static int work() { return 2; }
+}
+EOF
+cat > src/com/example/util/Util.java <<'EOF'
+package com.example.util;
+
+public class Util {
+    public static int help() { return 3; }
+}
+EOF
 git add .
 git commit -qm base
 
@@ -45,6 +99,24 @@ int alpha(void) { return 1; }
 int beta(void) { return alpha() + save() + missing() + 1; }
 
 int added(void) { return alpha(); }
+EOF
+sed 's/return 1/return 2/' example.py > example.new
+mv example.new example.py
+sed 's/return /return 1 + /' pkg/sub/consumer.py > consumer.new
+mv consumer.new pkg/sub/consumer.py
+cat > src/com/example/Service.java <<'EOF'
+package com.example;
+
+import com.example.util.Helper;
+import static com.example.util.Util.help;
+
+public class Service {
+    public int run() {
+        return Helper.work() + help() + local();
+    }
+
+    private int local() { return 1; }
+}
 EOF
 git commit -qam head
 
@@ -60,6 +132,27 @@ run_twice modified math.c beta 8 4096
 run_twice added math.c added 8 4096
 run_twice deleted math.c removed 8 4096
 run_twice tight math.c beta 1 0
+run_twice python example.py helper 8 4096
+for target in symbol_alias module_alias relative_module; do
+    run_twice "$target" pkg/sub/consumer.py "$target" 8 4096
+    grep -q '"resolution":"resolved"' "$work/$target.1.json"
+    grep -q '"filePath":"pkg/helpers.py"' "$work/$target.1.json"
+    if grep -q 'decoy.py' "$work/$target.1.json"; then exit 1; fi
+done
+run_twice unbound pkg/sub/consumer.py unbound 8 4096
+grep -q '"resolution":"unresolved"' "$work/unbound.1.json"
+run_twice java src/com/example/Service.java Service::run 8 4096
+grep -q '"calleeText":"Helper.work"' "$work/java.1.json"
+grep -q '"calleeText":"help"' "$work/java.1.json"
+grep -q '"resolution":"resolved"' "$work/java.1.json"
+grep -q '"filePath":"src/com/example/util/Helper.java"' "$work/java.1.json"
+grep -q '"filePath":"src/com/example/util/Util.java"' "$work/java.1.json"
+
+grep -q '"calleeText":"helper"' "$work/python.1.json"
+grep -q '"direction":"incoming"' "$work/python.1.json"
+grep -q '"resolution":"resolved"' "$work/python.1.json"
+grep -q 'return 1' "$work/python.1.json"
+grep -q 'return 2' "$work/python.1.json"
 
 grep -q '"schemaVersion":1' "$work/modified.1.json"
 grep -q '\\"math.c\\",\\"beta\\"' "$work/modified.1.json"

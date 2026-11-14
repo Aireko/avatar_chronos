@@ -18,6 +18,8 @@ import { CommitGraph, type PanelMode } from "./graph/CommitGraph";
 import { carryIds, layoutGraph } from "./graph/layout";
 import { Terminal } from "./graph/Terminal";
 import { ScopeBar } from "./graph/ScopeBar";
+import { BranchSwitcher } from "./push/BranchSwitcher";
+import { PushPanel } from "./push/PushPanel";
 import { PROJECT, scopeGraph, scopeKey, type Scope } from "./graph/scope";
 import ContextViewsPanel from "./context/ContextViewsPanel";
 import { useTheme, type Theme } from "./tools/theme";
@@ -58,6 +60,7 @@ function App() {
   const [showEditor, setShowEditor] = useState(false);
   const [diffCompare, setDiffCompare] = useState<DiffCompare | null>(null);
   const [showTerminal, setShowTerminal] = useState(false);
+  const [showPush, setShowPush] = useState(false);
   const [showContext, setShowContext] = useState(false);
   // At most one drawer is open on the right: a tool or the commit details.
   const [tool, setTool] = useState<ToolId | null>(null);
@@ -350,13 +353,22 @@ function App() {
         <ScopeBar graph={graph} scope={scope} onChange={changeScope} />
 
         <button
-          className={`btn tool-btn${loading && graph ? " is-busy" : ""}`}
+          className="btn"
           disabled={loading || !graph}
           onClick={() => graph && void load(graph.repoPath)}
-          title="Reload the repository's history"
         >
-          <ReloadIcon />
-          <span className="tool-label-sm">Reload</span>
+          <ReloadIcon /> Reload
+        </button>
+
+        <BranchSwitcher
+          graph={graph}
+          currentBranch={currentBranch}
+          onGraphChange={applyGraph}
+          onError={setError}
+        />
+
+        <button className="btn primary" disabled={!graph} onClick={() => setShowPush(true)}>
+          Push to Git
         </button>
 
         <button
@@ -398,6 +410,16 @@ function App() {
 
         {loading && <div className="progress" role="progressbar" aria-label="Opening the repository" />}
       </header>
+
+      {graph && showPush && (
+        <PushPanel
+          repoPath={graph.repoPath}
+          graph={graph}
+          currentBranch={currentBranch}
+          onGraphChange={applyGraph}
+          onClose={() => setShowPush(false)}
+        />
+      )}
 
       <Presence show={Boolean(error)} className="banner-roll" exitMs={160}>
         {error && (

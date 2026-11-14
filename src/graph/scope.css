@@ -1,0 +1,52 @@
+.scope { position: relative; display: flex; align-items: center; gap: 8px; }
+.scope-tabs { display: flex; border: 2px solid var(--ink); border-radius: var(--sketch); overflow: hidden; }
+.scope-tab {
+  height: 32px; padding: 0 12px; border: 0; border-left: 2px solid var(--ink);
+  background: var(--paper); color: var(--ink); font: inherit; cursor: pointer;
+}
+.scope-tab:first-child { border-left: 0; }
+.scope-tab:hover:not(:disabled) { background: var(--wash); }
+.scope-tab.on { background: var(--ink); color: var(--paper); }
+.scope-tab:disabled { opacity: 0.4; cursor: default; }
+.scope-chip {
+  max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 2px 10px; border: 2px dashed var(--pen-2); border-radius: var(--sketch); font-family: var(--mono); font-size: 14px;
+}
+.scope-pop {
+  position: absolute; top: calc(100% + 12px); left: 0; z-index: 60; width: 440px; max-height: 65vh;
+  display: flex; flex-direction: column; gap: 8px; padding: 12px;
+  border: 2.5px solid var(--ink); border-radius: var(--sketch); background: var(--paper);
+  box-shadow: 4px 5px 0 var(--grid-strong);
+}
+.scope-title { display: flex; align-items: center; gap: 8px; font-size: 19px; }
+.scope-back { border: 0; background: none; color: var(--pen-2); font: inherit; cursor: pointer; padding: 0; }
+.scope-list { margin: 0; padding: 0; list-style: none; overflow-y: auto; min-height: 0; }
+.scope-list button {
+  display: block; width: 100%; padding: 4px 8px; border: 0; background: none; color: var(--ink);
+  font-family: var(--mono); font-size: 14px; text-align: left; cursor: pointer; overflow-wrap: anywhere;
+}
+.scope-list button:hover { background: var(--wash); }
+.scope-note { margin: 0; font-size: 15px; }
+.scope-bad { color: var(--bad); }
+/* Keyboard focus: the tabs clip their overflow, so the dashed ring sits inside. */
+.scope-tab:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: -5px; }
+.scope-tab.on:focus-visible { outline-color: var(--paper); }
+.scope-back:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: 2px; border-radius: 4px; }
+.scope-list button:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: -3px; background: var(--wash); }
+.scope-back:hover { text-decoration: underline wavy; text-underline-offset: 3px; }
+/* The file or function that is already in view gets a marker stroke. */
+.scope-list button.on { box-shadow: inset 4px 0 0 var(--pen-2); background: var(--wash); }
+.scope-list button { transition: background-color 0.12s ease; }
+
+/* Each picker step (the file list, then that file's functions) slides in from the side. */
+.scope-step { animation: scope-step-in 0.18s ease-out backwards; }
+@keyframes scope-step-in { from { opacity: 0; transform: translateX(10px); } }
+/* "Loading…" waits a beat, so a quick load never flashes it. */
+.scope-loading { animation: scope-wait 0.2s ease-out 0.18s backwards; }
+@keyframes scope-wait { from { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .scope-step,
+  .scope-loading { animation: none; }
+  .scope-list button { transition: none; }
+}

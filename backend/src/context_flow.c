@@ -55,10 +55,15 @@ static int entry_point_path(const char *path)
 {
     const char *base = path_basename(path);
     if (base == NULL) return 0;
-    size_t length = strcspn(base, ".");
-    static const char *const names[] = {
-        "main", "app", "index", "server", "cli", NULL
-    };
+    const char *ext = strrchr(base, '.');
+    if (ext == NULL) return 0;
+    size_t length = (size_t)(ext - base);
+    if (length == 4 && strncmp(base, "main", 4) == 0) return 1;
+    int web = strcmp(ext, ".ts") == 0 || strcmp(ext, ".tsx") == 0 ||
+              strcmp(ext, ".js") == 0 || strcmp(ext, ".jsx") == 0 ||
+              strcmp(ext, ".mjs") == 0 || strcmp(ext, ".cjs") == 0;
+    if (!web) return 0;
+    static const char *const names[] = {"app", "App", "index", "server", "cli", NULL};
     for (size_t i = 0; names[i]; ++i)
         if (strlen(names[i]) == length && strncmp(base, names[i], length) == 0) return 1;
     return 0;
@@ -70,6 +75,22 @@ static int python_package_entry(const GraphSymbol *symbol)
            symbol->kind == PARSER_FUNCTION && symbol->form == PARSER_DEFINITION &&
            symbol->parent == NULL &&
            strcmp(path_basename(symbol->location.file_path), "__main__.py") == 0;
+}
+
+static int header_path(const char *path)
+{
+    const char *ext = path ? strrchr(path, '.') : NULL;
+    return ext != NULL &&
+           (strcmp(ext, ".h") == 0 || strcmp(ext, ".hh") == 0 || strcmp(ext, ".hpp") == 0);
+}
+
+static int test_path(const char *path)
+{
+    if (path == NULL) return 1;
+    const char *base = path_basename(path);
+    if (strncmp(base, "test_", 5) == 0 || strncmp(base, "tests_", 6) == 0)
+        return 1;
+    return strstr(path, "/tests/") != NULL || strncmp(path, "tests/", 6) == 0;
 }
 
 static size_t module_scope(const IndexScope *scopes, size_t scope)
@@ -107,6 +128,9 @@ static int resolve_seeds(const RepositoryIndex *index, const ContextFlowRequest 
         for (size_t i = 0; i < scope_count && out->count < FLOW_MAX_SEEDS; ++i) {
             if (scopes[i].kind != INDEX_SYMBOL || scopes[i].symbol == NULL) continue;
             const GraphSymbol *symbol = scopes[i].symbol;
+            if (symbol->form != PARSER_DEFINITION) continue;
+            const char *path = symbol->location.file_path;
+            if (header_path(path) || test_path(path)) continue;
             if (entry_point_name(symbol->name) ||
                 entry_point_path(symbol->location.file_path) ||
                 python_package_entry(symbol)) {
@@ -375,6 +399,9 @@ int context_discover_flows(const RepositoryIndex *index, const ContextFlowReques
         score[visit_target] = node_score(hop[visit_target], (incoming),                        \
                                          crossed_module[visit_target],                         \
                                          graph.fan_in[visit_target], 0);                       \
+        if (graph.scopes[visit_target].symbol != NULL &&                                      \
+            test_path(graph.scopes[visit_target].symbol->location.file_path))                  \
+            score[visit_target] *= 0.5;                                                        \
         queue[tail++] = visit_target;                                                          \
     } while (0)
 

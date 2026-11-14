@@ -38,6 +38,9 @@ jobs:
       - name: Run language coverage diagnostic
         run: make -C backend coverage-diagnostic
 
+      - name: Context page budget metrics
+        run: make -C backend metrics
+
   rust-tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 25

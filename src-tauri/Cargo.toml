@@ -32,6 +32,7 @@ tokio = { version = "1", features = ["io-util", "macros", "process", "sync", "ti
 tokio-util = "0.7"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 url = "2"
+tauri-plugin-dialog = "2"
 
 [dev-dependencies]
 # The mocked Ollama server in src/ai/test_support.rs needs sockets and a runtime.

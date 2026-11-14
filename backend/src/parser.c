@@ -1075,6 +1075,7 @@ static int observe_node(ParseState *state, TSNode node, size_t *parent)
                 }
             }
         }
+        return CHRONOS_OK;
     } else if (strcmp(type, "function_definition") == 0 &&
                strcmp(state->file->language, "python") == 0) {
         name = field(node, "name");

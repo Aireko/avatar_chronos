@@ -157,6 +157,20 @@ export interface CommandRun {
   graph: ChronosGraph | null;
 }
 
+export interface ShellCommandResult {
+  ok: boolean;
+  exitCode: number;
+  command: string;
+  cwd: string;
+  stdout: string;
+  stderr: string;
+}
+
+export interface RepoFile {
+  path: string;
+  content: string;
+}
+
 /* ---------- commands ---------- */
 
 interface GraphPayloadRaw {
@@ -231,6 +245,55 @@ export async function blameFile(repoPath: string, filePath: string, revision?: s
   });
   return JSON.parse(raw.blameJson) as BlameReport;
 }
+
+export const listRepoFiles = (repoPath: string) => call<string[]>("list_repo_files", { repoPath });
+
+export const readRepoFile = (repoPath: string, relativePath: string) =>
+  call<RepoFile>("read_repo_file", { repoPath, relativePath });
+
+export const writeRepoFile = (repoPath: string, relativePath: string, content: string) =>
+  call<void>("write_repo_file", { repoPath, relativePath, content });
+
+/** Runs an arbitrary shell command with cwd set to the open repository. */
+export const runShellCommand = (cwd: string, command: string) =>
+  call<ShellCommandResult>("run_shell_command", { cwd, command });
+
+/* ---------- file / function scope ---------- */
+
+export interface ScopedActionResult {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  error: string | null;
+}
+
+export interface FunctionVersions {
+  before: string | null;
+  after: string | null;
+  beforeStart: number;
+  afterStart: number;
+}
+
+export const listFiles = (repoPath: string) => call<string[]>("list_files", { repoPath });
+
+export const functionVersions = (
+  repoPath: string,
+  revision: string,
+  pathAtRevision: string,
+  pathNow: string,
+  functionName: string,
+) => call<FunctionVersions>("function_versions", { repoPath, revision, pathAtRevision, pathNow, functionName });
+
+export const rebaseFile = (repoPath: string, revision: string, pathAtRevision: string, pathNow: string) =>
+  call<ScopedActionResult>("rebase_file", { repoPath, revision, pathAtRevision, pathNow });
+
+export const rebaseFunction = (
+  repoPath: string,
+  revision: string,
+  pathAtRevision: string,
+  pathNow: string,
+  functionName: string,
+) => call<ScopedActionResult>("rebase_function", { repoPath, revision, pathAtRevision, pathNow, functionName });
 
 /* ---------- context compiler views (context_views.h) ---------- */
 
@@ -430,6 +493,147 @@ export async function compileViews(
     maxSourceBytes: options.maxSourceBytes ?? null,
   });
   return JSON.parse(raw.viewsJson) as ContextViews;
+}
+
+export type ContextPageKind = "root" | "module" | "file" | "symbol";
+
+/** Page locations omit the revision; the page envelope is already pinned. */
+export interface ContextPageLocation {
+  filePath: string;
+  range: ContextRange;
+}
+
+export interface ContextPageEvidence {
+  id: string;
+  kind: ContextEvidenceKind;
+  state: ContextRelationState;
+  location: ContextPageLocation | null;
+}
+
+export interface ContextPageNode {
+  id: string;
+  kind: ContextScopeKind;
+  parentId: string | null;
+  label: string;
+  symbol: { id: string } | null;
+  coverage: ContextCoverage;
+  state: ContextRelationState;
+  childCount: number;
+  edgeCount: number;
+}
+
+export interface ContextPageEdge {
+  id: string;
+  from: string;
+  to: string | null;
+  kind: ContextEvidenceKind | "bridge" | "flow";
+  state: ContextRelationState;
+  evidenceId: string;
+  /** Syntactic callee name; full call records stay in the full-graph API. */
+  calleeText: string | null;
+}
+
+export interface ContextPageCollection<T> {
+  status: ContextCoverage;
+  items: T[] | null;
+  total: number;
+  nextOffset: number;
+}
+
+export interface ContextPageDocument {
+  schemaVersion: number;
+  page: {
+    kind: ContextPageKind;
+    parentScope: string | null;
+    nodeOffset: number;
+    edgeOffset: number;
+    evidenceOffset: number;
+    limits: { maxNodes: number; maxEdges: number; maxEvidence: number };
+  };
+  repositoryId: string;
+  revision: ContextRevision;
+  nodes: ContextPageCollection<ContextPageNode>;
+  edges: ContextPageCollection<ContextPageEdge>;
+  evidence: ContextPageCollection<ContextPageEvidence>;
+  counts: { children: number; edges: number };
+  diagnostics: unknown[];
+}
+
+export interface ContextSourceDocument {
+  status: "present" | "absent" | "unavailable";
+  location: ContextLocation | null;
+  source: string | null;
+}
+
+export interface OpenViewsOptions extends CompileViewsOptions {
+  targets?: ContextTarget[];
+}
+
+export interface SessionLoad {
+  sessionId: number;
+  brief: ContextBriefDocument;
+}
+
+export interface LoadViewsPageOptions {
+  kind: ContextPageKind;
+  parentScope?: string | null;
+  nodeOffset?: number;
+  edgeOffset?: number;
+  evidenceOffset?: number;
+  maxNodes?: number;
+  maxEdges?: number;
+  maxEvidence?: number;
+}
+
+export async function openViews(
+  repoPath: string,
+  options: OpenViewsOptions = {},
+): Promise<SessionLoad> {
+  const raw = await call<{ sessionId: number; briefJson: string }>("open_views", {
+    repoPath,
+    revision: options.revision?.trim() || "HEAD",
+    mode: options.mode ?? "onboarding",
+    targets: (options.targets ?? []).map((target) => ({
+      path: target.path.trim(),
+      qualifiedName: target.qualifiedName.trim(),
+    })),
+    maxItems: options.maxItems ?? null,
+    maxSourceBytes: options.maxSourceBytes ?? null,
+  });
+  return { sessionId: raw.sessionId, brief: JSON.parse(raw.briefJson) as ContextBriefDocument };
+}
+
+export async function loadViewsPage(
+  sessionId: number,
+  options: LoadViewsPageOptions,
+): Promise<ContextPageDocument> {
+  const raw = await call<{ pageJson: string }>("views_page", {
+    sessionId,
+    kind: options.kind,
+    parentScope: options.parentScope ?? null,
+    nodeOffset: options.nodeOffset ?? 0,
+    edgeOffset: options.edgeOffset ?? 0,
+    evidenceOffset: options.evidenceOffset ?? 0,
+    maxNodes: options.maxNodes ?? null,
+    maxEdges: options.maxEdges ?? null,
+    maxEvidence: options.maxEvidence ?? null,
+  });
+  return JSON.parse(raw.pageJson) as ContextPageDocument;
+}
+
+export async function readSessionSource(
+  sessionId: number,
+  evidenceId: string,
+): Promise<ContextSourceDocument> {
+  const raw = await call<{ sourceJson: string }>("views_source", {
+    sessionId,
+    evidenceId,
+  });
+  return JSON.parse(raw.sourceJson) as ContextSourceDocument;
+}
+
+export async function closeViews(sessionId: number): Promise<void> {
+  await call<void>("close_views", { sessionId });
 }
 
 export interface CompileMultiViewsOptions {

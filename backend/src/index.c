@@ -40,6 +40,13 @@ static void *array_new(size_t count, size_t size)
     return count != 0 && count <= SIZE_MAX / size ? calloc(count, size) : NULL;
 }
 
+static size_t g_index_build_count;
+
+size_t index_build_count(void)
+{
+    return g_index_build_count;
+}
+
 static int copy_text(const char **out, const char *text)
 {
     if (text != NULL) {
@@ -707,6 +714,7 @@ int index_build(const RevisionRef *revision, const IndexFileInput *files, size_t
         return status;
     }
     *out = index;
+    ++g_index_build_count;
     return status;
 }
 

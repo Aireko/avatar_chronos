@@ -158,10 +158,45 @@ body { overflow: hidden; background: #fbfbf8; }
 }
 
 /* ============ main area ============ */
-.stage { flex: 1; min-height: 0; display: flex; }
+.stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.workspace {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
 .empty { flex: 1; display: grid; place-content: center; justify-items: center; gap: 4px; text-align: center; }
 .empty h1 { margin: 0; font-size: 40px; font-weight: 400; }
 .empty p { margin: 0; max-width: 40ch; font-size: 20px; color: var(--soft); }
+.context-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 20px;
+  text-align: left;
+  background: var(--paper);
+}
+.context-panel input,
+.context-panel select,
+.context-panel button {
+  font: inherit;
+}
+.context-panel table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.context-panel th,
+.context-panel td {
+  border-bottom: 1px solid var(--soft);
+  padding: 4px 6px;
+  text-align: left;
+}
 
 /* ============ status bar ============ */
 .statusbar {
@@ -180,6 +215,13 @@ body { overflow: hidden; background: #fbfbf8; }
 .status-bad { color: var(--bad); }
 
 /* ============ the drawing ============ */
+.map-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
 .map {
   position: relative;
   flex: 1;
@@ -202,7 +244,123 @@ body { overflow: hidden; background: #fbfbf8; }
     linear-gradient(90deg, var(--grid) 1px, transparent 1px);
   background-size: 100px 100px, 100px 100px, 20px 20px, 20px 20px;
 }
+.map-zoom {
+  position: relative;
+  transform-origin: 0 0;
+}
 .map-svg { position: absolute; left: 0; top: 0; overflow: visible; }
+.map-chrome {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 20;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  pointer-events: none;
+}
+.map-chrome > * { pointer-events: auto; }
+.branch-legend {
+  max-width: 220px;
+  border: 2px solid var(--ink);
+  border-radius: var(--sketch);
+  background: var(--paper);
+  overflow: hidden;
+}
+.branch-legend.collapsed { max-width: none; }
+.legend-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-width: 120px;
+  height: 36px;
+  padding: 0 12px;
+  border: 0;
+  background: var(--wash);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+.legend-toggle:hover { filter: brightness(0.97); }
+/* The legend clips its corners, so focus rings are drawn inside. */
+.legend-toggle:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: -5px; }
+.legend-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 10px 8px;
+  max-height: 180px;
+  overflow: auto;
+  border-top: 2px solid var(--ink);
+  scrollbar-width: thin;
+  scrollbar-color: var(--soft) transparent;
+}
+.legend-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+}
+/* Each branch is a key: pointing at it fades the other lines, clicking pans to its tip. */
+.legend-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% + 8px);
+  min-width: 0;
+  min-height: 26px;
+  margin: 0 -4px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.14s ease;
+}
+.legend-pick:hover { background: var(--wash); }
+.legend-pick:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: -2px; }
+.legend-pick .legend-swatch { transition: transform 0.16s cubic-bezier(0.2, 0.9, 0.25, 1.3); }
+.legend-pick:hover .legend-swatch,
+.legend-pick:focus-visible .legend-swatch { transform: scale(1.25) rotate(-8deg); }
+.legend-pick:active .legend-swatch { transform: scale(0.9); }
+.legend-swatch {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border: 2px solid var(--ink);
+  border-radius: 50%;
+}
+.legend-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+}
+.zoom-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.zoom-btn {
+  width: 44px;
+  min-width: 44px;
+  height: 36px;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+}
+.zoom-btn:nth-child(2) {
+  font-size: 12px;
+  letter-spacing: 0;
+}
+/* The zoom readout ticks over to each new value. */
+.zoom-level { display: inline-block; animation: zoom-tick 0.16s ease-out; }
+@keyframes zoom-tick { from { opacity: 0.2; transform: translateY(3px); } }
 
 /* pen lines */
 .tube-casing,
@@ -211,33 +369,65 @@ body { overflow: hidden; background: #fbfbf8; }
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-dasharray: 1;
-  animation: line-draw 0.55s ease-out backwards;
-  transition: d 0.8s cubic-bezier(0.45, 0, 0.2, 1);
+  transition: d 0.8s cubic-bezier(0.45, 0, 0.2, 1), opacity 0.18s ease;
 }
 @keyframes line-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
 .tube-casing { stroke: var(--paper); stroke-width: 13; }
 .tube { stroke-width: 5; }
-.tube-ghost { fill: none; stroke-width: 4; stroke-linecap: round; stroke-dasharray: 0.04 0.1; opacity: 0.55; }
+.tube-ghost {
+  fill: none; stroke-width: 4; stroke-linecap: round; stroke-dasharray: 0.04 0.1; opacity: 0.55;
+  transition: opacity 0.18s ease;
+}
 
-.bridge { animation: fade-in 0.2s ease-out backwards; }
 .bridge-gap { stroke: var(--paper); stroke-width: 17; }
-.bridge-line { stroke-width: 5; }
+.bridge-line { stroke-width: 5; transition: opacity 0.18s ease; }
 @keyframes fade-in { from { opacity: 0; } }
 
+/* The draw-in. Only what is on screen when a map opens gets the .draw class (plus anything
+   that appears later), so a history of thousands of commits still animates a dozen columns:
+   the pen draws each line, then its circle lands, then its lettering fades in. */
+.tube-casing.draw,
+.tube.draw { animation: line-draw 0.55s ease-out backwards; }
+.tube-ghost.draw { animation: fade-in 0.4s ease-out backwards; }
+.bridge.draw { animation: fade-in 0.2s ease-out backwards; }
+.node.draw .station { animation: station-in 0.28s cubic-bezier(0.2, 0.9, 0.25, 1.25) backwards; animation-delay: var(--d, 0ms); }
+.node.draw .map-label,
+.node.draw .flag,
+.node.draw .head-note text { animation: fade-in 0.26s ease-out backwards; animation-delay: calc(var(--d, 0ms) + 90ms); }
+.node.draw .head-note path,
+.node.draw .flag-underline { stroke-dasharray: 1; animation: line-draw 0.24s ease-out backwards; animation-delay: calc(var(--d, 0ms) + 180ms); }
+@keyframes station-in { from { opacity: 0; transform: scale(0.35) rotate(-40deg); } }
+
 /* commit circles */
-.node { cursor: pointer; outline: none; transition: transform 0.8s cubic-bezier(0.45, 0, 0.2, 1); }
+.node {
+  cursor: pointer;
+  outline: none;
+  transition: transform 0.8s cubic-bezier(0.45, 0, 0.2, 1), opacity 0.18s ease;
+}
 .node-hit { fill: transparent; }
-.station { transition: transform 0.14s ease-out; animation: fade-in 0.25s ease-out backwards; }
+.station { transition: transform 0.14s ease-out; }
 .node:hover .station { transform: scale(1.14) rotate(8deg); }
+.node:active .station { transform: scale(0.92) rotate(-4deg); transition-duration: 0.06s; }
 .ring { fill: var(--paper); stroke: var(--line); stroke-width: 4.5; stroke-linejoin: round; }
 .ring-core { fill: var(--line); }
-.halo { fill: var(--highlight); opacity: 0; transition: opacity 0.15s; }
-.node.selected .halo,
-.node:focus-visible .halo { opacity: 1; }
+/* The highlighter blob scribbles in around the chosen commit, a little past full size and back. */
+.halo {
+  fill: var(--highlight);
+  opacity: 0;
+  transform: scale(0.45) rotate(-30deg);
+  transition: opacity 0.15s ease-out, transform 0.24s cubic-bezier(0.2, 0.9, 0.25, 1.35);
+}
+.node.selected .halo { opacity: 1; transform: none; }
+/* Keyboard focus gets the app's dashed pen ring, so it never looks like a selection. */
+.node:focus-visible .node-hit { stroke: var(--pen-2); stroke-width: 2.5; stroke-dasharray: 5 4; }
 
 /* lettering on the drawing */
-.map-label { fill: var(--ink); font-family: var(--hand); font-size: 16px; text-anchor: middle; opacity: 0.78; }
+.map-label {
+  fill: var(--ink); font-family: var(--hand); font-size: 16px; text-anchor: middle; opacity: 0.78;
+  transition: opacity 0.15s ease;
+}
 .node:hover .map-label,
+.node:focus-visible .map-label,
 .node.selected .map-label { opacity: 1; }
 .flag { pointer-events: none; }
 .flag text { font-family: var(--hand); font-size: 19px; text-anchor: middle; }
@@ -257,7 +447,18 @@ body { overflow: hidden; background: #fbfbf8; }
   background: var(--paper);
   border: 2px solid var(--ink);
   border-radius: var(--sketch);
-  animation: fade-in 0.12s ease-out;
+  /* Pops up out of the commit below it, and drops back into it on close (exitMs 120). */
+  transform-origin: 50% 100%;
+  animation: menu-in 0.18s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards;
+}
+.menu-layer.is-leaving .menu { pointer-events: none; animation: menu-out 0.12s ease-in forwards; }
+/* Same function list as .menu's resting transform (plus a scale), so the frames interpolate cleanly. */
+@keyframes menu-in {
+  from { opacity: 0; transform: translate(-50%, calc(-100% + 8px)) rotate(-3deg) scale(0.9); }
+  to { transform: translate(-50%, -100%) rotate(-1deg) scale(1); }
+}
+@keyframes menu-out {
+  to { opacity: 0; transform: translate(-50%, calc(-100% + 6px)) rotate(-0.5deg) scale(0.94); }
 }
 .menu button {
   height: 30px;
@@ -269,7 +470,9 @@ body { overflow: hidden; background: #fbfbf8; }
   font: inherit;
   cursor: pointer;
 }
+.menu button { transition: background-color 0.12s ease, transform 0.08s; }
 .menu button:hover:not(:disabled) { background: var(--highlight); }
+.menu button:active:not(:disabled) { transform: translateY(1px) rotate(-0.6deg); }
 .menu button:disabled { color: var(--soft); opacity: 0.6; cursor: default; }
 
 /* ============ details panel ============ */
@@ -452,4 +655,192 @@ body { overflow: hidden; background: #fbfbf8; }
 @media (prefers-reduced-motion: reduce) {
   .tube-casing, .tube, .bridge, .station, .menu, .progress, .working-dot { animation: none; }
   .node, .tube-casing, .tube, .station, .btn, .key { transition: none; }
+  /* the graph's draw-in, selection, action bar, legend and zoom readout */
+  .tube.draw, .tube-casing.draw, .bridge.draw, .tube-ghost.draw, .node.draw .station, .node.draw .map-label, .node.draw .flag,
+  .node.draw .head-note text, .node.draw .head-note path, .node.draw .flag-underline,
+  .menu-layer.is-leaving .menu, .zoom-level { animation: none; }
+  .tube-ghost, .bridge-line, .halo, .map-label, .menu button,
+  .legend-pick, .legend-pick .legend-swatch { transition: none; }
 }
+
+/* ============ code editor + terminal (added on graph_changes) ============ */
+.dock-toggles {
+  position: absolute; left: 16px; bottom: 16px; z-index: 25;
+  display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+}
+.dock-key { pointer-events: auto; min-width: 140px; text-align: left; }
+.stage:has(.term) .dock-toggles { bottom: calc(210px + 16px); }
+
+.editor { position: absolute; inset: 0; display: flex; background: var(--paper); }
+.file-tree { flex: none; display: flex; flex-direction: column; min-width: 0; background: var(--wash); }
+.file-tree-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 12px; border-bottom: 2px solid var(--ink); font-size: 18px;
+}
+.file-tree-rev { color: var(--soft); font-size: 14px; }
+.file-search { position: relative; display: flex; align-items: center; padding: 8px 10px; border-bottom: 2px solid var(--ink); }
+.file-search-input {
+  width: 100%; height: 32px; padding: 0 28px 0 10px; border: 2px solid var(--ink);
+  border-radius: var(--sketch); background: var(--paper); color: var(--ink); font: inherit; font-size: 15px; outline: none;
+}
+.file-search-input::placeholder { color: var(--soft); }
+.file-search-clear {
+  position: absolute; right: 16px; width: 22px; height: 22px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--soft); font: inherit; font-size: 18px; cursor: pointer;
+}
+.file-tree-scroll { flex: 1; overflow: auto; padding: 6px 4px 12px; scrollbar-width: thin; scrollbar-color: var(--soft) transparent; }
+.file-tree-empty { margin: 10px 8px; color: var(--soft); font-size: 15px; }
+.tree-row {
+  display: flex; align-items: center; gap: 4px; width: 100%; min-height: 28px;
+  padding: 2px 8px 2px 0; border: 2px solid transparent; border-radius: 8px;
+  background: transparent; color: var(--ink); font: inherit; font-size: 15px; text-align: left; cursor: pointer;
+}
+.tree-row:hover { background: var(--paper); }
+.tree-row.active { border-color: var(--ink); background: var(--paper); }
+.tree-row:focus-visible { outline: 2px solid var(--pen-2); outline-offset: 1px; }
+.tree-chevron { width: 14px; flex: none; color: var(--soft); font-size: 12px; text-align: center; }
+.tree-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-file .tree-label { font-family: var(--mono); font-size: 12.5px; }
+.tree-resizer { flex: none; width: 5px; cursor: col-resize; background: var(--ink); opacity: 0.15; }
+.tree-resizer:hover, .tree-resizer:active { opacity: 0.45; }
+
+.editor-main { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--paper); }
+.editor-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 2px solid var(--ink); }
+.editor-path {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--mono); font-size: 13px;
+}
+.editor-close { flex: none; height: 32px; }
+.editor-body { flex: 1; min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--soft) transparent; }
+.editor-body-diff { display: flex; flex-direction: column; overflow: hidden; }
+.editor-banner { margin: 10px 12px 0; padding: 8px 12px; border: 2px solid var(--bad); border-radius: 10px; background: var(--wash); flex: none; }
+.editor-placeholder { margin: 0; padding: 40px 20px; text-align: center; color: var(--soft); }
+.editor-dirty { color: var(--warn); }
+.editor-saved { color: var(--ok); }
+.tree-status {
+  flex: none; width: 14px; font-family: var(--mono); font-size: 11px; font-weight: 700; text-align: center;
+}
+.code-edit {
+  display: flex; min-height: 100%; padding: 12px 0 360px;
+  font-family: var(--mono); font-size: 13px; line-height: 1.55; color: var(--ink);
+}
+.code-gutters { flex: none; width: 48px; padding: 0 10px 0 0; text-align: right; color: var(--soft); user-select: none; }
+.code-gutters span { display: block; min-height: 1.55em; }
+.code-input {
+  flex: 1; min-width: 0; margin: 0; padding: 0 20px 0 0; border: 0; background: transparent;
+  color: inherit; font: inherit; line-height: inherit; resize: none; outline: none;
+  white-space: pre; overflow: hidden; field-sizing: content; tab-size: 2;
+}
+
+.side-diff {
+  flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr;
+  border-top: 0; background: var(--paper);
+}
+.side-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-right: 2px solid var(--ink); }
+.side-pane:last-child { border-right: 0; }
+.side-pane-head {
+  flex: none; padding: 6px 12px; border-bottom: 2px solid var(--ink); background: var(--wash);
+  font-family: var(--mono); font-size: 12px; color: var(--soft);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.side-pane-code {
+  flex: 1; min-height: 0; margin: 0; padding: 8px 0 280px; overflow: auto;
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.5; color: var(--ink);
+  scrollbar-width: thin; scrollbar-color: var(--soft) transparent;
+}
+.side-pane-edit {
+  width: 100%; padding: 8px 12px 280px; border: 0; resize: none; outline: none;
+  background: var(--paper); color: var(--ink); white-space: pre; tab-size: 2;
+}
+.side-line { display: flex; gap: 10px; padding: 0 12px 0 8px; min-height: 1.5em; white-space: pre; }
+.side-line code { flex: 1; min-width: 0; font: inherit; }
+.side-num {
+  flex: none; width: 36px; text-align: right; color: var(--soft); user-select: none;
+}
+.side-line.added { background: rgba(46, 158, 91, 0.18); }
+.side-line.removed { background: rgba(209, 69, 59, 0.18); }
+.side-line.empty { opacity: 0.35; }
+
+.mini-map {
+  position: absolute; z-index: 5; display: flex; flex-direction: column;
+  border: 2.5px solid var(--ink); border-radius: 12px; background: var(--wash); overflow: hidden;
+}
+.mini-map-bar {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex: none;
+  padding: 6px 12px 5px; border-bottom: 2px solid var(--ink); cursor: grab; user-select: none; font-size: 16px;
+}
+.mini-map-bar:active { cursor: grabbing; }
+.mini-map-hint { color: var(--soft); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mini-map-view {
+  flex: 1; min-height: 0; overflow: auto; cursor: grab; background: var(--paper);
+  scrollbar-width: thin; scrollbar-color: var(--soft) transparent;
+}
+.mini-map-view.dragging { cursor: grabbing; }
+.mini-map-sheet { position: relative; min-width: 100%; min-height: 100%; }
+.mini-map-svg { display: block; background: var(--paper); }
+.mini-map-resize {
+  position: absolute; left: 0; top: 0; z-index: 2; width: 18px; height: 18px; cursor: nwse-resize; opacity: 0.45;
+  background:
+    linear-gradient(315deg, transparent 55%, var(--ink) 55%, var(--ink) 62%, transparent 62%),
+    linear-gradient(315deg, transparent 70%, var(--ink) 70%, var(--ink) 77%, transparent 77%);
+}
+.mini-map-resize:hover { opacity: 0.8; }
+.mini-tube { fill: none; stroke-width: 10; stroke-linecap: round; stroke-linejoin: round; opacity: 0.9; }
+.mini-ghost { fill: none; stroke-width: 6; stroke-linecap: round; stroke-dasharray: 2 10; opacity: 0.45; }
+.mini-node { cursor: pointer; outline: none; }
+.mini-hit { fill: transparent; }
+.mini-ball { fill: var(--line, var(--ink)); stroke: var(--ink); stroke-width: 3; }
+.mini-node.selected .mini-ball { stroke: var(--highlight); stroke-width: 6; }
+.mini-node:focus-visible .mini-ball { stroke: var(--pen-2); stroke-width: 5; }
+/* Same feedback as the big map: a nudge on hover, a squish on press, a highlighter blob
+   that grows in behind the chosen commit, and a dashed pen ring around head. */
+.mini-ball { transition: transform 0.14s ease-out, stroke 0.15s ease, stroke-width 0.15s ease; }
+.mini-node:hover .mini-ball { transform: scale(1.2); }
+.mini-node:active .mini-ball { transform: scale(0.9); transition-duration: 0.06s; }
+.mini-halo {
+  fill: var(--highlight);
+  opacity: 0;
+  transform: scale(0.4);
+  transition: opacity 0.15s ease-out, transform 0.24s cubic-bezier(0.2, 0.9, 0.25, 1.35);
+}
+.mini-node.selected .mini-halo { opacity: 1; transform: none; }
+.mini-head { fill: none; stroke: var(--ink); stroke-width: 4; stroke-dasharray: 7 6; stroke-linecap: round; }
+@media (prefers-reduced-motion: reduce) {
+  .mini-ball, .mini-halo { transition: none; }
+}
+
+.term {
+  position: relative; z-index: 15; flex: none; height: 210px; display: flex; flex-direction: column;
+  border-top: 2.5px solid var(--ink); background: #1c1c1e; color: #f2efe6; font-family: var(--mono);
+}
+.app[data-theme="board"] .term { background: #15201e; }
+.term-bar {
+  display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px 0 14px;
+  border-bottom: 1px solid rgba(242, 239, 230, 0.18); font-family: var(--hand); font-size: 16px;
+}
+.term-title { display: flex; align-items: center; gap: 8px; }
+.term-path {
+  margin-left: auto; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; color: rgba(242, 239, 230, 0.55);
+}
+.term-close {
+  width: 28px; height: 28px; flex: none; border: 2px solid rgba(242, 239, 230, 0.4); border-radius: 8px;
+  background: transparent; color: inherit; font: inherit; font-size: 18px; cursor: pointer;
+}
+.term-scroll {
+  flex: 1; min-height: 0; overflow: auto; padding: 8px 14px;
+  scrollbar-width: thin; scrollbar-color: rgba(242, 239, 230, 0.35) transparent;
+}
+.term-line { margin: 0 0 3px; font-size: 12.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+.term-line.in { color: #ffd76a; }
+.term-line.out { color: #f2efe6; }
+.term-line.err { color: #ff9a8f; }
+.term-line.meta { color: rgba(242, 239, 230, 0.5); }
+.term-prompt {
+  display: flex; align-items: center; gap: 8px; padding: 8px 14px 10px;
+  border-top: 1px solid rgba(242, 239, 230, 0.18); font-size: 13px;
+}
+.term-dollar { color: #8fdc9c; font-weight: 700; }
+.term-input { flex: 1; min-width: 0; height: 26px; border: 0; background: transparent; color: #f2efe6; font: inherit; outline: none; }
+.term-input::placeholder { color: rgba(242, 239, 230, 0.35); }
+.term-input:disabled { opacity: 0.5; }

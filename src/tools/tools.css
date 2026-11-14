@@ -1,0 +1,285 @@
+/* ============ toolbar tools and the tool drawer (same hand-drawn family as graph.css) ============ */
+
+/* Tool buttons: a hand-drawn icon plus a label. Labels fold away on narrow windows. */
+.tools { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+}
+.tool-btn svg { flex: none; }
+.tool-btn[aria-pressed="true"] { background: var(--highlight); }
+.tool-btn[aria-pressed="true"]:hover:not(:disabled) { background: var(--highlight); opacity: 0.9; }
+.toolbar-sep { width: 0; height: 26px; border-left: 2px dashed var(--soft); margin: 0 2px; }
+
+/* The toolbar also holds the history scope switcher, so the path form gives up width first. */
+.toolbar .open-form { min-width: 150px; }
+.toolbar .scope { flex: none; }
+.toolbar .scope-chip { max-width: 200px; }
+
+@media (max-width: 1699px) {
+  .tool-btn { padding: 0 9px; }
+  .tool-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}
+
+/* On the narrowest windows Reload and the theme switch fold to icons too. */
+@media (max-width: 1149px) {
+  .toolbar { gap: 8px; }
+  .toolbar .scope-chip { max-width: 120px; }
+  .tool-label-sm { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}
+
+/* The graph or code editor area. The editor is absolutely positioned, so it fills
+   this box rather than the whole workspace and the tool drawer stays beside it. */
+.workspace-main { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; }
+
+/* The drawer: a ticket that hosts a tool. Slightly wider than commit details. */
+.tool-drawer { width: 460px; }
+/* Icon + name. Keyed in ToolDrawer, so switching tools re-inks the heading. */
+.tool-drawer-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  font-size: 22px;
+  animation: swap-in 0.2s ease-out backwards;
+}
+.tool-drawer-title svg { flex: none; }
+.tool-drawer-name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tool-drawer-body { padding: 0 0 22px; }
+
+/* ============ opening and closing panels ============
+   <Presence> (src/tools/Presence.tsx) wraps each panel and adds .is-entering or
+   .is-leaving; the exit durations here must match its exitMs. */
+
+/* Side panels (tool drawer, commit ticket): tucked in from the right like a
+   ticket, with a small overshoot, and slid back out. A closing panel floats over
+   the edge so the next one can take its place without the layout jumping. */
+.slide-panel { display: flex; flex: none; min-height: 0; }
+.slide-panel.is-entering { animation: ticket-in 0.26s cubic-bezier(0.2, 0.9, 0.25, 1.15) backwards; }
+.slide-panel.is-leaving {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  /* Above the graph's legend and zoom keys (.map-chrome, 20), below the dock keys (25). */
+  z-index: 22;
+  pointer-events: none;
+  animation: ticket-out 0.18s ease-in forwards;
+}
+@keyframes ticket-in {
+  from { transform: translateX(34px) rotate(0.8deg); opacity: 0; }
+  60% { opacity: 1; }
+  to { transform: none; }
+}
+@keyframes ticket-out {
+  to { transform: translateX(40px) rotate(1deg); opacity: 0; }
+}
+
+/* Switching between tools keeps the drawer and fades the new content in. */
+.tool-swap { animation: swap-in 0.2s ease-out backwards; }
+@keyframes swap-in { from { opacity: 0; transform: translateY(6px); } }
+
+/* The code editor: a sheet laid over the graph, lifted off again on close. */
+.editor-layer { position: absolute; inset: 0; z-index: 3; }
+.editor-layer.is-entering { animation: sheet-in 0.24s ease-out backwards; }
+/* While closing, the graph is already back underneath; stay above its legend (20). */
+.editor-layer.is-leaving { z-index: 21; pointer-events: none; animation: sheet-out 0.16s ease-in forwards; }
+/* No fade on the way in: the graph is gone at once, so a fade would flash empty paper. */
+@keyframes sheet-in { from { transform: translateY(12px) rotate(-0.25deg) scale(0.99); } }
+@keyframes sheet-out { to { opacity: 0; transform: translateY(10px) rotate(0.2deg) scale(0.99); } }
+
+/* The terminal dock slides up from the status bar and back down. */
+.dock-panel { flex: none; display: flex; flex-direction: column; overflow: hidden; }
+.dock-panel.is-entering { animation: dock-in 0.22s ease-out backwards; }
+.dock-panel.is-leaving { pointer-events: none; animation: dock-out 0.2s ease-in forwards; }
+@keyframes dock-in { from { height: 0; } to { height: 210px; } }
+@keyframes dock-out { from { height: 210px; } to { height: 0; } }
+/* The Code editor / Terminal keys ride along with the dock. */
+.dock-toggles { transition: bottom 0.22s ease-out; }
+/* Same duration and easing as dock-out, so the keys never cover the closing terminal. */
+.stage:has(.dock-panel.is-leaving) .dock-toggles { bottom: 16px; transition: bottom 0.2s ease-in; }
+
+@media (prefers-reduced-motion: reduce) {
+  .slide-panel.is-entering,
+  .slide-panel.is-leaving,
+  .tool-swap,
+  .editor-layer.is-entering,
+  .editor-layer.is-leaving,
+  .dock-panel.is-entering,
+  .dock-panel.is-leaving { animation: none; }
+  .dock-toggles { transition: none; }
+}
+
+/* ============ small pop-ups: the File / Function picker and the branch legend ============ */
+
+/* Scope tabs slide their ink highlight across instead of snapping. */
+.scope-tab { transition: background-color 0.18s ease, color 0.18s ease; }
+/* The chosen file or function lands in the toolbar like a fresh stamp. */
+.scope-chip { animation: chip-in 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards; }
+@keyframes chip-in { from { opacity: 0; transform: translateX(-6px) scale(0.96); } }
+
+/* The picker drops down from the tabs with a slight tilt, and lifts away again. */
+.scope-pop { transform-origin: 24px 0; }
+.scope-pop.is-entering { animation: pop-in 0.2s cubic-bezier(0.2, 0.9, 0.25, 1.15) backwards; }
+.scope-pop.is-leaving { pointer-events: none; animation: pop-out 0.14s ease-in forwards; }
+@keyframes pop-in { from { opacity: 0; transform: translateY(-8px) rotate(-0.8deg) scale(0.97); } }
+@keyframes pop-out { to { opacity: 0; transform: translateY(-6px) rotate(0.5deg) scale(0.98); } }
+
+/* The legend's branch list rolls up into its header and back down. A one-row grid
+   animates from 0fr to 1fr, which works for any number of branches. */
+.legend-drawer { display: grid; grid-template-rows: 1fr; overflow: hidden; }
+/* The list keeps its padding and border, so an inner box is what shrinks to nothing. */
+.legend-roll { min-height: 0; overflow: hidden; }
+.legend-drawer.is-entering { animation: roll-down 0.22s ease-out backwards; }
+.legend-drawer.is-leaving { animation: roll-up 0.18s ease-in forwards; }
+@keyframes roll-down { from { grid-template-rows: 0fr; opacity: 0; } }
+@keyframes roll-up { to { grid-template-rows: 0fr; opacity: 0; } }
+.legend-caret { display: inline-block; transition: transform 0.2s ease; }
+.branch-legend.collapsed .legend-caret { transform: rotate(-90deg); }
+
+@media (prefers-reduced-motion: reduce) {
+  .scope-tab,
+  .legend-caret { transition: none; }
+  .scope-chip,
+  .scope-pop.is-entering,
+  .scope-pop.is-leaving,
+  .legend-drawer.is-entering,
+  .legend-drawer.is-leaving { animation: none; }
+}
+
+/* ============ the app shell: theme switch, buttons, banner, empty states, status bar ============ */
+
+/* Switching paper <-> blackboard cross-fades the whole window (src/tools/crossFade.ts).
+   The browser fades two snapshots on the compositor, so nothing re-renders mid-fade. */
+::view-transition-old(root),
+::view-transition-new(root) { animation-duration: 0.26s; animation-timing-function: ease; }
+/* The switch's icon turns into place, chalk to sun and back. */
+.theme-glyph { display: inline-flex; }
+.theme-glyph.is-turning { animation: glyph-turn 0.28s cubic-bezier(0.2, 0.9, 0.25, 1.15) backwards; }
+@keyframes glyph-turn { from { opacity: 0; transform: rotate(-110deg) scale(0.6); } }
+
+/* Toolbar and dock buttons ease their fill and ink instead of snapping (graph.css only
+   transitions the press). Icons tilt a touch under the pointer, like a pen picked up. */
+.toolbar .btn,
+.dock-key,
+.banner .btn {
+  transition: transform 0.08s, background-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+.tool-btn svg { transition: transform 0.16s ease; }
+.tool-btn:hover:not(:disabled) svg { transform: rotate(-8deg) scale(1.08); }
+.tool-btn[aria-pressed="true"] svg { transform: rotate(-4deg); }
+/* Reload's arrow keeps turning while the history is being read. */
+.tool-btn.is-busy svg { animation: busy-turn 0.9s linear infinite; }
+@keyframes busy-turn { to { transform: rotate(360deg); } }
+
+/* The path field and the picker's filter show keyboard focus with a pen-blue edge. */
+.open-form .field,
+.scope-pop .field { transition: background-color 0.15s ease, border-color 0.15s ease; }
+.open-form .field:focus-visible,
+.scope-pop .field:focus-visible { border-color: var(--pen-2); }
+
+/* The error banner rolls down under the toolbar and back up (same roll as the legend),
+   and a new message nudges in even when the banner is already open. */
+.banner-roll { display: grid; grid-template-rows: 1fr; flex: none; }
+.banner-clip { min-height: 0; overflow: hidden; }
+.banner-roll.is-entering { animation: roll-down 0.2s ease-out backwards; }
+.banner-roll.is-leaving { pointer-events: none; animation: roll-up 0.16s ease-in forwards; }
+.banner-text { display: inline-flex; align-items: center; gap: 9px; min-width: 0; animation: banner-nudge 0.26s ease-out backwards; }
+.banner-text svg { flex: none; }
+.banner-text > span { min-width: 0; overflow-wrap: anywhere; }
+@keyframes banner-nudge {
+  from { opacity: 0; transform: translateX(-6px); }
+  60% { opacity: 1; transform: translateX(2px); }
+  to { transform: none; }
+}
+
+/* Empty states: a doodle that draws itself in, then the words, then the way out. */
+.shell-empty { gap: 6px; padding: 24px; animation: empty-in 0.26s ease-out backwards; }
+.shell-empty-action { margin-top: 14px; }
+.shell-empty .tool-btn { padding: 0 16px; }
+/* While a first repository is being read; waits a beat so a quick open doesn't flash it. */
+.shell-empty.is-waiting { animation-delay: 0.18s; }
+@keyframes empty-in { from { opacity: 0; transform: translateY(8px); } }
+
+.doodle { display: block; margin-bottom: 4px; overflow: visible; }
+.doodle .d-ink { stroke: var(--ink); }
+.doodle .d-soft { stroke: var(--soft); }
+.doodle .d-pen-a { stroke: var(--pen-1); }
+/* Every path has pathLength=1, so a dash of 1 is the whole stroke. */
+.doodle path { stroke-dasharray: 1; animation: doodle-draw 0.42s ease-out 0.06s backwards; }
+.doodle path.d-pen-a { animation-delay: 0.22s; }
+.doodle path.d-dash { stroke-dasharray: 0.03 0.035; animation: doodle-fade 0.3s ease-out 0.3s backwards; }
+@keyframes doodle-draw { from { stroke-dashoffset: 1; } }
+@keyframes doodle-fade { from { opacity: 0; } }
+.doodle .d-dot {
+  fill: var(--paper);
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: dot-pop 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.3) backwards;
+}
+.doodle .d-dot:nth-of-type(1) { animation-delay: 0.14s; }
+.doodle .d-dot:nth-of-type(2) { animation-delay: 0.2s; }
+.doodle .d-dot:nth-of-type(3) { animation-delay: 0.26s; }
+.doodle .d-dot:nth-of-type(4) { animation-delay: 0.32s; }
+.doodle .d-dot:nth-of-type(5) { animation-delay: 0.38s; }
+.doodle .d-dot:nth-of-type(6) { animation-delay: 0.44s; }
+@keyframes dot-pop { from { transform: scale(0); } }
+/* Reading the history: the commits light up one after another, like a pen ticking them off. */
+.shell-empty.is-waiting .d-dot { animation: dot-read 1.2s ease-in-out infinite; }
+@keyframes dot-read {
+  0%, 60%, 100% { transform: none; }
+  25% { transform: translateY(-4px); fill: var(--highlight); }
+}
+
+/* Status bar: a changed figure ticks in; the backend link has a little chalk dot. */
+.status-tick { animation: status-tick 0.24s ease-out backwards; }
+@keyframes status-tick { from { opacity: 0; transform: translateY(5px); } }
+.status-conn { display: inline-flex; align-items: center; gap: 7px; }
+.status-dot {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  border: 1.5px solid currentColor;
+  border-radius: 50% 42% 55% 46%;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+.status-conn.is-ok .status-dot { background: var(--ok); border-color: var(--ok); }
+.status-conn.status-bad .status-dot { background: var(--bad); border-color: var(--bad); }
+.status-conn:not(.is-ok):not(.status-bad) .status-dot { animation: status-wait 0.8s ease-in-out infinite alternate; }
+@keyframes status-wait { to { opacity: 0.3; } }
+
+/* The drawer's close mark gives a little twist under the pointer. */
+.tool-drawer .ticket-close { transition: transform 0.15s ease, background-color 0.15s ease; }
+.tool-drawer .ticket-close:hover { transform: rotate(8deg); }
+.tool-drawer .ticket-close:active { transform: rotate(8deg) scale(0.92); }
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) { animation: none; }
+  .theme-glyph.is-turning,
+  .tool-btn.is-busy svg,
+  .banner-roll.is-entering,
+  .banner-roll.is-leaving,
+  .banner-text,
+  .shell-empty,
+  .doodle path,
+  .doodle .d-dot,
+  .shell-empty.is-waiting .d-dot,
+  .status-tick,
+  .status-conn:not(.is-ok):not(.status-bad) .status-dot,
+  .tool-drawer-title { animation: none; }
+  .toolbar .btn,
+  .dock-key,
+  .banner .btn,
+  .tool-btn svg,
+  .open-form .field,
+  .scope-pop .field,
+  .status-dot,
+  .tool-drawer .ticket-close { transition: none; }
+  .tool-btn:hover:not(:disabled) svg,
+  .tool-btn[aria-pressed="true"] svg,
+  .tool-drawer .ticket-close:hover,
+  .tool-drawer .ticket-close:active { transform: none; }
+}

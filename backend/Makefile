@@ -31,7 +31,7 @@ GRAMMAR_DIRS := \
 
 TS_LIB := $(BUILD)/libtree-sitter-bundle.a
 
-.PHONY: all test clean coverage-diagnostic
+.PHONY: all test clean metrics coverage-diagnostic
 
 all: $(TEST_BINS) $(CLI) $(COVERAGE_CLI)
 
@@ -87,6 +87,11 @@ test: all
 	done; \
 	sh tests/run_context_compile_test.sh "$(CLI)"; \
 	sh tests/run_coverage_diagnostic_test.sh "$(COVERAGE_CLI)"
+
+# Prints payload sizes, page limits and expansion latency without needing a
+# real repository. CI runs this separately so budget regressions are obvious.
+metrics: $(BUILD)/test_context_page_scale
+	./$(BUILD)/test_context_page_scale
 
 clean:
 	rm -rf $(BUILD)

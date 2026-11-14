@@ -1,6 +1,7 @@
 // Minimal test panel for the local AI integration (Ollama + Qwen 3.5).
 // It exercises every aiService call; it is not the product UI.
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { notReadyReason } from "./aiReady";
 import { aiErrorMessage, aiService, isAiError } from "./aiService";
 import type { AiError, AiStatus, GenerateResponse, GenerationStats, PullEvent } from "./types";
 import "./AiPanel.css";
@@ -12,7 +13,7 @@ function asAiError(error: unknown): AiError {
 function ErrorBox({ error }: { error: AiError }) {
   return (
     <div className="ai-error" role="alert">
-      <strong>{error.message}</strong>
+      <strong className="ai-error-message">{error.message}</strong>
       <span className="ai-muted">
         {" "}
         ({error.kind}
@@ -56,7 +57,37 @@ function overallPercent(progress: PullProgress): number | undefined {
   return total > 0 ? Math.min(100, (completed / total) * 100) : undefined;
 }
 
-export default function AiPanel() {
+/**
+ * A prompt handed in by the app (e.g. "Explain this commit"). Each new `id` is run once.
+ * Without a `prompt` the app is still putting it together: the panel says so and waits.
+ */
+export interface AiRequest {
+  id: number;
+  prompt?: string;
+  system?: string;
+  /** What the request is about, for the status line, e.g. "commit 1a2b3c4". */
+  subject?: string;
+}
+
+interface AiPanelProps {
+  request?: AiRequest | null;
+  /** Called once the panel has taken `request` (with its prompt) into its prompt box. */
+  onRequestTaken?: (id: number) => void;
+}
+
+/** Matches the drawer's enter animation (.slide-panel ticket-in, 0.26s), so the scroll lands on settled layout. */
+const DRAWER_ENTER_MS = 280;
+
+/** The nearest ancestor that scrolls vertically (the drawer body). */
+function scrollParent(el: HTMLElement): HTMLElement | null {
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const { overflowY } = getComputedStyle(p);
+    if (overflowY === "auto" || overflowY === "scroll") return p;
+  }
+  return null;
+}
+
+export default function AiPanel({ request = null, onRequestTaken }: AiPanelProps = {}) {
   const [status, setStatus] = useState<AiStatus>();
   const [statusError, setStatusError] = useState<AiError>();
   const [loadingStatus, setLoadingStatus] = useState(false);
@@ -78,6 +109,19 @@ export default function AiPanel() {
   const [result, setResult] = useState<GenerateResponse>();
   const [genError, setGenError] = useState<AiError>();
   const genAbort = useRef<AbortController | null>(null);
+  // A handed-in prompt waits here until the status check says whether it can run.
+  const [pending, setPending] = useState<{ prompt: string; system: string } | null>(null);
+  // Set when a handed-in prompt could not run; the reason shown is re-derived live.
+  const [blocked, setBlocked] = useState(false);
+  const takenRequest = useRef<number | null>(null);
+  // The request whose run area was last brought into view and focused.
+  const revealedRequest = useRef<number | null>(null);
+  const runHead = useRef<HTMLHeadingElement>(null);
+  // The app is still preparing a handed-in prompt (e.g. reading the commit's changes).
+  const preparing = request !== null && request.prompt === undefined;
+  // The streamed answer follows its newest line unless the reader scrolled up.
+  const outputRef = useRef<HTMLPreElement>(null);
+  const stickToEnd = useRef(true);
 
   const refresh = useCallback(async () => {
     setLoadingStatus(true);
@@ -107,6 +151,16 @@ export default function AiPanel() {
       pullAbort.current?.abort();
     };
   }, [refresh]);
+
+  useEffect(() => {
+    const el = outputRef.current;
+    if (el && generating && stickToEnd.current) el.scrollTop = el.scrollHeight;
+  }, [output, generating]);
+
+  function onOutputScroll() {
+    const el = outputRef.current;
+    if (el) stickToEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  }
 
   async function onSelect() {
     if (!choice) return;
@@ -149,10 +203,15 @@ export default function AiPanel() {
     }
   }
 
-  async function onGenerate(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function generate(promptText: string, systemText: string) {
+    // A handed-in prompt replaces an answer that is still streaming.
+    genAbort.current?.abort();
     const controller = new AbortController();
     genAbort.current = controller;
+    // A replaced run must not touch the newer run's output or flags.
+    const current = () => genAbort.current === controller;
+    stickToEnd.current = true;
+    setBlocked(false);
     setGenerating(true);
     setOutput("");
     setThinking("");
@@ -160,26 +219,102 @@ export default function AiPanel() {
     setGenError(undefined);
     try {
       const response = await aiService.generateStream(
-        { prompt, system: system.trim() ? system : undefined, think },
+        { prompt: promptText, system: systemText.trim() ? systemText : undefined, think },
         {
           signal: controller.signal,
           onDelta: (content, thought) => {
+            if (!current()) return;
             if (content) setOutput((text) => text + content);
             if (thought) setThinking((text) => text + thought);
           },
         },
       );
+      if (!current()) return;
       // The final response is authoritative (it also covers any missed deltas).
       setOutput(response.content);
       setThinking(response.thinking ?? "");
       setResult(response);
     } catch (error) {
-      setGenError(asAiError(error));
+      if (current()) setGenError(asAiError(error));
     } finally {
-      genAbort.current = null;
-      setGenerating(false);
+      if (current()) {
+        genAbort.current = null;
+        setGenerating(false);
+      }
     }
   }
+
+  function onGenerate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void generate(prompt, system);
+  }
+
+  // A handed-in request: once per id, bring the run area (heading, status line, answer)
+  // into view and move focus to it, after the drawer has slid in. The drawer opens
+  // scrolled to the top, where the connection facts are, and the button that asked
+  // (e.g. the ticket's "Explain this commit") is gone, so focus would drop to the page.
+  const revealTimer = useRef<number | undefined>(undefined);
+  // Unmount only. It also forgets the revealed id: StrictMode's trial unmount runs this
+  // between the two runs of the effect below, and the second run must set the timer again.
+  // (Not in the reveal effect's own cleanup: the app clears `request` soon after the
+  // prompt is taken, which would cancel the timer before it fires.)
+  useEffect(
+    () => () => {
+      window.clearTimeout(revealTimer.current);
+      revealedRequest.current = null;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!request || revealedRequest.current === request.id) return;
+    revealedRequest.current = request.id;
+    // Don't offer the old prompt while the new one is being put together.
+    if (request.prompt === undefined) {
+      setPrompt("");
+      setSystem("");
+    }
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    window.clearTimeout(revealTimer.current);
+    revealTimer.current = window.setTimeout(
+      () => {
+        const head = runHead.current;
+        if (!head) return;
+        const box = scrollParent(head);
+        if (box) {
+          const top = box.scrollTop + head.getBoundingClientRect().top - box.getBoundingClientRect().top - 8;
+          box.scrollTo({ top, behavior: reduce ? "auto" : "smooth" });
+        }
+        head.focus({ preventScroll: true });
+      },
+      reduce ? 0 : DRAWER_ENTER_MS,
+    );
+  }, [request]);
+
+  // A prompt handed in by the app: fill the box once per request id, then run it
+  // as soon as the status check says the model is ready.
+  useEffect(() => {
+    if (!request || request.prompt === undefined || takenRequest.current === request.id) return;
+    takenRequest.current = request.id;
+    setPrompt(request.prompt);
+    setSystem(request.system ?? "");
+    setBlocked(false);
+    setPending({ prompt: request.prompt, system: request.system ?? "" });
+    // Check again before running, so an Ollama that stopped since the drawer opened
+    // shows up as the reason instead of as a failed run.
+    void refresh();
+    onRequestTaken?.(request.id);
+  }, [request, onRequestTaken, refresh]);
+
+  useEffect(() => {
+    // Wait for the first (or a running) status check.
+    if (!pending || loadingStatus || (!status && !statusError)) return;
+    setPending(null);
+    if (notReadyReason(status, statusError)) setBlocked(true);
+    else void generate(pending.prompt, pending.system);
+    // generate is recreated each render; this only reacts to the check finishing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pending, loadingStatus, status, statusError]);
 
   const connection = status?.connection;
   // No download while a config problem (e.g. the model is a cloud alias) is reported.
@@ -189,11 +324,17 @@ export default function AiPanel() {
     ? status?.knownQwen35Tags.find((t) => t.tag === downloadTag || `qwen3.5:${t.tag}` === downloadTag)
     : undefined;
   const percent = pullProgress ? overallPercent(pullProgress) : undefined;
-  const canGenerate = !!status?.connection.reachable && status.selectedModelInstalled === true && !generating;
+  const canGenerate =
+    !!status?.connection.reachable && status.selectedModelInstalled === true && !generating && !preparing;
+  // Re-derived from the live status, so the note goes away once the model is ready.
+  const blockedReason = blocked && !generating ? notReadyReason(status, statusError) : null;
 
   return (
     <section className="ai-panel" aria-labelledby="ai-panel-title">
-      <h2 id="ai-panel-title">Local AI test panel</h2>
+      {/* The drawer band already shows the tool title; keep the heading for screen readers. */}
+      <h2 id="ai-panel-title" className="ai-sr-only">
+        Local AI test panel
+      </h2>
       {connection?.isLocal === true && (
         <p className="ai-privacy">Runs locally through Ollama — prompts and code never leave this machine.</p>
       )}
@@ -204,25 +345,53 @@ export default function AiPanel() {
       )}
 
       <div className="ai-block">
-        <div className="ai-row">
+        <div className="section-title ai-head">
           <h3>Connection</h3>
-          <button type="button" onClick={() => void refresh()} disabled={loadingStatus}>
+          <button type="button" className="btn ai-small" onClick={() => void refresh()} disabled={loadingStatus}>
             {loadingStatus ? "Checking..." : "Refresh"}
           </button>
         </div>
+        {!connection && !statusError && loadingStatus && (
+          <div className="ai-checking" role="status">
+            <p className="working">
+              <span className="working-dot" aria-hidden="true" />
+              Looking for Ollama...
+            </p>
+            {/* Pencil lines where the facts will go, so the panel does not jump when they arrive. */}
+            <div className="ai-skeleton" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </div>
+          </div>
+        )}
         {statusError && <ErrorBox error={statusError} />}
         {connection && (
           <>
-            <p>
-              <span className={connection.reachable ? "ai-ok" : "ai-bad"}>
-                {connection.reachable ? "Connected" : "Not connected"}
-              </span>
-              {connection.version && ` · Ollama ${connection.version}`}
-              {" · "}
-              <code>{connection.baseUrl}</code>
-              {connection.isLocal ? " (local)" : " (remote)"}
-              {connection.installed === false && " · Ollama not found on this machine"}
-            </p>
+            <dl className="facts ai-facts" aria-busy={loadingStatus || undefined}>
+              <dt>Status</dt>
+              <dd>
+                <span
+                  // Re-stamped whenever the connection flips, so the change is noticed.
+                  key={String(connection.reachable)}
+                  className={connection.reachable ? "ai-status ai-ok" : "ai-status ai-bad"}
+                >
+                  {connection.reachable ? "Connected" : "Not connected"}
+                </span>
+              </dd>
+              {connection.version && (
+                <>
+                  <dt>Ollama</dt>
+                  <dd>{connection.version}</dd>
+                </>
+              )}
+              <dt>Server</dt>
+              <dd>
+                <code>{connection.baseUrl}</code>
+                {connection.isLocal ? " (local)" : " (remote)"}
+              </dd>
+            </dl>
+            {connection.installed === false && <p className="ai-note ai-warn">Ollama not found on this machine.</p>}
             {connection.error && <ErrorBox error={connection.error} />}
           </>
         )}
@@ -230,18 +399,37 @@ export default function AiPanel() {
       </div>
 
       {status && (
-        <div className="ai-block">
-          <h3>Model</h3>
-          <p>
-            Configured: <code>{status.configuredModel}</code> · Selected: <code>{status.selectedModel}</code>
-            {status.selectedModelInstalled === true && " (installed)"}
-            {status.selectedModelInstalled === false && " (not installed)"}
-            {status.loadedModels.length > 0 && ` · Loaded in memory: ${status.loadedModels.join(", ")}`}
-          </p>
+        <div className="ai-block ai-reveal">
+          <h3 className="section-title">Model</h3>
+          <dl className="facts ai-facts">
+            <dt>Configured</dt>
+            <dd>
+              <code>{status.configuredModel}</code>
+            </dd>
+            <dt>Selected</dt>
+            <dd>
+              <code>{status.selectedModel}</code>
+              {status.selectedModelInstalled === true && <span className="ai-ok"> (installed)</span>}
+              {status.selectedModelInstalled === false && <span className="ai-warn"> (not installed)</span>}
+            </dd>
+            {status.loadedModels.length > 0 && (
+              <>
+                <dt>In memory</dt>
+                <dd>
+                  <code>{status.loadedModels.join(", ")}</code>
+                </dd>
+              </>
+            )}
+          </dl>
 
           {status.installedQwen35Models.length > 0 ? (
-            <div className="ai-row">
-              <select aria-label="Installed Qwen 3.5 models" value={choice} onChange={(e) => setChoice(e.target.value)}>
+            <div className="ai-row ai-picker">
+              <select
+                className="field ai-select"
+                aria-label="Installed Qwen 3.5 models"
+                value={choice}
+                onChange={(e) => setChoice(e.target.value)}
+              >
                 {status.installedQwen35Models.map((m) => (
                   <option key={m.name} value={m.name}>
                     {m.name} ({formatBytes(m.sizeBytes)}
@@ -249,37 +437,42 @@ export default function AiPanel() {
                   </option>
                 ))}
               </select>
-              <button type="button" onClick={() => void onSelect()} disabled={!choice || choice === status.selectedModel}>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => void onSelect()}
+                disabled={!choice || choice === status.selectedModel}
+              >
                 Select
               </button>
             </div>
           ) : (
-            connection?.reachable && <p className="ai-muted">No Qwen 3.5 model is installed in Ollama yet.</p>
+            connection?.reachable && <p className="ai-note ai-muted">No Qwen 3.5 model is installed in Ollama yet.</p>
           )}
           {selectError && <ErrorBox error={selectError} />}
 
           {downloadTag && connection?.reachable && (
             <div className="ai-download">
               {!pulling && (
-                <button type="button" onClick={() => void onDownload(downloadTag)}>
+                <button type="button" className="btn ai-wrap" onClick={() => void onDownload(downloadTag)}>
                   {pullError ? "Retry download" : "Download"} {downloadTag}
                   {known ? ` (~${known.downloadSize.replace(/^~\s*/, "")})` : ""}
                 </button>
               )}
-              {known && !pulling && <span className="ai-muted"> {known.notes}</span>}
+              {known && !pulling && <span className="ai-muted ai-line"> {known.notes}</span>}
               {pulling && pullProgress && (
                 <div className="ai-progress">
                   <progress max={100} value={percent} aria-label="Download progress" />
-                  <span>
+                  <span className="ai-progress-text">
                     {pullProgress.status}
                     {percent !== undefined && ` · ${percent.toFixed(1)}%`}
                   </span>
-                  <button type="button" onClick={() => pullAbort.current?.abort()}>
+                  <button type="button" className="btn ai-small" onClick={() => pullAbort.current?.abort()}>
                     Cancel
                   </button>
                 </div>
               )}
-              {pullError?.kind === "cancelled" && <span className="ai-muted"> Download cancelled.</span>}
+              {pullError?.kind === "cancelled" && <span className="ai-muted ai-line"> Download cancelled.</span>}
               {pullError && pullError.kind !== "cancelled" && <ErrorBox error={pullError} />}
             </div>
           )}
@@ -287,22 +480,57 @@ export default function AiPanel() {
       )}
 
       <form className="ai-block" onSubmit={onGenerate}>
-        <h3>Test prompt</h3>
-        <details>
+        <h3 ref={runHead} className="section-title ai-run-head" tabIndex={-1}>
+          Test prompt
+        </h3>
+        <details className="ai-system">
           <summary>System prompt (optional)</summary>
-          <textarea value={system} onChange={(e) => setSystem(e.target.value)} rows={2} aria-label="System prompt" />
+          <textarea
+            className="ai-input"
+            value={system}
+            onChange={(e) => setSystem(e.target.value)}
+            rows={2}
+            aria-label="System prompt"
+          />
         </details>
-        <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={4} aria-label="Prompt" />
-        <div className="ai-row">
-          <label>
+        <textarea
+          className="ai-input"
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          rows={4}
+          aria-label="Prompt"
+          placeholder={preparing ? "The prompt is being put together…" : undefined}
+        />
+        <div className="ai-row ai-run">
+          <label className="ai-check">
             <input type="checkbox" checked={think} onChange={(e) => setThink(e.target.checked)} /> Think (show reasoning)
           </label>
-          <button type="submit" disabled={!canGenerate || !prompt.trim()}>
-            Generate
+          <button type="submit" className="btn primary" disabled={!canGenerate || !prompt.trim()}>
+            {generating ? "Generating..." : "Generate"}
           </button>
-          <button type="button" onClick={() => genAbort.current?.abort()} disabled={!generating}>
+          <button type="button" className="btn" onClick={() => genAbort.current?.abort()} disabled={!generating}>
             Stop
           </button>
+        </div>
+        {/* One live region that is always present, so each change in it is announced. */}
+        <div className="ai-run-status" role="status">
+          {preparing ? (
+            <p className="working">
+              <span className="working-dot" aria-hidden="true" />
+              Preparing {request?.subject ?? "the prompt"} for the model…
+            </p>
+          ) : pending ? (
+            <p className="working">
+              <span className="working-dot" aria-hidden="true" />
+              Checking the local AI before running…
+            </p>
+          ) : blockedReason ? (
+            <p className="ai-note ai-warn">The prompt is ready but can't run yet. {blockedReason}</p>
+          ) : generating ? (
+            <span className="ai-sr-only">Generating the answer…</span>
+          ) : result ? (
+            <span className="ai-sr-only">The answer is ready.</span>
+          ) : null}
         </div>
 
         {thinking && (
@@ -311,9 +539,19 @@ export default function AiPanel() {
             <pre>{thinking}</pre>
           </details>
         )}
-        {(output || generating) && <pre className="ai-output">{output || "Waiting for the model..."}</pre>}
-        {result && <p className="ai-muted">{formatStats(result.stats, result.doneReason)}</p>}
-        {genError?.kind === "cancelled" && <p className="ai-muted">Stopped.</p>}
+        {(output || generating) && (
+          <pre
+            ref={outputRef}
+            className={generating ? "ai-output ai-streaming" : "ai-output"}
+            onScroll={onOutputScroll}
+            aria-busy={generating || undefined}
+          >
+            {output || <span className="ai-waiting">Waiting for the model...</span>}
+            {generating && <span className="ai-caret" aria-hidden="true" />}
+          </pre>
+        )}
+        {result && <p className="ai-note ai-muted ai-stats">{formatStats(result.stats, result.doneReason)}</p>}
+        {genError?.kind === "cancelled" && <p className="ai-note ai-muted">Stopped.</p>}
         {genError && genError.kind !== "cancelled" && <ErrorBox error={genError} />}
       </form>
     </section>

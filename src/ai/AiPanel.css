@@ -1,185 +1,338 @@
-/* Plain, self-contained styles for the local AI test panel. */
+/* Local AI panel, drawn in the Chronos doodle style (see src/graph/graph.css).
+   It renders inside the tool drawer body, so it has no outer card of its own.
+   Every colour comes from the theme variables on .app[data-theme]. */
+
 .ai-panel {
-  max-width: 760px;
-  width: calc(100% - 32px);
-  margin: 2em auto;
-  padding: 1em 1.25em;
+  padding: 0 18px;
   text-align: left;
-  border: 1px solid #d0d0d0;
-  border-radius: 8px;
-  box-sizing: border-box;
+  color: var(--ink);
+}
+.app[data-theme="paper"] .ai-panel { color-scheme: light; }
+.app[data-theme="board"] .ai-panel { color-scheme: dark; }
+
+.ai-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
-.ai-panel h2 {
-  margin: 0 0 0.25em;
-  text-align: left;
+.ai-panel code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
 }
 
-.ai-panel h3 {
-  margin: 0;
-  font-size: 1em;
-}
-
+/* ---------- privacy note ---------- */
 .ai-privacy {
-  margin: 0 0 1em;
-  padding: 0.5em 0.75em;
-  border-left: 4px solid #2e7d32;
-  background-color: #e8f5e9;
-  font-weight: 600;
+  margin: 14px 0 4px;
+  padding: 8px 14px 9px;
+  border: 2px solid var(--ok);
+  border-radius: var(--sketch);
+  font-size: 16px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
-
+/* Remote server: keep this one loud. */
 .ai-privacy.ai-remote {
-  border-left-color: #c62828;
-  background-color: #fdecea;
+  border: 3px solid var(--bad);
+  background: color-mix(in srgb, var(--bad) 12%, var(--paper));
+  color: var(--bad);
+  font-size: 17px;
 }
+.ai-privacy.ai-remote code { color: var(--ink); }
 
-.ai-block {
-  margin-top: 1em;
-  padding-top: 0.75em;
-  border-top: 1px solid #e0e0e0;
-}
+/* ---------- sections ---------- */
+.ai-block { margin: 0; }
+.ai-panel .ai-head { align-items: center; }
+.ai-head h3 { margin: 0; font-size: inherit; font-weight: 400; }
 
 .ai-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5em;
-  margin: 0.5em 0;
+  gap: 8px;
+  margin: 10px 0;
 }
 
-.ai-panel textarea,
-.ai-panel select {
-  box-sizing: border-box;
+.ai-panel .ai-facts {
+  grid-template-columns: 84px 1fr;
+  gap: 4px 12px;
+  padding: 8px 0 4px;
+}
+
+.ai-note { margin: 6px 0; }
+.ai-line { display: block; margin-top: 6px; }
+.ai-muted { color: var(--soft); font-size: 15px; }
+.ai-stats { line-height: 1.4; }
+
+/* status words: colour always paired with the word itself */
+.ai-ok { color: var(--ok); }
+.ai-warn { color: var(--warn); }
+.ai-bad { color: var(--bad); }
+.ai-status {
+  display: inline-block;
+  padding: 0 10px 1px;
+  border: 2px solid currentColor;
+  border-radius: var(--sketch);
+  font-size: 15px;
+}
+
+/* ---------- controls ---------- */
+.ai-panel .btn.ai-small {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 15px;
+}
+.ai-panel .btn.ai-wrap {
+  height: auto;
+  min-height: 36px;
+  max-width: 100%;
+  padding: 4px 16px 5px;
+  white-space: normal;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.ai-picker .ai-select {
+  flex: 1 1 200px;
+  min-width: 0;
+  cursor: pointer;
+}
+.ai-select option { background: var(--paper); color: var(--ink); }
+
+.ai-input {
+  display: block;
   width: 100%;
-  margin: 0.5em 0 0;
-  padding: 0.5em;
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  border: 2px solid var(--ink);
+  border-radius: var(--sketch);
+  background: var(--paper);
+  color: var(--ink);
   font: inherit;
-  border-radius: 8px;
-  border: 1px solid #c0c0c0;
+  line-height: 1.35;
+  resize: vertical;
 }
+.ai-input::placeholder { color: var(--soft); }
+.ai-input:focus-visible { background: var(--wash); }
 
-.ai-panel .ai-row select {
-  width: auto;
-  flex: 1;
+.ai-run .ai-check { margin-right: auto; }
+.ai-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.ai-check input {
+  width: 16px;
+  height: 16px;
   margin: 0;
+  accent-color: var(--ink);
+  cursor: pointer;
 }
 
-.ai-panel button:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
+.ai-panel .field:focus-visible,
+.ai-input:focus-visible,
+.ai-check input:focus-visible,
+.ai-panel summary:focus-visible {
+  outline: 2.5px dashed var(--pen-2);
+  outline-offset: 3px;
 }
+/* Focus lands on the run heading when the app hands in a prompt; only the keyboard ring shows. */
+.ai-run-head:focus { outline: none; }
+.ai-run-head:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: 3px; }
 
-.ai-panel code {
-  font-size: 0.9em;
+/* ---------- details (system prompt, thinking) ---------- */
+.ai-panel details { margin: 10px 0 0; }
+.ai-panel summary {
+  width: fit-content;
+  color: var(--soft);
+  cursor: pointer;
 }
+.ai-panel summary:hover { color: var(--ink); text-decoration: underline wavy; text-underline-offset: 4px; }
+.ai-panel details[open] > summary { color: var(--ink); }
 
-.ai-ok {
-  color: #2e7d32;
-  font-weight: 600;
-}
-
-.ai-bad {
-  color: #c62828;
-  font-weight: 600;
-}
-
-.ai-muted {
-  color: #6b6b6b;
-  font-size: 0.9em;
-}
-
-.ai-error {
-  margin: 0.5em 0;
-  padding: 0.5em 0.75em;
-  border-left: 4px solid #c62828;
-  background-color: #fdecea;
-}
-
-.ai-hint {
-  margin-top: 0.25em;
-}
-
+/* ---------- download ---------- */
 .ai-download {
-  margin-top: 0.5em;
+  margin: 12px 0 0;
+  padding-top: 12px;
+  border-top: 2px dashed var(--soft);
 }
 
 .ai-progress {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 0.5em;
+  gap: 8px 10px;
 }
+.ai-progress-text { min-width: 0; color: var(--soft); font-size: 15px; overflow-wrap: anywhere; }
 
+/* a hand-drawn bar filled with marker hatching */
 .ai-progress progress {
-  flex: 1;
-  min-width: 120px;
+  grid-column: 1 / -1;
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 16px;
+  overflow: hidden;
+  border: 2px solid var(--ink);
+  border-radius: var(--sketch);
+  background: var(--paper);
 }
+.ai-progress progress::-webkit-progress-bar { background: transparent; }
+.ai-progress progress::-webkit-progress-value {
+  background: repeating-linear-gradient(-55deg, var(--pen-3) 0 7px, color-mix(in srgb, var(--pen-3) 65%, transparent) 7px 10px);
+  transition: width 0.2s ease-out;
+}
+.ai-progress progress::-moz-progress-bar {
+  background: repeating-linear-gradient(-55deg, var(--pen-3) 0 7px, color-mix(in srgb, var(--pen-3) 65%, transparent) 7px 10px);
+}
+/* size not known yet: the hatching drifts along instead */
+.ai-progress progress:indeterminate {
+  background: repeating-linear-gradient(-55deg, var(--pen-3) 0 5px, transparent 5px 14px) 0 0 / 34px 100% var(--paper);
+  animation: ai-hatch 0.9s linear infinite;
+}
+.ai-progress progress:indeterminate::-webkit-progress-bar { background: transparent; }
+@keyframes ai-hatch { to { background-position: 34px 0; } }
 
+/* ---------- output ---------- */
 .ai-output,
 .ai-thinking pre {
-  margin: 0.5em 0;
-  padding: 0.75em;
   max-height: 24em;
   overflow: auto;
+  margin: 10px 0 0;
+  padding: 10px 14px;
+  border: 2px solid var(--ink);
+  border-radius: 10px;
+  background: var(--wash);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.55;
   white-space: pre-wrap;
-  word-break: break-word;
-  border-radius: 8px;
-  background-color: #ffffff;
-  border: 1px solid #e0e0e0;
+  overflow-wrap: anywhere;
+  scrollbar-width: thin;
+  scrollbar-color: var(--soft) transparent;
 }
-
+.ai-output.ai-streaming { border-style: dashed; }
 .ai-thinking pre {
-  color: #6b6b6b;
-  font-size: 0.9em;
+  border: 2px dashed var(--soft);
+  background: transparent;
+  color: var(--soft);
+  font-size: 12px;
+}
+.ai-output::-webkit-scrollbar,
+.ai-thinking pre::-webkit-scrollbar { width: 11px; height: 11px; }
+.ai-output::-webkit-scrollbar-thumb,
+.ai-thinking pre::-webkit-scrollbar-thumb {
+  background: var(--soft);
+  border-radius: 11px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+.ai-output::-webkit-scrollbar-track,
+.ai-thinking pre::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- errors and hints ---------- */
+.ai-error {
+  margin: 10px 0;
+  padding: 8px 14px 9px;
+  border: 2px solid var(--bad);
+  border-radius: var(--sketch);
+  overflow-wrap: anywhere;
+}
+.ai-error-message { color: var(--bad); font-weight: 400; }
+.ai-error .ai-muted { font-size: 14px; }
+.ai-hint {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1.5px dashed var(--soft);
+  font-size: 15px;
 }
 
-@media (prefers-color-scheme: dark) {
-  .ai-panel {
-    border-color: #505050;
-  }
+/* ---------- loading the status ---------- */
+.ai-checking .working { margin: 10px 0 2px; }
+/* Pencil strokes standing in for the facts list; they breathe while Ollama is asked. */
+.ai-skeleton { display: grid; gap: 9px; padding: 8px 0 6px; }
+.ai-skeleton span {
+  display: block;
+  height: 10px;
+  border-radius: var(--sketch);
+  background: repeating-linear-gradient(-55deg, var(--grid-strong) 0 5px, transparent 5px 9px);
+  animation: ai-breathe 1.4s ease-in-out infinite;
+}
+.ai-skeleton span:nth-child(1) { width: 58%; }
+.ai-skeleton span:nth-child(2) { width: 34%; animation-delay: 0.15s; }
+.ai-skeleton span:nth-child(3) { width: 72%; animation-delay: 0.3s; }
+@keyframes ai-breathe { 50% { opacity: 0.4; } }
 
-  .ai-block {
-    border-top-color: #444444;
-  }
+/* A refresh with facts already on screen dims them instead of blanking them. */
+.ai-panel .ai-facts { transition: opacity 0.18s ease; }
+.ai-panel .ai-facts[aria-busy="true"] { opacity: 0.55; }
 
-  .ai-privacy {
-    background-color: #1b3a1e;
-    border-left-color: #66bb6a;
-  }
+/* The status word carries a matching dot and is stamped on whenever it changes. */
+.ai-status::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  vertical-align: 1px;
+}
+.ai-status.ai-bad::before { background: transparent; border: 2px solid currentColor; }
+.ai-status { animation: ai-stamp 0.24s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards; }
+@keyframes ai-stamp { from { opacity: 0; transform: scale(0.9) rotate(-2deg); } }
 
-  .ai-privacy.ai-remote {
-    background-color: #3b1f1f;
-    border-left-color: #ff8a80;
-  }
+/* ---------- things arriving ---------- */
+/* New sections, results and messages settle in from just below, like swap-in. */
+.ai-reveal,
+.ai-download,
+.ai-progress,
+.ai-error,
+.ai-thinking,
+.ai-stats,
+.ai-output { animation: ai-rise 0.22s ease-out backwards; }
+.ai-stats { animation-duration: 0.28s; }
+@keyframes ai-rise { from { opacity: 0; transform: translateY(5px); } }
 
-  .ai-ok {
-    color: #81c784;
-  }
+/* ---------- streaming ---------- */
+.ai-waiting { color: var(--soft); }
+/* A pen nib at the end of the answer while the model is still writing. */
+.ai-caret {
+  display: inline-block;
+  width: 0.55em;
+  height: 1.05em;
+  margin-left: 2px;
+  border-radius: 2px;
+  background: var(--pen-2);
+  vertical-align: -0.18em;
+  animation: ai-blink 1s steps(2, jump-none) infinite;
+}
+@keyframes ai-blink { 50% { opacity: 0; } }
+.ai-output { transition: border-color 0.2s ease; }
 
-  .ai-bad {
-    color: #ff8a80;
-  }
-
-  .ai-muted,
-  .ai-thinking pre {
-    color: #a0a0a0;
-  }
-
-  .ai-error {
-    background-color: #3b1f1f;
-    border-left-color: #ff8a80;
-  }
-
-  .ai-panel textarea,
-  .ai-panel select {
-    color: #ffffff;
-    background-color: #1f1f1f;
-    border-color: #505050;
-  }
-
+@media (prefers-reduced-motion: reduce) {
+  .ai-progress progress:indeterminate { animation: none; }
+  .ai-progress progress::-webkit-progress-value { transition: none; }
+  .ai-skeleton span,
+  .ai-status,
+  .ai-reveal,
+  .ai-download,
+  .ai-progress,
+  .ai-error,
+  .ai-thinking,
+  .ai-stats,
   .ai-output,
-  .ai-thinking pre {
-    background-color: #1f1f1f;
-    border-color: #444444;
-  }
+  .ai-caret { animation: none; }
+  .ai-panel .ai-facts,
+  .ai-output { transition: none; }
 }

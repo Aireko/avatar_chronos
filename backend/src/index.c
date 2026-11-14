@@ -184,6 +184,11 @@ static int valid_file(const RevisionRef *revision, const IndexFileInput *input)
 {
     const ParsedFile *file = input->parsed;
     const GitBlob *blob = input->blob;
+    if (file && file->import_count && !file->imports) return 0;
+    if (file) {
+        for (size_t i = 0; i < file->import_count; ++i)
+            if (!file->imports[i].name || !*file->imports[i].name) return 0;
+    }
     if (file == NULL || !same_revision(revision, &file->revision) ||
         file->file_path == NULL || *file->file_path == '\0' || file->language == NULL ||
         !valid_coverage(file->coverage) ||
@@ -364,7 +369,7 @@ static int populate_calls(RepositoryGraph *graph, GraphCall *edges, const Parsed
         edge->call_site = (SourceLocation){graph->revision, caller->location.file_path, call->range};
         edge->resolution = CALL_UNRESOLVED;
         if (!copy_text(&edge->callee_text, call->callee_text)) return CHRONOS_OUT_OF_MEMORY;
-        int status = mapper_resolve_call(lookup, edge, caller);
+        int status = mapper_resolve_call(lookup, edge, caller, file);
         if (status < 0) return status;
     }
     return CHRONOS_OK;

@@ -187,6 +187,14 @@ typedef struct {
     const char *reason; /* E.g. a naming convention or annotation. */
 } ParsedTestCandidate;
 
+/* Statically observed, unconditional module-level Python imports.
+ * module is NULL for "import name", otherwise the from-module spelling. */
+typedef struct {
+    const char *module;
+    const char *name;
+    const char *alias;
+} ParsedImport;
+
 typedef struct {
     RevisionRef revision;
     const char *file_path;
@@ -202,6 +210,8 @@ typedef struct {
     ChronosCoverage coverage;
     const ChronosDiagnostic *diagnostics;
     size_t diagnostic_count;
+    const ParsedImport *imports;
+    size_t import_count;
 } ParsedFile;
 
 /* Parses borrowed bytes. Partial syntax results may include diagnostics.

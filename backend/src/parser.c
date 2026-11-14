@@ -781,6 +781,7 @@ typedef struct {
     size_t symbol_capacity;
     size_t call_capacity;
     int is_c;
+    size_t import_capacity;
 } ParseState;
 
 static char *copy_bytes(const char *bytes, size_t length)
@@ -921,12 +922,44 @@ static int add_call(ParseState *state, TSNode node, TSNode callee, size_t caller
     return CHRONOS_OK;
 }
 
+static int observe_import(ParseState *state, TSNode node)
+{
+    TSNode module = field(node, "module_name");
+    for (uint32_t i = 0; i < ts_node_named_child_count(node); ++i) {
+        TSNode child = ts_node_named_child(node, i);
+        if (ts_node_eq(child, module)) continue;
+        TSNode alias = {0};
+        TSNode name = child;
+        if (is_type(child, "aliased_import")) {
+            alias = field(child, "alias");
+            name = field(child, "name");
+        }
+        if (!is_type(name, "dotted_name")) continue;
+        ParsedFile *file = state->file;
+        ParsedImport *items = reserve_items((void *)file->imports, file->import_count,
+                                            &state->import_capacity, sizeof *items);
+        if (!items) return CHRONOS_OUT_OF_MEMORY;
+        file->imports = items;
+        ParsedImport *item = &items[file->import_count++];
+        *item = (ParsedImport){
+            ts_node_is_null(module) ? NULL : node_text(state, module),
+            node_text(state, name),
+            ts_node_is_null(alias) ? NULL : node_text(state, alias)
+        };
+        if (!item->name || (!ts_node_is_null(module) && !item->module) ||
+            (!ts_node_is_null(alias) && !item->alias)) return CHRONOS_OUT_OF_MEMORY;
+    }
+    return CHRONOS_OK;
+}
+
 static int observe_node(ParseState *state, TSNode node, size_t *parent)
 {
     TSNode name = {0};
     ParserSymbolKind kind = PARSER_FUNCTION;
     ParserSymbolForm form = PARSER_DEFINITION;
     const char *type = ts_node_type(node);
+    if ((strcmp(type, "import_statement") == 0 || strcmp(type, "import_from_statement") == 0) &&
+        is_type(ts_node_parent(node), "module")) return observe_import(state, node);
     if (state->is_c && strcmp(type, "function_definition") == 0) {
         name = c_function_name(field(node, "declarator"));
     } else if (state->is_c && strcmp(type, "declaration") == 0) {
@@ -1027,6 +1060,12 @@ void parser_free(ParsedFile *file)
     for (size_t i = 0; i < file->call_count; ++i) free((void *)file->calls[i].callee_text);
     free((void *)file->symbols);
     free((void *)file->calls);
+    for (size_t i = 0; i < file->import_count; ++i) {
+        free((void *)file->imports[i].module);
+        free((void *)file->imports[i].name);
+        free((void *)file->imports[i].alias);
+    }
+    free((void *)file->imports);
     free((void *)file->diagnostics);
     free((void *)file->file_path);
     free((void *)file->revision.repository_id);
@@ -1061,7 +1100,8 @@ int parser_parse(const char *path, const RevisionRef *revision,
     ts_parser_delete(parser);
     if (!tree) goto fail;
     TSNode root = ts_tree_root_node(tree);
-    ParseState state = {out, source ? source : "", 0, 0, language->grammar == tree_sitter_c};
+    ParseState state = {.file = out, .source = source ? source : "",
+                        .is_c = language->grammar == tree_sitter_c};
     status = walk_tree(&state, root);
     if (status == CHRONOS_OK && ts_node_has_error(root)) {
         ChronosDiagnostic *diagnostic = malloc(sizeof *diagnostic);

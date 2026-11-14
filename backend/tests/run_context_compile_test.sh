@@ -43,6 +43,26 @@ def helper():
 def work():
     return helper()
 EOF
+mkdir -p pkg/sub
+printf 'def helper():\n    return 3\n' > pkg/helpers.py
+printf 'def helper():\n    return 4\n' > decoy.py
+cat > pkg/sub/consumer.py <<'EOF'
+from ..helpers import helper as local
+import pkg.helpers as tools
+from .. import helpers
+
+def symbol_alias():
+    return local()
+
+def module_alias():
+    return tools.helper()
+
+def relative_module():
+    return helpers.helper()
+
+def unbound():
+    return helper()
+EOF
 git add .
 git commit -qm base
 
@@ -55,6 +75,8 @@ int added(void) { return alpha(); }
 EOF
 sed 's/return 1/return 2/' example.py > example.new
 mv example.new example.py
+sed 's/return /return 1 + /' pkg/sub/consumer.py > consumer.new
+mv consumer.new pkg/sub/consumer.py
 git commit -qam head
 
 run_twice() {
@@ -70,6 +92,14 @@ run_twice added math.c added 8 4096
 run_twice deleted math.c removed 8 4096
 run_twice tight math.c beta 1 0
 run_twice python example.py helper 8 4096
+for target in symbol_alias module_alias relative_module; do
+    run_twice "$target" pkg/sub/consumer.py "$target" 8 4096
+    grep -q '"resolution":"resolved"' "$work/$target.1.json"
+    grep -q '"filePath":"pkg/helpers.py"' "$work/$target.1.json"
+    if grep -q 'decoy.py' "$work/$target.1.json"; then exit 1; fi
+done
+run_twice unbound pkg/sub/consumer.py unbound 8 4096
+grep -q '"resolution":"unresolved"' "$work/unbound.1.json"
 
 grep -q '"calleeText":"helper"' "$work/python.1.json"
 grep -q '"direction":"incoming"' "$work/python.1.json"

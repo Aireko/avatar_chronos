@@ -108,21 +108,75 @@ static int direct_name(const char *text)
     }
 }
 
-int mapper_resolve_call(const MapperLookup *lookup, GraphCall *call, const GraphSymbol *caller)
+static int python_module_matches(const char *path, const char *caller, const char *module,
+                                 const char *submodule)
+{
+    if (*module == '.') {
+        const char *end = strrchr(caller, '/');
+        ++module;
+        while (*module == '.' && end) {
+            while (end != caller && *--end != '/') {}
+            if (end == caller) end = NULL;
+            ++module;
+        }
+        if (!end) return 0;
+        size_t prefix = (size_t)(end - caller) + 1;
+        if (strncmp(path, caller, prefix) != 0) return 0;
+        path += prefix;
+        if (!*module && !submodule) return strcmp(path, "__init__.py") == 0;
+    }
+    const char *parts[] = {module, submodule};
+    for (size_t i = 0; i < 2; ++i) {
+        if (!parts[i] || !*parts[i]) continue;
+        if (i && *module && *path++ != '/') return 0;
+        for (const char *p = parts[i]; *p; ++p)
+            if (*path++ != (*p == '.' ? '/' : *p)) return 0;
+    }
+    return strcmp(path, ".py") == 0 || strcmp(path, "/__init__.py") == 0;
+}
+
+static int python_matches(const ParsedFile *file, const GraphSymbol *node, const char *call)
+{
+    if (strcmp(node->language, "python") != 0 || node->parent != NULL) return 0;
+    const char *path = node->location.file_path;
+    for (size_t i = 0; i < file->import_count; ++i) {
+        const ParsedImport *item = &file->imports[i];
+        const char *bound = item->alias ? item->alias : item->name;
+        size_t length = strlen(bound);
+        if (item->module && strcmp(call, bound) == 0 &&
+            strcmp(node->name, item->name) == 0 &&
+            python_module_matches(path, file->file_path, item->module, NULL)) return 1;
+        if (strncmp(call, bound, length) == 0 && call[length] == '.' &&
+            strcmp(node->name, call + length + 1) == 0 &&
+            python_module_matches(path, file->file_path, item->module ? item->module : item->name,
+                                  item->module ? item->name : NULL)) return 1;
+    }
+    return strcmp(path, file->file_path) == 0 && strcmp(node->name, call) == 0;
+}
+
+static int call_matches(const ParsedFile *file, const GraphSymbol *node, const char *name,
+                        int python)
+{
+    return python ? python_matches(file, node, name) : strcmp(file->language, node->language) == 0;
+}
+
+int mapper_resolve_call(const MapperLookup *lookup, GraphCall *call, const GraphSymbol *caller,
+                        const ParsedFile *file)
 {
     const char *name = call->callee_text;
-    if (!direct_name(name)) return CHRONOS_OK;
-    int absolute = name[0] == ':' && name[1] == ':';
+    int python = strcmp(caller->language, "python") == 0;
+    if (!python && !direct_name(name)) return CHRONOS_OK;
+    int absolute = !python && name[0] == ':' && name[1] == ':';
     if (absolute) name += 2;
-    const NameEntry *names = absolute || strstr(name, "::") ? lookup->qualified_names
+    const NameEntry *names = !python && (absolute || strstr(name, "::")) ? lookup->qualified_names
                                                            : lookup->short_names;
-    size_t first = find_name(names, lookup->callable_count, name);
+    size_t first = python ? 0 : find_name(names, lookup->callable_count, name);
     size_t last = first;
     size_t count = 0;
     const GraphSymbol *target = NULL;
-    while (last < lookup->callable_count && strcmp(names[last].name, name) == 0) {
+    while (last < lookup->callable_count && (python || strcmp(names[last].name, name) == 0)) {
         const GraphSymbol *node = names[last++].symbol;
-        if (strcmp(caller->language, node->language) == 0) {
+        if (call_matches(file, node, name, python)) {
             ++count;
             target = node;
         }
@@ -140,7 +194,7 @@ int mapper_resolve_call(const MapperLookup *lookup, GraphCall *call, const Graph
         call->candidate_count = count;
         size_t next = 0;
         for (size_t i = first; i < last; ++i) {
-            if (strcmp(caller->language, names[i].symbol->language) == 0)
+            if (call_matches(file, names[i].symbol, name, python))
                 candidates[next++] = names[i].symbol->ref;
         }
     }

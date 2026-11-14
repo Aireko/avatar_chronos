@@ -142,6 +142,28 @@ int main(void)
     assert(source.status == CONTEXT_SOURCE_PRESENT);
     assert(source.byte_count == 10);
     assert(memcmp(source.bytes, "xxxxxxxxxx", 10) == 0);
+
+    int page_length = context_page_write_json(&page, NULL, 0);
+    assert(page_length > 0);
+    char *page_json = malloc((size_t)page_length + 1);
+    assert(page_json != NULL);
+    assert(context_page_write_json(&page, page_json, (size_t)page_length + 1) == page_length);
+    assert(strstr(page_json, "\"schemaVersion\":1") != NULL);
+    assert(strstr(page_json, "\"kind\":\"symbol\"") != NULL);
+    assert(strstr(page_json, "\"total\":1") != NULL);
+    assert(strstr(page_json, "\"source\":") == NULL);
+    free(page_json);
+
+    int source_length = context_source_write_json(&source, NULL, 0);
+    assert(source_length > 0);
+    char *source_json = malloc((size_t)source_length + 1);
+    assert(source_json != NULL);
+    assert(context_source_write_json(&source, source_json, (size_t)source_length + 1) ==
+           source_length);
+    assert(strstr(source_json, "\"status\":\"present\"") != NULL);
+    assert(strstr(source_json, "xxxxxxxxxx") != NULL);
+    free(source_json);
+
     context_page_free(&page);
 
     context_session_close(session);

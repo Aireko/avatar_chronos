@@ -103,6 +103,10 @@ int context_session_source(const ContextSession *session, const char *evidence_i
 void context_page_free(ContextPage *page);
 void context_session_close(ContextSession *session);
 
+/* JSON writers use the caller-buffer convention. Query with NULL, 0. */
+int context_page_write_json(const ContextPage *page, char *out, size_t out_size);
+int context_source_write_json(const ContextSource *source, char *out, size_t out_size);
+
 #ifdef __cplusplus
 }
 #endif

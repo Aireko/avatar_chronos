@@ -1,14 +1,31 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import "@fontsource/patrick-hand/400.css";
+// Base doodle styles first, so the tool panels' stylesheets (imported by the
+// components below) can refine shared classes like .field and .btn.
+import "./graph/graph.css";
+import "./tools/tools.css";
+import { isTauri } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import AiPanel from "./ai/AiPanel";
 import { backendVersion, errorMessage, exportGraph, type ChronosGraph } from "./backend";
+import ContributorsPanel from "./blame/ContributorsPanel";
+import BugCheckPanel from "./bugcheck/BugCheckPanel";
 import { CodeEditor, type DiffCompare } from "./graph/CodeEditor";
 import { CommitDetails } from "./graph/CommitDetails";
 import { CommitGraph, type PanelMode } from "./graph/CommitGraph";
 import { carryIds, layoutGraph } from "./graph/layout";
 import { Terminal } from "./graph/Terminal";
-import "./graph/graph.css";
 import { ScopeBar } from "./graph/ScopeBar";
 import { PROJECT, scopeGraph, scopeKey, type Scope } from "./graph/scope";
+import { ExplorerIcon, FolderIcon, PeopleIcon, ReloadIcon, ReviewIcon, SparkIcon, ThemeIcon } from "./tools/icons";
+import { ToolDrawer, type ToolId } from "./tools/ToolDrawer";
+
+const TOOLS: { id: ToolId; label: string; title: string; hint: string; icon: () => ReactElement }[] = [
+  { id: "ai", label: "Local AI", title: "Local AI", hint: "Local Qwen model through Ollama", icon: SparkIcon },
+  { id: "reviews", label: "PR reviews", title: "PR reviews", hint: "Check GitHub pull requests for bugs", icon: ReviewIcon },
+  { id: "people", label: "People", title: "Who worked on this?", hint: "Find who wrote a file and email them", icon: PeopleIcon },
+];
 
 type Theme = "paper" | "board";
 
@@ -24,6 +41,8 @@ function App() {
   const [showEditor, setShowEditor] = useState(false);
   const [diffCompare, setDiffCompare] = useState<DiffCompare | null>(null);
   const [showTerminal, setShowTerminal] = useState(false);
+  // At most one drawer is open on the right: a tool or the commit details.
+  const [tool, setTool] = useState<ToolId | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const ids = useRef(new Map<string, string>());
@@ -118,13 +137,57 @@ function App() {
     setDiffCompare(null);
   }
 
-  // Esc closes panel → editor → terminal → selection. Arrow keys move along the branch.
+  /** Opening a tool closes the commit details (they share the right-hand side), and vice versa. */
+  function toggleTool(id: ToolId) {
+    setTool((current) => (current === id ? null : id));
+    setPanel(null);
+  }
+
+  /** Native folder picker, so the path doesn't have to be typed. */
+  async function browse() {
+    setError("");
+    try {
+      const picked = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Choose a Git repository folder",
+        defaultPath: path.trim() || graph?.repoPath || undefined,
+      });
+      if (typeof picked === "string" && picked) {
+        setPath(picked);
+        await load(picked);
+      }
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
+
+  /** Shows the open repository's folder in the system file explorer. */
+  async function showInExplorer() {
+    if (!graph) return;
+    setError("");
+    try {
+      await revealItemInDir(graph.repoPath.replace(/\//g, navigator.userAgent.includes("Windows") ? "\\" : "/"));
+    } catch (e) {
+      setError(`Couldn't open the file explorer: ${errorMessage(e)}`);
+    }
+  }
+
+  // Esc closes the commit panel, then a tool, the editor, the terminal, and finally the selection.
+  // Arrow keys move along the branch.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const target = e.target;
+      const typing =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && target.isContentEditable);
+      if (typing) return;
 
       if (e.key === "Escape") {
         if (panel) setPanel(null);
+        else if (tool) setTool(null);
         else if (showEditor) {
           setShowEditor(false);
           setDiffCompare(null);
@@ -133,7 +196,7 @@ function App() {
         return;
       }
 
-      if (showEditor || !layout || !selected) return;
+      if (tool || showEditor || !layout || !selected) return;
 
       const node = layout.byHash.get(selected);
       if (!node) return;
@@ -158,7 +221,7 @@ function App() {
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [layout, selected, panel, showEditor, showTerminal]);
+  }, [layout, selected, panel, tool, showEditor, showTerminal]);
 
   function toggleEditor() {
     if (!graph) {
@@ -184,6 +247,15 @@ function App() {
     setShowTerminal((v) => !v);
   }
 
+
+  // Every path seen in the loaded history, offered as suggestions in the People tool.
+  const filePaths = useMemo(
+    () => [...new Set(graph?.commits.flatMap((c) => c.filesChanged.map((f) => f.path)) ?? [])].sort(),
+    [graph],
+  );
+  const desktop = isTauri();
+  const activeTool = TOOLS.find((t) => t.id === tool);
+
   return (
     <div className="app" data-theme={theme}>
       <header className="toolbar">
@@ -205,6 +277,17 @@ function App() {
             spellCheck={false}
           />
 
+          <button
+            className="btn tool-btn"
+            type="button"
+            onClick={() => void browse()}
+            disabled={loading || !desktop}
+            title={desktop ? "Choose the repository folder" : "Only available in the desktop app"}
+          >
+            <FolderIcon />
+            <span className="tool-label">Browse…</span>
+          </button>
+
           <button className="btn primary" type="submit" disabled={loading || !path.trim()}>
             Open
           </button>
@@ -212,16 +295,48 @@ function App() {
         <ScopeBar graph={graph} scope={scope} onChange={changeScope} />
 
         <button
-          className="btn"
+          className="btn tool-btn"
           disabled={loading || !graph}
           onClick={() => graph && void load(graph.repoPath)}
+          title="Reload the repository's history"
         >
-          Reload
+          <ReloadIcon />
+          <span className="tool-label-sm">Reload</span>
         </button>
 
-        <button className="btn" onClick={() => setTheme(theme === "paper" ? "board" : "paper")}>
-          {theme === "paper" ? "Blackboard" : "Paper"}
+        <button
+          className="btn tool-btn"
+          disabled={!graph || !desktop}
+          onClick={() => void showInExplorer()}
+          title={desktop ? "Show the repository folder in the file explorer" : "Only available in the desktop app"}
+        >
+          <ExplorerIcon />
+          <span className="tool-label">Explorer</span>
         </button>
+
+        <div className="tools" role="group" aria-label="Tools">
+          {TOOLS.map(({ id, label, hint, icon: Icon }) => (
+            <button
+              key={id}
+              className="btn tool-btn"
+              aria-pressed={tool === id}
+              onClick={() => toggleTool(id)}
+              title={hint}
+            >
+              <Icon />
+              <span className="tool-label">{label}</span>
+            </button>
+          ))}
+          <span className="toolbar-sep" aria-hidden />
+          <button
+            className="btn tool-btn"
+            onClick={() => setTheme(theme === "paper" ? "board" : "paper")}
+            title={theme === "paper" ? "Switch to the blackboard theme" : "Switch to the paper theme"}
+          >
+            <ThemeIcon to={theme === "paper" ? "board" : "paper"} />
+            <span className="tool-label-sm">{theme === "paper" ? "Blackboard" : "Paper"}</span>
+          </button>
+        </div>
 
         {loading && <div className="progress" />}
       </header>
@@ -237,6 +352,9 @@ function App() {
 
       <main className="stage">
         <div className="workspace">
+          {/* The graph or the code editor; the editor overlays only this area, so a
+              tool drawer beside it stays visible. */}
+          <div className="workspace-main">
           {graph && layout && scoped && showEditor ? (
             <CodeEditor
               repoPath={graph.repoPath}
@@ -265,15 +383,19 @@ function App() {
                 gone={scoped.gone}
                 currentBranch={currentBranch}
                 onSelect={pick}
-                onAction={(mode) => setPanel({ mode, id: Date.now() })}
+                onAction={(mode) => {
+                  setTool(null);
+                  setPanel({ mode, id: Date.now() });
+                }}
               />
             )
           ) : (
             <div className="empty">
               <h1>Open a repository</h1>
-              <p>Write the folder path of a Git repository in the bar above, then choose Open.</p>
+              <p>Choose Browse to pick a Git repository folder, or write its path in the bar above, then choose Open.</p>
             </div>
           )}
+          </div>
 
           {graph && layout && scoped && selectedNode && panel && !showEditor && (
             <CommitDetails
@@ -296,6 +418,16 @@ function App() {
               onOpenSideDiff={() => openSideDiff(selectedNode.commit.hash)}
               onClose={() => setPanel(null)}
             />
+          )}
+
+          {activeTool && !panel && (
+            <ToolDrawer title={activeTool.title} onClose={() => setTool(null)}>
+              {activeTool.id === "ai" && <AiPanel />}
+              {activeTool.id === "reviews" && <BugCheckPanel />}
+              {activeTool.id === "people" && (
+                <ContributorsPanel repoPath={graph?.repoPath ?? path} filePaths={filePaths} />
+              )}
+            </ToolDrawer>
           )}
         </div>
 

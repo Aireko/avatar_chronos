@@ -1,164 +1,175 @@
-/* Plain, self-contained styles for the "Who worked on this?" panel. Matches the AI panel. */
+/* "Who worked on this?": drawn in the same hand-made family as graph.css.
+   The panel sits inside the tool drawer's scrolling body, so it draws no outer
+   card of its own; every colour comes from the .app theme variables. */
 .people-panel {
-  max-width: 760px;
-  width: calc(100% - 32px);
-  margin: 2em auto 0;
-  padding: 1em 1.25em;
-  text-align: left;
-  border: 1px solid #d0d0d0;
-  border-radius: 8px;
-  box-sizing: border-box;
+  padding: 2px 18px 0;
+  overflow-wrap: anywhere;
 }
 
-.people-panel h2 {
-  margin: 0 0 0.25em;
-  text-align: left;
+/* The drawer band already shows the title; keep it for aria-labelledby only. */
+.people-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
-.people-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5em;
-  margin: 0.75em 0;
+.people-panel p { margin: 10px 0 0; }
+.people-muted { color: var(--soft); font-size: 15px; line-height: 1.35; }
+.people-intro { margin-top: 14px; }
+.people-label { color: var(--ink); font-size: 17px; }
+
+.people-panel code {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--wash);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 12.5px;
 }
 
-.people-grow {
-  flex: 1;
-  min-width: 14em;
+/* ---------- controls ---------- */
+.people-panel .field { font-size: 16px; }
+.people-panel .field:focus-visible,
+.people-panel select:focus-visible,
+.people-panel textarea:focus-visible {
+  outline: 2.5px dashed var(--pen-2);
+  outline-offset: 3px;
 }
+.people-panel .field[aria-invalid="true"] { border-color: var(--bad); border-style: dashed; }
+.people-panel .btn { flex: none; }
 
-.people-narrow {
-  width: 8em;
-}
+/* path on its own line, then revision + the go button */
+.people-find { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.people-path { flex: 1 1 100%; font-family: var(--mono); font-size: 13px; }
+.people-rev { flex: 1 1 90px; font-family: var(--mono); font-size: 13px; }
 
-.people-num {
-  width: 5em;
-}
-
-.people-panel select {
-  max-width: 100%;
-  padding: 0.5em;
-  border-radius: 8px;
-  font: inherit;
-}
-
-.people-muted {
-  color: #6b6b6b;
-  font-size: 0.9em;
-}
-
-.people-notice {
-  padding: 0.5em 0.75em;
-  border-left: 4px solid #2e7d32;
-  background-color: #e8f5e9;
-}
-
-.people-warn {
-  color: #8a5a00;
-  font-size: 0.9em;
-}
-
-.people-question {
+.people-scope {
   display: flex;
   flex-direction: column;
-  gap: 0.25em;
-  margin: 0.75em 0;
+  gap: 6px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 2px dashed var(--soft);
 }
+.people-scope-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.people-select {
+  flex: 1 1 200px;
+  width: 100%;
+  padding: 0 10px;
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
+.people-select option,
+.people-select optgroup { background: var(--paper); color: var(--ink); }
+.people-lines { display: flex; align-items: center; gap: 8px; }
+.people-num { flex: none; width: 80px; padding: 0 10px; font-family: var(--mono); font-size: 13px; }
 
-.people-question textarea {
-  font: inherit;
-  padding: 0.5em;
-  border-radius: 8px;
-  border: 1px solid #d0d0d0;
+.people-question { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+.people-textarea {
+  height: auto;
+  min-height: 84px;
+  padding: 8px 12px;
+  line-height: 1.35;
   resize: vertical;
 }
+.people-count { align-self: flex-end; font-size: 14px; }
 
-.people-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+/* ---------- messages ---------- */
+.people-error,
+.people-notice {
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  border: 2px solid var(--ink);
+  border-radius: var(--sketch);
+}
+.people-panel .people-error { border-color: var(--bad); color: var(--bad); }
+.people-notice { border-color: var(--ok); border-style: dashed; }
+.people-notice::before { content: "\2713" / ""; margin-right: 6px; color: var(--ok); }
+
+.people-warn {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 15px;
+  line-height: 1.35;
+}
+.people-warn::before {
+  content: "!" / "";
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  margin-top: 1px;
+  border: 2px solid var(--warn);
+  border-radius: 50%;
+  color: var(--warn);
+  font-size: 14px;
+  line-height: 1;
 }
 
+/* ---------- contributors ---------- */
+.people-list { list-style: none; margin: 16px 0 0; padding: 0; border-top: 2px solid var(--ink); }
 .people-person {
   display: flex;
   flex-direction: column;
-  gap: 0.25em;
-  padding: 0.75em 0;
-  border-top: 1px solid #e0e0e0;
+  gap: 6px;
+  padding: 12px 0 14px;
+  border-bottom: 2px dashed var(--soft);
+}
+.people-person:last-child { border-bottom: none; }
+
+.people-who { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+.people-name { font-size: 20px; font-weight: 400; line-height: 1.15; }
+.people-tag { font-size: 13px; }
+.people-email {
+  flex: 1 1 100%;
+  min-width: 0;
+  color: var(--soft);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
 }
 
-.people-who {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.5em;
-}
-
-.people-tag {
-  padding: 0 0.4em;
-  border-radius: 4px;
-  background: #e0e0e0;
-  font-size: 0.8em;
-}
-
-.people-share {
-  display: flex;
-  align-items: center;
-  gap: 0.5em;
-  font-size: 0.9em;
-}
-
+/* share: a marker stroke inside a hand-ruled box, one pen per person */
+.people-share { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 15px; }
 .people-bar {
-  display: inline-block;
-  width: 8em;
-  height: 0.5em;
-  border-radius: 999px;
-  background: #e0e0e0;
-  overflow: hidden;
+  --pen: var(--pen-2);
+  position: relative;
+  display: block;
+  flex: 0 0 132px;
+  height: 14px;
+  padding: 2px;
+  border: 2px solid var(--ink);
+  border-radius: var(--sketch);
+  transform: rotate(-0.6deg);
 }
-
-.people-bar > span {
+.people-bar-fill {
   display: block;
   height: 100%;
-  background: #396cd8;
+  min-width: 3px;
+  border-radius: 255px 6px 225px 6px / 6px 225px 6px 255px;
+  background-color: var(--pen);
+  background-image: repeating-linear-gradient(
+    -60deg,
+    transparent 0 4px,
+    color-mix(in srgb, var(--paper) 28%, transparent) 4px 5.5px
+  );
 }
+.people-person:nth-child(7n + 1) .people-bar { --pen: var(--pen-2); }
+.people-person:nth-child(7n + 2) .people-bar { --pen: var(--pen-1); }
+.people-person:nth-child(7n + 3) .people-bar { --pen: var(--pen-3); }
+.people-person:nth-child(7n + 4) .people-bar { --pen: var(--pen-4); }
+.people-person:nth-child(7n + 5) .people-bar { --pen: var(--pen-5); }
+.people-person:nth-child(7n + 6) .people-bar { --pen: var(--pen-6); }
+.people-person:nth-child(7n + 7) .people-bar { --pen: var(--pen-7); }
 
-.people-actions {
-  display: flex;
-  gap: 0.5em;
-  margin-top: 0.25em;
-}
+.people-latest { overflow-wrap: anywhere; }
 
-.people-actions button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-@media (prefers-color-scheme: dark) {
-  .people-panel,
-  .people-question textarea {
-    border-color: #555;
-  }
-  .people-person {
-    border-top-color: #444;
-  }
-  .people-muted {
-    color: #a0a0a0;
-  }
-  .people-notice {
-    background-color: #1b3a1e;
-  }
-  .people-warn {
-    color: #f3c46b;
-  }
-  .people-bar,
-  .people-tag {
-    background: #444;
-  }
-  .people-panel select,
-  .people-question textarea {
-    color: #fff;
-    background-color: #0f0f0f98;
-  }
-}
+.people-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }

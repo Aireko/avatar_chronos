@@ -1,7 +1,7 @@
 // "Who worked on this?": git blame for a file, narrowed to a function or a line
 // range, with a pre-filled email draft to each contributor. The draft opens in
 // the user's own mail app; nothing is sent from Chronos.
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isTauri } from "@tauri-apps/api/core";
 import { useId, useMemo, useState, type FormEvent } from "react";
 import { blameFile, errorMessage, type BlameReport } from "../backend";
@@ -110,21 +110,39 @@ export default function ContributorsPanel({ repoPath, filePaths }: ContributorsP
     }
   }
 
+  // Reveal the blamed file in Explorer / Finder / the desktop file manager.
+  async function onReveal() {
+    if (!report) return;
+    setError("");
+    setNotice("");
+    let fullPath = `${report.repoPath.replace(/[\\/]+$/, "")}/${report.path}`;
+    if (navigator.userAgent.includes("Windows")) fullPath = fullPath.replace(/\//g, "\\");
+    try {
+      await revealItemInDir(fullPath);
+    } catch (e) {
+      setError(`Couldn't open the file explorer: ${errorMessage(e)}`);
+    }
+  }
+
+  const inTauri = isTauri();
+
   return (
     <section className="people-panel" aria-labelledby="people-title">
-      <h2 id="people-title">Who worked on this?</h2>
-      <p className="people-muted">
+      <h2 id="people-title" className="people-sr-only">
+        Who worked on this?
+      </h2>
+      <p className="people-muted people-intro">
         Uses git blame to find who last changed each line, then opens an email draft to them in your own mail app.
       </p>
 
-      <form className="people-row" onSubmit={onBlame}>
+      <form className="people-find" onSubmit={onBlame}>
         <input
           aria-label="File path, relative to the repository root"
           placeholder="src/parser.c"
           list={listId}
           value={filePath}
           onChange={(e) => setFilePath(e.currentTarget.value)}
-          className="people-grow"
+          className="field people-path"
         />
         <datalist id={listId}>
           {filePaths.map((p) => (
@@ -136,16 +154,16 @@ export default function ContributorsPanel({ repoPath, filePaths }: ContributorsP
           placeholder="HEAD"
           value={revision}
           onChange={(e) => setRevision(e.currentTarget.value)}
-          className="people-narrow"
+          className="field people-rev"
         />
-        <button type="submit" disabled={busy || !repoPath.trim() || !filePath.trim()}>
+        <button className="btn primary" type="submit" disabled={busy || !repoPath.trim() || !filePath.trim()}>
           {busy ? "Running blame..." : "Find contributors"}
         </button>
       </form>
       {!repoPath.trim() && <p className="people-muted">Enter a repository path at the top first.</p>}
 
       {error && (
-        <p className="error" role="alert">
+        <p className="error people-error" role="alert">
           {error}
         </p>
       )}
@@ -155,38 +173,52 @@ export default function ContributorsPanel({ repoPath, filePaths }: ContributorsP
 
       {report && range && (
         <>
-          <div className="people-row">
-            <label htmlFor="people-scope">Scope</label>
-            <select
-              id="people-scope"
-              value={scope.kind === "symbol" ? `symbol:${scope.index}` : scope.kind}
-              onChange={(e) => {
-                const v = e.currentTarget.value;
-                if (v === "file") setScope({ kind: "file" });
-                else if (v === "lines") setScope({ kind: "lines", start: "1", end: String(report.totalLines) });
-                else setScope({ kind: "symbol", index: Number(v.slice("symbol:".length)) });
-              }}
-            >
-              <option value="file">
-                Whole file ({report.path}, {report.totalLines} lines)
-              </option>
-              {report.symbols.length > 0 && (
-                <optgroup label="Function or class">
-                  {report.symbols.map((s, i) => (
-                    <option key={`${s.name}:${s.startLine}`} value={`symbol:${i}`}>
-                      {s.name} ({s.kind}, lines {s.startLine}-{s.endLine})
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-              <option value="lines">Custom line range...</option>
-            </select>
+          <div className="people-scope">
+            <label className="people-label" htmlFor="people-scope">
+              Scope
+            </label>
+            <div className="people-scope-row">
+              <select
+                id="people-scope"
+                className="field people-select"
+                value={scope.kind === "symbol" ? `symbol:${scope.index}` : scope.kind}
+                onChange={(e) => {
+                  const v = e.currentTarget.value;
+                  if (v === "file") setScope({ kind: "file" });
+                  else if (v === "lines") setScope({ kind: "lines", start: "1", end: String(report.totalLines) });
+                  else setScope({ kind: "symbol", index: Number(v.slice("symbol:".length)) });
+                }}
+              >
+                <option value="file">
+                  Whole file ({report.path}, {report.totalLines} lines)
+                </option>
+                {report.symbols.length > 0 && (
+                  <optgroup label="Function or class">
+                    {report.symbols.map((s, i) => (
+                      <option key={`${s.name}:${s.startLine}`} value={`symbol:${i}`}>
+                        {s.name} ({s.kind}, lines {s.startLine}-{s.endLine})
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                <option value="lines">Custom line range...</option>
+              </select>
+              <button
+                type="button"
+                className="btn"
+                onClick={onReveal}
+                disabled={!inTauri}
+                title={inTauri ? `Show ${report.path} in your file explorer` : "Only available in the desktop app"}
+              >
+                Show in Explorer
+              </button>
+            </div>
             {scope.kind === "lines" && (
-              <>
+              <div className="people-lines">
                 <input
                   aria-label="First line"
                   inputMode="numeric"
-                  className="people-num"
+                  className="field people-num"
                   aria-invalid={range.error ? true : undefined}
                   aria-describedby={range.error ? "people-range-error" : undefined}
                   value={scope.start}
@@ -196,17 +228,17 @@ export default function ContributorsPanel({ repoPath, filePaths }: ContributorsP
                 <input
                   aria-label="Last line"
                   inputMode="numeric"
-                  className="people-num"
+                  className="field people-num"
                   aria-invalid={range.error ? true : undefined}
                   aria-describedby={range.error ? "people-range-error" : undefined}
                   value={scope.end}
                   onChange={(e) => setScope({ ...scope, end: e.currentTarget.value })}
                 />
-              </>
+              </div>
             )}
           </div>
           {range.error && (
-            <p id="people-range-error" className="error" role="alert">
+            <p id="people-range-error" className="error people-error" role="alert">
               {range.error}
             </p>
           )}
@@ -216,16 +248,17 @@ export default function ContributorsPanel({ repoPath, filePaths }: ContributorsP
           </p>
 
           <label className="people-question">
-            <span>Your question (goes into the email)</span>
+            <span className="people-label">Your question (goes into the email)</span>
             <textarea
               rows={3}
+              className="field people-textarea"
               maxLength={MAX_QUESTION_CHARS}
               aria-describedby="people-question-count"
               value={question}
               placeholder="e.g. Why does this retry three times before giving up?"
               onChange={(e) => setQuestion(e.currentTarget.value)}
             />
-            <span id="people-question-count" className="people-muted">
+            <span id="people-question-count" className="people-muted people-count">
               {question.length} / {MAX_QUESTION_CHARS} characters
             </span>
           </label>
@@ -275,30 +308,30 @@ function PersonRow({ person, total, onEmail, onCopy }: PersonRowProps) {
   return (
     <li className="people-person">
       <div className="people-who">
-        <strong>{person.name || "(no name)"}</strong>
-        <span className="people-muted">{person.email || "no email recorded"}</span>
-        {bot && <span className="people-tag">bot</span>}
+        <strong className="people-name">{person.name || "(no name)"}</strong>
+        {bot && <span className="mark dashed people-tag">bot</span>}
+        <span className="people-email">{person.email || "no email recorded"}</span>
       </div>
       <div className="people-share">
         <span className="people-bar" aria-hidden>
-          <span style={{ width: `${share}%` }} />
+          <span className="people-bar-fill" style={{ width: `${share}%` }} />
         </span>
         <span>
           {person.lines} {person.lines === 1 ? "line" : "lines"} ({share}%) in {person.commits}{" "}
           {person.commits === 1 ? "commit" : "commits"}
         </span>
       </div>
-      <div className="people-muted">
+      <div className="people-muted people-latest">
         Latest: <code>{person.latest.hash.slice(0, 7)}</code> {person.latest.summary} ({date})
       </div>
       {noReply && <div className="people-warn">This looks like a no-reply address, so email may not reach them.</div>}
       {blocked && <div className="people-warn">{blocked}</div>}
       <div className="people-actions">
-        <button type="button" onClick={onEmail} disabled={blocked !== ""}>
+        <button type="button" className="btn primary" onClick={onEmail} disabled={blocked !== ""}>
           Email {person.name.split(/\s+/)[0] || "them"}
         </button>
         {person.email && (
-          <button type="button" onClick={onCopy}>
+          <button type="button" className="btn" onClick={onCopy}>
             Copy address
           </button>
         )}

@@ -652,7 +652,10 @@ export default function BugCheckPanel() {
 
   return (
     <section className="bc-panel" aria-labelledby="bc-panel-title">
-      <h2 id="bc-panel-title">PR Bug Check</h2>
+      {/* The drawer band already shows the title; this one names the section for assistive tech. */}
+      <h2 id="bc-panel-title" className="bc-sr">
+        PR Bug Check
+      </h2>
       <p className="bc-privacy">
         Runs locally: code from the PR is analysed by Qwen 3.5 on this machine; only the comments you post go to GitHub.
       </p>
@@ -668,7 +671,7 @@ export default function BugCheckPanel() {
             {gh && !gh.installed && <span className="bc-bad">not installed</span>}
             {gh && gh.installed && !gh.authenticated && <span className="bc-bad">not signed in</span>}
           </span>
-          <button type="button" onClick={() => void refreshGh()} disabled={checkingGh}>
+          <button type="button" className="btn bc-btn-sm" onClick={() => void refreshGh()} disabled={checkingGh}>
             {checkingGh ? "Checking..." : "Check again"}
           </button>
         </div>
@@ -683,16 +686,18 @@ export default function BugCheckPanel() {
             onChange={(e) => setRepoDraft(e.currentTarget.value)}
             placeholder="owner/name"
             spellCheck={false}
-            className="bc-grow"
+            className="field bc-grow"
           />
-          <button type="submit" disabled={loadingPrs}>
+          <button type="submit" className="btn" disabled={loadingPrs}>
             {loadingPrs ? "Loading..." : "Load open PRs"}
           </button>
         </form>
       </div>
 
       <div className="bc-block">
-        <h3>Open pull requests in {repo}</h3>
+        <h3 className="bc-title">
+          Open pull requests in <span className="bc-title-repo">{repo}</span>
+        </h3>
         {prsError && <ErrorBox error={prsError} />}
         {prs && prs.length === 0 && <p className="bc-muted">No open pull requests.</p>}
         {prs && prs.length > 0 && (
@@ -702,9 +707,12 @@ export default function BugCheckPanel() {
               return (
                 <li key={pr.number} className="bc-pr">
                   <div className="bc-pr-main">
-                    <ExternalLink href={pr.url}>#{pr.number}</ExternalLink> <strong>{pr.title}</strong>
+                    <span className="bc-pr-number">
+                      <ExternalLink href={pr.url}>#{pr.number}</ExternalLink>
+                    </span>{" "}
+                    <strong className="bc-pr-title">{pr.title}</strong>
                     {pr.isDraft && <span className="bc-badge bc-badge-draft">draft</span>}
-                    <div className="bc-muted">
+                    <div className="bc-muted bc-pr-meta">
                       @{pr.author} · {pr.headRefName} into {pr.baseRefName} ·{" "}
                       <span className="bc-add">+{pr.additions}</span> <span className="bc-del">-{pr.deletions}</span> in{" "}
                       {plural(pr.changedFiles, "file")} · <span className={status.className}>{status.text}</span>
@@ -712,11 +720,16 @@ export default function BugCheckPanel() {
                   </div>
                   <div className="bc-pr-actions">
                     {pr.lastReport && (
-                      <button type="button" onClick={() => void viewReport(pr.number)}>
+                      <button type="button" className="btn bc-btn-sm" onClick={() => void viewReport(pr.number)}>
                         View report
                       </button>
                     )}
-                    <button type="button" onClick={() => void runCheck(pr.number)} disabled={running}>
+                    <button
+                      type="button"
+                      className="btn bc-btn-sm"
+                      onClick={() => void runCheck(pr.number)}
+                      disabled={running}
+                    >
                       Run bug check
                     </button>
                   </div>
@@ -726,20 +739,25 @@ export default function BugCheckPanel() {
           </ul>
         )}
 
-        <div className="bc-row">
+        <div className="bc-row bc-other">
           <label htmlFor="bc-other">Check another PR #</label>
           <input
             id="bc-other"
-            className="bc-number"
+            className="field bc-number"
             inputMode="numeric"
             value={otherPr}
             onChange={(e) => setOtherPr(e.currentTarget.value.replace(/[^0-9]/g, ""))}
             placeholder="number"
           />
-          <button type="button" onClick={() => void runCheck(otherNumber)} disabled={!otherValid || running}>
+          <button
+            type="button"
+            className="btn bc-btn-sm"
+            onClick={() => void runCheck(otherNumber)}
+            disabled={!otherValid || running}
+          >
             Run bug check
           </button>
-          <button type="button" onClick={() => void viewReport(otherNumber)} disabled={!otherValid}>
+          <button type="button" className="btn bc-btn-sm" onClick={() => void viewReport(otherNumber)} disabled={!otherValid}>
             View report
           </button>
           <span className="bc-muted">also works for closed and merged PRs</span>
@@ -748,26 +766,26 @@ export default function BugCheckPanel() {
         <details className="bc-options">
           <summary>Check options</summary>
           <div className="bc-row">
-            <label>
+            <label className="bc-check-label">
               <input type="checkbox" checked={verify} onChange={(e) => setVerify(e.target.checked)} /> Double-check
               each finding (one extra model call per finding; filters out most false alarms)
             </label>
           </div>
           <div className="bc-row">
-            <label>
+            <label className="bc-check-label">
               <input type="checkbox" checked={think} onChange={(e) => setThink(e.target.checked)} /> Think first (slower,
               sometimes more accurate)
             </label>
           </div>
-          <div className="bc-row">
+          <div className="bc-option-grid">
             <label htmlFor="bc-ctx">Context window</label>
-            <select id="bc-ctx" value={numCtx} onChange={(e) => setNumCtx(Number(e.target.value))}>
+            <select id="bc-ctx" className="bc-select" value={numCtx} onChange={(e) => setNumCtx(Number(e.target.value))}>
               <option value={8192}>8K tokens (less memory, more and smaller parts)</option>
               <option value={16384}>16K tokens (default)</option>
               <option value={32768}>32K tokens (more memory)</option>
             </select>
             <label htmlFor="bc-conf">Minimum confidence</label>
-            <select id="bc-conf" value={minConfidence} onChange={(e) => setMinConfidence(Number(e.target.value))}>
+            <select id="bc-conf" className="bc-select" value={minConfidence} onChange={(e) => setMinConfidence(Number(e.target.value))}>
               <option value={0.3}>30%</option>
               <option value={0.5}>50% (default)</option>
               <option value={0.7}>70%</option>
@@ -779,11 +797,12 @@ export default function BugCheckPanel() {
 
       {progress && (
         <div className="bc-block bc-progress" aria-live="polite">
-          <div className="bc-row">
-            <strong>
+          <div className="bc-row bc-progress-head">
+            <span className="working-dot" aria-hidden="true" />
+            <strong className="bc-grow">
               Checking {progress.repo}#{progress.number}
             </strong>
-            <button type="button" onClick={cancelRun} disabled={progress.cancelling}>
+            <button type="button" className="btn bc-btn-sm" onClick={cancelRun} disabled={progress.cancelling}>
               {progress.cancelling ? "Cancelling..." : "Cancel"}
             </button>
           </div>
@@ -803,26 +822,26 @@ export default function BugCheckPanel() {
           {progress.chunkFiles.length > 0 && <p className="bc-muted bc-files">Now: {progress.chunkFiles.join(", ")}</p>}
         </div>
       )}
-      {runError?.error.kind === "cancelled" && <p className="bc-muted">Check of #{runError.number} cancelled.</p>}
+      {runError?.error.kind === "cancelled" && <p className="bc-muted bc-note">Check of #{runError.number} cancelled.</p>}
       {runError && runError.error.kind !== "cancelled" && <ErrorBox error={runError.error} />}
       {reportError && <ErrorBox error={reportError} />}
 
       {report && (
         <div className="bc-block bc-report">
-          <div className="bc-row">
-            <h3 className="bc-grow">
+          <div className="bc-report-head">
+            <h3 className="bc-report-title">
               {report.repo}#{report.number}: {report.title}
             </h3>
-            <button type="button" onClick={() => showReport(undefined)}>
+            <button type="button" className="btn bc-btn-sm" onClick={() => showReport(undefined)}>
               Close
             </button>
           </div>
           <p className="bc-muted">
-            Commit <code>{report.headSha.slice(0, 7)}</code> · {report.model} · {formatTime(report.startedAt)} · took{" "}
+            Commit <code>{report.headSha.slice(0, 7)}</code> · <code>{report.model}</code> · {formatTime(report.startedAt)} · took{" "}
             {formatDuration(report.durationMs)} · {plural(report.filesReviewed.length, "file")} reviewed
           </p>
           {report.filesSkipped.length > 0 && (
-            <details>
+            <details className="bc-disclosure">
               <summary className="bc-muted">{plural(report.filesSkipped.length, "file")} skipped</summary>
               <ul className="bc-plain">
                 {report.filesSkipped.map((s) => (
@@ -908,15 +927,21 @@ export default function BugCheckPanel() {
                 <div className="bc-row">
                   <button
                     type="button"
+                    className="btn primary"
                     onClick={() => setConfirming(true)}
                     disabled={selectedIds.length === 0 || overLimit || posting || reportBusy}
                   >
                     Post {plural(selectedIds.length, "comment")} to GitHub
                   </button>
-                  <button type="button" onClick={() => setSelected(new Set(unpostedIds))} disabled={unpostedIds.length === 0}>
+                  <button
+                    type="button"
+                    className="btn bc-btn-sm"
+                    onClick={() => setSelected(new Set(unpostedIds))}
+                    disabled={unpostedIds.length === 0}
+                  >
                     Select all
                   </button>
-                  <button type="button" onClick={() => setSelected(new Set())}>
+                  <button type="button" className="btn bc-btn-sm" onClick={() => setSelected(new Set())}>
                     Select none
                   </button>
                   {overLimit && (
@@ -935,16 +960,16 @@ export default function BugCheckPanel() {
                     </strong>{" "}
                     on GitHub{gh?.user ? ` as @${gh.user}` : ""}? Everyone with access to the repository will see them.
                   </p>
-                  <div className="bc-row">
+                  <div className="bc-row bc-confirm-keys">
                     <button
                       type="button"
-                      className="bc-danger"
+                      className="btn bc-danger"
                       onClick={() => void post()}
                       disabled={posting || reportBusy || selectedIds.length === 0}
                     >
                       {posting ? "Posting..." : `Post ${plural(selectedIds.length, "comment")}`}
                     </button>
-                    <button type="button" onClick={() => setConfirming(false)} disabled={posting}>
+                    <button type="button" className="btn" onClick={() => setConfirming(false)} disabled={posting}>
                       Cancel
                     </button>
                   </div>
@@ -974,6 +999,7 @@ export default function BugCheckPanel() {
               {postError?.kind === "stale_report" && (
                 <button
                   type="button"
+                  className="btn"
                   onClick={() => void runCheck(report.number)}
                   disabled={running || report.repo !== repo}
                 >
@@ -986,14 +1012,14 @@ export default function BugCheckPanel() {
       )}
 
       <div className="bc-block">
-        <h3>Auto review</h3>
+        <h3 className="bc-title">Auto review</h3>
         <p className="bc-muted">
           While the app is running, checks open PRs of <strong>{repo}</strong> that have no up-to-date check, one at a
           time. The first poll works through every open PR not checked yet (up to 50, which can take a long time on a
           small GPU); after that, only PRs that are opened or get new commits.
         </p>
         <div className="bc-row">
-          <label>
+          <label className="bc-check-label">
             <input
               type="checkbox"
               checked={!!watch?.enabled}
@@ -1005,7 +1031,7 @@ export default function BugCheckPanel() {
           <label htmlFor="bc-interval">Check every</label>
           <input
             id="bc-interval"
-            className="bc-number"
+            className="field bc-number"
             type="number"
             min={1}
             max={120}
@@ -1014,13 +1040,13 @@ export default function BugCheckPanel() {
             onBlur={() => setIntervalMinutes((value) => clampInterval(value))}
           />
           <span>minutes</span>
-          <label>
+          <label className="bc-check-label">
             <input type="checkbox" checked={includeDrafts} onChange={(e) => setIncludeDrafts(e.target.checked)} /> Include
             drafts
           </label>
         </div>
         <div className="bc-row">
-          <label>
+          <label className="bc-check-label">
             <input type="checkbox" checked={autoPost} onChange={(e) => setAutoPost(e.target.checked)} /> Post findings
             automatically
           </label>
@@ -1034,7 +1060,7 @@ export default function BugCheckPanel() {
         {watchDirty && (
           <div className="bc-row">
             <span className="bc-warn">Settings changed.</span>
-            <button type="button" onClick={() => void setWatching(true)} disabled={watchBusy}>
+            <button type="button" className="btn bc-btn-sm" onClick={() => void setWatching(true)} disabled={watchBusy}>
               Apply
             </button>
           </div>

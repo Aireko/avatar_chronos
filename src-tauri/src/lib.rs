@@ -422,6 +422,8 @@ async fn read_source(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // Native folder picker for choosing a repository (toolbar "Browse").
+        .plugin(tauri_plugin_dialog::init())
         // Local Qwen 3.5 inference through Ollama (see ai/). Reads the OLLAMA_*
         // variables and never panics: an invalid config is reported by ai_status
         // and makes the other ai_* commands reject.

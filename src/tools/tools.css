@@ -1,0 +1,45 @@
+/* ============ toolbar tools and the tool drawer (same hand-drawn family as graph.css) ============ */
+
+/* Tool buttons: a hand-drawn icon plus a label. Labels fold away on narrow windows. */
+.tools { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+}
+.tool-btn svg { flex: none; }
+.tool-btn[aria-pressed="true"] { background: var(--highlight); }
+.tool-btn[aria-pressed="true"]:hover:not(:disabled) { background: var(--highlight); opacity: 0.9; }
+.toolbar-sep { width: 0; height: 26px; border-left: 2px dashed var(--soft); margin: 0 2px; }
+
+/* The toolbar also holds the history scope switcher, so the path form gives up width first. */
+.toolbar .open-form { min-width: 150px; }
+.toolbar .scope { flex: none; }
+.toolbar .scope-chip { max-width: 200px; }
+
+@media (max-width: 1699px) {
+  .tool-btn { padding: 0 9px; }
+  .tool-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}
+
+/* On the narrowest windows Reload and the theme switch fold to icons too. */
+@media (max-width: 1149px) {
+  .toolbar { gap: 8px; }
+  .toolbar .scope-chip { max-width: 120px; }
+  .tool-label-sm { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}
+
+/* The graph or code editor area. The editor is absolutely positioned, so it fills
+   this box rather than the whole workspace and the tool drawer stays beside it. */
+.workspace-main { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; }
+
+/* The drawer: a ticket that hosts a tool. Slightly wider than commit details. */
+.tool-drawer { width: 460px; animation: drawer-in 0.18s ease-out; }
+.tool-drawer-title { min-width: 0; font-size: 22px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tool-drawer-body { padding: 0 0 22px; }
+@keyframes drawer-in { from { transform: translateX(16px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-drawer { animation: none; }
+}

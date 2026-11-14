@@ -63,7 +63,7 @@
   top: 0;
   right: 0;
   bottom: 0;
-  /* Above the graph's legend and zoom keys (.map-chrome, 20), below the dock keys (25). */
+  /* Above the graph's legend and zoom keys (.map-chrome, 20). */
   z-index: 22;
   pointer-events: none;
   animation: ticket-out 0.18s ease-in forwards;
@@ -108,17 +108,6 @@
 /* Parked rather than display:none, so reopening grows from nothing and the old lines
    don't replay their entrance. */
 .dock-panel.is-parked { display: flex !important; height: 0; visibility: hidden; transition: none; }
-/* The Code editor / Terminal keys ride along with the dock: the same duration and
-   easing both ways, so they turn round together and never cover the terminal. */
-.dock-toggles { transition: bottom 0.22s ease-out; }
-.stage:has(.dock-panel.is-leaving) .dock-toggles,
-.stage:has(.dock-panel.is-parked) .dock-toggles { bottom: 16px; }
-.stage:has(.dock-panel.is-leaving) .dock-toggles { transition: bottom 0.2s ease-in; }
-
-/* In the editor only the Terminal and Context compiler keys are left down there (Back
-   to map closes the editor), and the file tree scrolls its last files clear of them
-   (two 36px keys, the 8px gap and the 16px inset, plus 20px to spare). */
-.stage:has(.editor-layer.is-entering) .file-tree-scroll { padding-bottom: 116px; }
 
 /* Beside a tool drawer on a narrow window the editor's bar wraps instead of pushing
    its buttons under the drawer, and the drawer gives up some width. */
@@ -135,9 +124,7 @@
   .editor-layer.is-entering,
   .editor-layer.is-leaving { animation: none; }
   .dock-panel,
-  .dock-panel.is-leaving,
-  .dock-toggles,
-  .stage:has(.dock-panel.is-leaving) .dock-toggles { transition: none; }
+  .dock-panel.is-leaving { transition: none; }
 }
 
 /* ============ small pop-ups: the File / Function picker and the branch legend ============ */

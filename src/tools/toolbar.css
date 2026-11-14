@@ -209,7 +209,7 @@
 .tip {
   position: absolute;
   top: calc(100% + 9px);
-  /* Above the map's chrome (20) and the dock keys (25), below the pop-ups (60). */
+  /* Above the map's chrome (20) and the side panels (22), below the pop-ups (60). */
   z-index: 30;
   display: flex;
   flex-direction: column;
@@ -232,6 +232,7 @@
   transition: opacity 0.12s ease, transform 0.12s ease, visibility 0s linear 0.12s;
 }
 .tip.is-center { left: 50%; translate: -50% 0; }
+.tip.is-start { left: -4px; }
 .tip.is-end { right: -4px; }
 .tip.is-above { top: auto; bottom: calc(100% + 9px); transform: translateY(4px) rotate(0.6deg); }
 :hover > .tip,
@@ -245,15 +246,16 @@
 .tip-title { font-weight: 400; }
 .tip-text { color: var(--soft); font-size: 14px; }
 
-/* ---- the theme switch, now a quiet key in the status bar's corner ---- */
-.status-theme {
+/* ---- the status bar's quiet keys: the theme switch in its right corner and the view
+   keys (Editor, Terminal, Context) at its left end ---- */
+.status-theme,
+.status-view {
   position: relative;
   display: inline-flex;
   align-items: center;
   gap: 5px;
   flex: none;
   height: 22px;
-  margin-right: -6px;
   padding: 0 8px 0 6px;
   border: 1.5px dashed transparent;
   border-radius: var(--sketch);
@@ -264,9 +266,46 @@
   cursor: pointer;
   transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
 }
-.status-theme:hover { color: var(--ink); border-color: var(--soft); background: var(--wash); }
-.status-theme:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: 2px; color: var(--ink); }
-.status-theme svg { width: 16px; height: 16px; }
+.status-theme { margin-right: -6px; }
+.status-theme:hover,
+.status-view:hover { color: var(--ink); border-color: var(--soft); background: var(--wash); }
+.status-theme:focus-visible,
+.status-view:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: 2px; color: var(--ink); }
+.status-theme svg,
+.status-view svg { flex: none; width: 16px; height: 16px; }
+
+/* The view keys sit together, ruled off from the repository path by a pencil dash. */
+.status-views {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  margin-left: -6px;
+  padding-right: 12px;
+  border-right: 1.5px dashed var(--grid-strong);
+}
+/* An open view's key gets a highlighter swipe: it is drawn on from the left and wiped
+   off to the right (the origin flips at once; only the stroke's length eases). */
+/* Its own layer (for the swipe under the ink) raised to the tips' height (30), so its tip
+   hangs over the terminal dock (15) and the side panels (22) rather than behind them. */
+.status-view { z-index: 30; }
+.status-view::before {
+  content: "";
+  position: absolute;
+  inset: 2px 0 1px;
+  z-index: -1;
+  border-radius: var(--sketch);
+  background: var(--highlight);
+  transform: scaleX(0);
+  transform-origin: right center;
+  transition: transform 0.16s ease-in;
+}
+.status-view[aria-pressed="true"] { color: var(--ink); }
+.status-view[aria-pressed="true"]::before {
+  transform: none;
+  transform-origin: left center;
+  transition: transform 0.22s cubic-bezier(0.3, 0.9, 0.3, 1.12);
+}
 
 /* ---- narrower windows: the names get shorter caps, then Push and the theme key fold
    to their icons ---- */
@@ -281,7 +320,9 @@
   .toolbar.has-repo .tools { padding-left: 8px; }
   .push-key { width: 38px; padding: 0; justify-content: center; }
   .push-key-label,
-  .status-theme-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .status-theme-label,
+  .status-view-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .status-view { padding: 0 5px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -303,6 +344,9 @@
   .branch-pop .field,
   .branch-item,
   .status-theme,
+  .status-view,
+  .status-view::before,
+  .status-view[aria-pressed="true"]::before,
   .tip,
   :hover > .tip,
   :focus-visible > .tip { transition: none; }

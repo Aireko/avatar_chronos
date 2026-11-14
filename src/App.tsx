@@ -55,6 +55,8 @@ import ContextViewsPanel from "./context/ContextViewsPanel";
 import { useTheme, type Theme } from "./tools/theme";
 import { crossFade } from "./tools/crossFade";
 import {
+  ContextIcon,
+  EditorIcon,
   EmptyScopeDoodle,
   FolderIcon,
   HistoryDoodle,
@@ -63,6 +65,7 @@ import {
   ReviewIcon,
   SearchIcon,
   SparkIcon,
+  TerminalIcon,
   ThemeIcon,
   WarnIcon,
 } from "./tools/icons";
@@ -712,7 +715,7 @@ function App() {
       });
     }
     // The ticket's file button goes away with the ticket; closing the editor falls back
-    // to the dock's Code editor key.
+    // to the status bar's Editor key.
     rememberOpener("editor");
     setSelected(hash);
     setPanel(null);
@@ -1656,59 +1659,73 @@ function App() {
           )}
         </Presence>
 
-        <div className="dock-toggles" role="toolbar" aria-label="Views">
-          {/* In the editor, "Back to map" (and Ctrl+E) closes it; this key would only sit
-              on top of the file tree. */}
-          {!showEditor && (
-            <button
-              ref={editorKey}
-              type="button"
-              className="btn dock-key"
-              aria-pressed={false}
-              aria-keyshortcuts="Control+E"
-              title="Open the code editor (Ctrl+E)"
-              onClick={toggleEditor}
-            >
-              <span>Code editor</span>
-              <kbd className="dock-kbd" aria-hidden="true">
-                Ctrl E
-              </kbd>
-            </button>
-          )}
+      </main>
+
+      <footer className="statusbar">
+        {/* The views that take the stage or the dock: quiet keys at the status bar's left
+            end, so they never sit over the map, the file tree or the terminal. An open one
+            gets a highlighter swipe. Before a repository is open they say so. */}
+        <div className="status-views" role="group" aria-label="Views">
+          <button
+            ref={editorKey}
+            type="button"
+            className="status-view"
+            aria-label="Code editor"
+            aria-pressed={showEditor}
+            aria-keyshortcuts="Control+E"
+            onClick={toggleEditor}
+          >
+            <EditorIcon />
+            <span className="status-view-label">Editor</span>
+            <Tip side="above" align="start">
+              <span className="tip-title">{showEditor ? "Close the code editor" : "Open the code editor"}</span>
+              <span className="tip-text">{graph ? "Ctrl+E" : "Open a repository first"}</span>
+            </Tip>
+          </button>
           <button
             ref={terminalKey}
             type="button"
-            className={`btn dock-key${showTerminal ? " primary" : ""}`}
+            className="status-view"
+            aria-label="Terminal"
             aria-pressed={showTerminal}
             aria-keyshortcuts="Control+`"
-            title={showTerminal ? "Close the terminal (Ctrl+`)" : "Open the terminal (Ctrl+`)"}
             onClick={toggleTerminal}
           >
-            <span>Terminal</span>
-            <kbd className="dock-kbd" aria-hidden="true">
-              Ctrl `
-            </kbd>
+            <TerminalIcon />
+            <span className="status-view-label">Terminal</span>
+            <Tip side="above" align="start">
+              <span className="tip-title">{showTerminal ? "Close the terminal" : "Open the terminal"}</span>
+              <span className="tip-text">{graph ? "Ctrl+`" : "Open a repository first"}</span>
+            </Tip>
           </button>
           <button
             ref={contextKey}
             type="button"
-            className={`btn dock-key${showContext ? " primary" : ""}`}
+            className="status-view"
+            aria-label="Context compiler"
             aria-pressed={showContext}
             onClick={toggleContext}
           >
-            Context compiler
+            <ContextIcon />
+            <span className="status-view-label">Context</span>
+            <Tip side="above" align="start">
+              <span className="tip-title">{showContext ? "Close the context compiler" : "Open the context compiler"}</span>
+              {!graph && <span className="tip-text">Open a repository first</span>}
+            </Tip>
           </button>
         </div>
-      </main>
 
-      <footer className="statusbar">
         {graph ? (
           <>
             <span className="status-path" title={graph.repoPath}>
               {graph.repoPath}
             </span>
             {/* Keyed by value: a changed figure ticks in, so a reload or scope change is noticed. */}
-            <span key={`b:${currentBranch}:${paused}`} className="status-tick">
+            <span
+              key={`b:${currentBranch}:${paused}`}
+              className="status-tick status-head"
+              title={headText(currentBranch, paused)}
+            >
               {headText(currentBranch, paused)}
             </span>
             <span key={`c:${scoped?.graph.commits.length ?? 0}:${scope.kind}`} className="status-tick">

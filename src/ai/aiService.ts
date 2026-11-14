@@ -22,6 +22,7 @@ import type {
   PullSummary,
   StreamEvent,
 } from "./types";
+import { normalizeAiStatus, normalizeGenerateResponse } from "./normalize";
 
 export type * from "./types";
 
@@ -177,7 +178,9 @@ function channelTo<E>(onEvent: (event: E) => void): Channel<E> {
 export const aiService: AIService = {
   checkConnection: () => call<ConnectionStatus>("ai_check_connection"),
 
-  status: () => call<AiStatus>("ai_status"),
+  // Answers the panel renders field by field are normalised: a partial or null answer
+  // becomes a rejection (or safe defaults), never a crash while rendering.
+  status: async () => normalizeAiStatus(await call<AiStatus>("ai_status")),
 
   listModels: () => call<ModelSummary[]>("ai_list_models"),
 
@@ -198,7 +201,7 @@ export const aiService: AIService = {
 
   async generate(request, options) {
     const signal = options?.signal;
-    if (!signal) return call<GenerateResponse>("ai_generate", { request });
+    if (!signal) return normalizeGenerateResponse(await call<GenerateResponse>("ai_generate", { request }));
     if (!isTauri()) throw NOT_IN_APP;
     const id = request.requestId ?? newRequestId();
     const response = await runCancellable<GenerateResponse>(
@@ -209,7 +212,7 @@ export const aiService: AIService = {
     );
     // An aborted call never resolves as a success, even if it finished first.
     if (signal.aborted) throw CANCELLED;
-    return response;
+    return normalizeGenerateResponse(response);
   },
 
   async generateStream(request, options = {}) {
@@ -217,8 +220,14 @@ export const aiService: AIService = {
     const { onEvent, onDelta, signal } = options;
     const id = request.requestId ?? newRequestId();
     const channel = channelTo<StreamEvent>((event) => {
+      if (!event || typeof event !== "object") return;
       onEvent?.(event);
-      if (event.type === "delta") onDelta?.(event.content, event.thinking);
+      if (event.type === "delta") {
+        onDelta?.(
+          typeof event.content === "string" ? event.content : "",
+          typeof event.thinking === "string" ? event.thinking : undefined,
+        );
+      }
     });
     const response = await runCancellable<GenerateResponse>(
       "ai_generate_stream",
@@ -227,7 +236,7 @@ export const aiService: AIService = {
       signal,
     );
     if (signal?.aborted) throw CANCELLED;
-    return response;
+    return normalizeGenerateResponse(response);
   },
 
   cancelGeneration: (requestId: string) => call<boolean>("ai_cancel", { requestId }),

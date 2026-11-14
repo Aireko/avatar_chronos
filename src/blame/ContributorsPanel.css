@@ -1,6 +1,8 @@
 /* "Who worked on this?": drawn in the same hand-made family as graph.css.
    The panel sits inside the tool drawer's scrolling body, so it draws no outer
-   card of its own; every colour comes from the .app theme variables. */
+   card of its own; every colour comes from the .app theme variables (which also set
+   color-scheme). Fields take their pen and focus ring from graph.css, and the keyframes
+   rise and stamp are graph.css's shared ones. */
 .people-panel {
   padding: 2px 18px 0;
   overflow-wrap: anywhere;
@@ -35,12 +37,6 @@
 
 /* ---------- controls ---------- */
 .people-panel .field { font-size: 16px; }
-.people-panel .field:focus-visible,
-.people-panel select:focus-visible,
-.people-panel textarea:focus-visible {
-  outline: 2.5px dashed var(--pen-2);
-  outline-offset: 3px;
-}
 .people-panel .field[aria-invalid="true"] { border-color: var(--bad); border-style: dashed; }
 .people-panel .btn { flex: none; }
 
@@ -90,7 +86,19 @@
 }
 .people-panel .people-error { border-color: var(--bad); color: var(--bad); }
 .people-notice { border-color: var(--ok); border-style: dashed; }
-.people-notice::before { content: "\2713" / ""; margin-right: 6px; color: var(--ok); }
+/* Pen-drawn ticks (graph.css's --tick-mask), not a font glyph. */
+.people-notice::before {
+  content: "";
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  background: currentColor;
+  -webkit-mask: var(--tick-mask) center / contain no-repeat;
+  mask: var(--tick-mask) center / contain no-repeat;
+  margin-right: 6px;
+  vertical-align: -0.05em;
+  color: var(--ok);
+}
 
 .people-warn {
   display: flex;
@@ -125,9 +133,31 @@
 }
 .people-person:last-child { border-bottom: none; }
 
-.people-who { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+/* Name block with an initial bubble beside it, inked in the person's pen. */
+.people-id { display: flex; align-items: center; gap: 10px; }
+.people-avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border: 2px solid var(--pen);
+  border-radius: 54% 46% 51% 49% / 47% 53% 47% 53%;
+  background: color-mix(in srgb, var(--pen) 16%, var(--paper));
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1;
+  white-space: nowrap;
+  transform: rotate(-4deg);
+  animation: people-pop 0.24s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards;
+  animation-delay: calc(var(--i, 0) * 35ms + 60ms);
+}
+.people-person:nth-child(even) .people-avatar { transform: rotate(3deg); }
+@keyframes people-pop { from { opacity: 0; transform: scale(0.6) rotate(-12deg); } }
+
+.people-who { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
 .people-name { font-size: 20px; font-weight: 400; line-height: 1.15; }
-.people-tag { font-size: 13px; }
+.people-tag { font-size: 14px; }
 .people-email {
   flex: 1 1 100%;
   min-width: 0;
@@ -140,7 +170,6 @@
 /* share: a marker stroke inside a hand-ruled box, one pen per person */
 .people-share { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 15px; }
 .people-bar {
-  --pen: var(--pen-2);
   position: relative;
   display: block;
   flex: 0 0 132px;
@@ -162,13 +191,14 @@
     color-mix(in srgb, var(--paper) 28%, transparent) 4px 5.5px
   );
 }
-.people-person:nth-child(7n + 1) .people-bar { --pen: var(--pen-2); }
-.people-person:nth-child(7n + 2) .people-bar { --pen: var(--pen-1); }
-.people-person:nth-child(7n + 3) .people-bar { --pen: var(--pen-3); }
-.people-person:nth-child(7n + 4) .people-bar { --pen: var(--pen-4); }
-.people-person:nth-child(7n + 5) .people-bar { --pen: var(--pen-5); }
-.people-person:nth-child(7n + 6) .people-bar { --pen: var(--pen-6); }
-.people-person:nth-child(7n + 7) .people-bar { --pen: var(--pen-7); }
+/* One pen per person, shared by their initial bubble and share bar. */
+.people-person { --pen: var(--pen-2); }
+.people-person:nth-child(7n + 2) { --pen: var(--pen-1); }
+.people-person:nth-child(7n + 3) { --pen: var(--pen-3); }
+.people-person:nth-child(7n + 4) { --pen: var(--pen-4); }
+.people-person:nth-child(7n + 5) { --pen: var(--pen-5); }
+.people-person:nth-child(7n + 6) { --pen: var(--pen-6); }
+.people-person:nth-child(7n + 7) { --pen: var(--pen-7); }
 
 .people-latest { overflow-wrap: anywhere; }
 
@@ -179,9 +209,17 @@
 .people-swap > span { grid-area: 1 / 1; text-align: center; }
 .people-swap > .is-off { visibility: hidden; }
 .people-panel .btn.people-copied { border-color: var(--ok); color: var(--ok); }
-.people-copied-label::before { content: "\2713" / ""; margin-right: 5px; }
-.people-copied-label { animation: people-stamp 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards; }
-@keyframes people-stamp { from { opacity: 0; transform: scale(0.85) rotate(-3deg); } }
+.people-copied-label::before {
+  content: "";
+  display: inline-block;
+  width: 0.75em;
+  height: 0.75em;
+  background: currentColor;
+  -webkit-mask: var(--tick-mask) center / contain no-repeat;
+  mask: var(--tick-mask) center / contain no-repeat;
+  margin-right: 5px;
+}
+.people-copied-label { animation: stamp 0.22s var(--ease-pop) backwards; }
 
 /* ---------- states: working, empty, near the limit ---------- */
 .people-panel .people-working { margin: 14px 0 0; }
@@ -208,11 +246,10 @@
 .people-report,
 .people-error,
 .people-notice,
-.people-panel .people-empty { animation: people-rise 0.22s ease-out backwards; }
-.people-person { animation: people-rise 0.22s ease-out backwards; animation-delay: calc(var(--i, 0) * 35ms); }
-@keyframes people-rise { from { opacity: 0; transform: translateY(6px); } }
+.people-panel .people-empty { animation: rise 0.22s ease-out backwards; }
+.people-person { animation: rise 0.22s ease-out backwards; animation-delay: calc(var(--i, 0) * 35ms); }
 
-.people-lines { animation: people-rise 0.18s ease-out backwards; }
+.people-lines { animation: rise 0.18s ease-out backwards; }
 
 .people-bar-fill {
   transition: width 0.28s ease-out;
@@ -229,8 +266,19 @@
   .people-panel .people-empty,
   .people-person,
   .people-lines,
-  .people-bar-fill { animation: none; }
+  .people-bar-fill,
+  .people-avatar { animation: none; }
   .people-count,
   .people-report,
   .people-bar-fill { transition: none; }
+}
+
+/* ============ back from a hidden drawer pane ============
+   Showing a display: none pane restarts every animation in it. While usePaneReturn
+   (src/ai/panelHooks.ts) marks the panel, the rows, avatars and share bars stay put
+   instead of arriving again; the waiting dot keeps breathing. */
+.people-panel[data-pane-return] :not(.working-dot),
+.people-panel[data-pane-return] :not(.working-dot)::before {
+  animation-duration: 0s !important;
+  animation-delay: 0s !important;
 }

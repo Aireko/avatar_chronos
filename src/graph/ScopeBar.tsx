@@ -1,4 +1,4 @@
-import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from "react";
+import { type KeyboardEvent as ReactKeyboardEvent, type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Presence } from "../tools/Presence";
 import { blameFile, errorMessage, listFiles, type ChronosGraph } from "../backend";
 import { PROJECT, functionChoices, scopeTarget, type FunctionChoice, type Scope } from "./scope";
@@ -13,6 +13,63 @@ interface Props {
 type Picking = { kind: "file" } | { kind: "function"; path: string | null };
 const MAX_SHOWN = 200;
 
+/**
+ * One shared block of ink under the Project / File / Function tabs, laid under
+ * whichever tab is `.on`. Changing tab glides it across; the first placement and
+ * re-measures (the hand font arriving and changing the tab widths) jump straight
+ * there, so it never sweeps in from the left edge.
+ */
+function useSlidingInk(bar: RefObject<HTMLDivElement | null>, ink: RefObject<HTMLSpanElement | null>, active: string) {
+  const placed = useRef(false);
+
+  function place(glide: boolean) {
+    const box = bar.current;
+    const mark = ink.current;
+    if (!box || !mark) return;
+    const on = box.querySelector<HTMLElement>(".scope-tab.on");
+    if (!on) {
+      mark.hidden = true;
+      placed.current = false;
+      return;
+    }
+    // Sub-pixel positions, relative to the bar's padding edge (where `left: 0` is).
+    const outer = box.getBoundingClientRect();
+    const tab = on.getBoundingClientRect();
+    const x = tab.left - outer.left - box.clientLeft;
+    // Turning the glide off in the same frame as the move makes the move instant.
+    mark.classList.toggle("is-gliding", glide && placed.current);
+    mark.hidden = false;
+    mark.style.width = `${tab.width}px`;
+    mark.style.transform = `translateX(${x}px)`;
+    placed.current = true;
+  }
+
+  // Before paint, so the ink is never a frame behind the tab's own colour change.
+  useLayoutEffect(() => place(true), [active]);
+
+  useEffect(() => {
+    const box = bar.current;
+    if (!box) return;
+    let stale = false;
+    const remeasure = () => {
+      if (!stale) place(false);
+    };
+    // The ink is placed relative to the bar, so only the tabs' own sizes matter: they
+    // change when "Patrick Hand" finishes loading (or the zoom level changes).
+    const watch = typeof ResizeObserver === "function" ? new ResizeObserver(remeasure) : null;
+    if (watch) {
+      watch.observe(box);
+      box.querySelectorAll(".scope-tab").forEach((tab) => watch.observe(tab));
+    }
+    void document.fonts?.ready.then(remeasure, () => {});
+    return () => {
+      stale = true;
+      watch?.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+}
+
 export function ScopeBar({ graph, scope, onChange }: Props) {
   const [picking, setPicking] = useState<Picking | null>(null);
   const [query, setQuery] = useState("");
@@ -23,10 +80,13 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
   const root = useRef<HTMLDivElement>(null);
   const filter = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLUListElement>(null);
+  const tabs = useRef<HTMLDivElement>(null);
+  const ink = useRef<HTMLSpanElement>(null);
 
   const repoPath = graph?.repoPath;
   const functionPath = picking?.kind === "function" ? picking.path : null;
   const wantFiles = picking !== null && (picking.kind === "file" || picking.path === null);
+  const step = wantFiles ? "files" : `fn:${functionPath}`;
 
   useEffect(() => {
     if (!repoPath || !wantFiles) return;
@@ -80,17 +140,21 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
     const down = (e: MouseEvent) => {
       if (root.current && !root.current.contains(e.target as Node)) setPicking(null);
     };
+    // Escape closes the picker and nothing else: it is the top layer (z-index 60), so the key
+    // is caught on the way down and kept from App's handler, which would otherwise also close
+    // the commit panel or a tool, or drop the chosen commit, in the same press.
     const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && !e.isComposing) {
+        e.stopPropagation();
         returnFocus();
         setPicking(null);
       }
     };
     window.addEventListener("mousedown", down);
-    window.addEventListener("keydown", key);
+    window.addEventListener("keydown", key, true);
     return () => {
       window.removeEventListener("mousedown", down);
-      window.removeEventListener("keydown", key);
+      window.removeEventListener("keydown", key, true);
     };
   }, [picking]);
 
@@ -168,14 +232,24 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
   }
 
   const active = picking ? picking.kind : scope.kind;
+  useSlidingInk(tabs, ink, active);
   const q = query.trim().toLowerCase();
   const isCurrent = (name: string) => scope.kind === "function" && scope.path === functionPath && scope.name === name;
   const fileMatches = files.filter((f) => f.toLowerCase().includes(q));
   const functionMatches = functions.filter((f) => f.name.toLowerCase().includes(q));
 
   return (
-    <div className="scope" ref={root}>
-      <div className="scope-tabs" role="group" aria-label="History view">
+    <div
+      className="scope"
+      ref={root}
+      onBlur={(e) => {
+        // Tabbing out of the picker closes it, as clicking elsewhere does. (Focus that simply
+        // vanishes, such as a list redrawn between steps, has no relatedTarget.)
+        const to = e.relatedTarget;
+        if (picking && to instanceof Node && !e.currentTarget.contains(to)) setPicking(null);
+      }}
+    >
+      <div ref={tabs} className={`scope-tabs${graph ? "" : " is-off"}`} role="group" aria-label="History view">
         <button
           className={`scope-tab${active === "project" ? " on" : ""}`}
           aria-pressed={active === "project"}
@@ -190,6 +264,7 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
         <button
           className={`scope-tab${active === "file" ? " on" : ""}`}
           aria-pressed={active === "file"}
+          aria-expanded={picking?.kind === "file"}
           disabled={!graph}
           onClick={() => open({ kind: "file" })}
         >
@@ -198,11 +273,14 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
         <button
           className={`scope-tab${active === "function" ? " on" : ""}`}
           aria-pressed={active === "function"}
+          aria-expanded={picking?.kind === "function"}
           disabled={!graph}
           onClick={() => open({ kind: "function", path: null })}
         >
           Function
         </button>
+        {/* Last, so `.scope-tab:first-child` still finds the first tab. */}
+        <span ref={ink} className="scope-ink" aria-hidden hidden />
       </div>
 
       {scope.kind !== "project" && !picking && (
@@ -214,8 +292,9 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
       <Presence show={picking !== null} className="scope-pop" exitMs={140}>
         {picking && (
           <>
-            {/* Keyed by the step (files, then a file's functions), so moving between steps slides the new one in. */}
-            <div key={wantFiles ? "files" : `fn:${functionPath}`} className="scope-title scope-step">
+            {/* Keyed by the step (files, then a file's functions), so moving between steps slides the new one in.
+                The title and the list are siblings, so their keys need different prefixes. */}
+            <div key={`title:${step}`} className="scope-title scope-step">
               {picking.kind === "file" && "Choose a file"}
               {picking.kind === "function" && picking.path === null && "Choose the file the function is in"}
               {picking.kind === "function" && picking.path !== null && (
@@ -241,7 +320,7 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
             {loading && <p className="quiet scope-note scope-loading">Loading…</p>}
             {error && <p className="scope-note scope-bad" role="alert">{error}</p>}
             <ul
-              key={wantFiles ? "files" : `fn:${functionPath}`}
+              key={`list:${step}`}
               ref={list}
               className="scope-list scope-step"
               onKeyDown={onListKey}

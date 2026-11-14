@@ -62,7 +62,7 @@
    chalk ring as well, to stay visible against the dark board. */
 .find-marks { pointer-events: none; }
 .find-mark {
-  fill: var(--highlight);
+  fill: var(--halo); /* no lettering on it, so the bolder map blob colour (graph.css) */
   opacity: 0.45;
   transition: transform 0.8s cubic-bezier(0.45, 0, 0.2, 1), opacity 0.18s ease;
   animation: find-mark-in 0.2s ease-out backwards;

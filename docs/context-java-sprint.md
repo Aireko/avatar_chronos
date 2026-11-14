@@ -96,6 +96,12 @@ Real Android Studio Java repositories on the local machine, indexed at `HEAD`:
 | --- | ---: | ---: | ---: | ---: |
 | `PetShop` | 14 / 14 | 6,728 / 6,728 | 100.0% | ~4.5 s |
 | `Lab08` | 4 / 4 | 3,535 / 3,535 | 100.0% | ~1.0 s |
+| `avatar-state` | 70 / 70 | 868,779 / 868,779 | 100.0% | ~0.6 s |
+
+The `avatar-state` checkout (`3ef5572`) produced 8,977 call links and 6
+onboarding flows. Indexing took ~0.5–0.6 s and full onboarding views ~0.6–0.7 s
+on the Linux filesystem. A changed-method context compile (`ManageFragment::statusString`)
+completed in ~1.3 s with the `language-coverage` diagnostic attached.
 
 `build.gradle.kts` and `settings.gradle.kts` are excluded from the source
 inventory because they are build configuration, not application source. The

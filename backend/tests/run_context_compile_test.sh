@@ -36,6 +36,13 @@ EOF
 cat > save_b.c <<'EOF'
 int save(void) { return 2; }
 EOF
+cat > example.py <<'EOF'
+def helper():
+    return 1
+
+def work():
+    return helper()
+EOF
 git add .
 git commit -qm base
 
@@ -46,6 +53,8 @@ int beta(void) { return alpha() + save() + missing() + 1; }
 
 int added(void) { return alpha(); }
 EOF
+sed 's/return 1/return 2/' example.py > example.new
+mv example.new example.py
 git commit -qam head
 
 run_twice() {
@@ -60,6 +69,13 @@ run_twice modified math.c beta 8 4096
 run_twice added math.c added 8 4096
 run_twice deleted math.c removed 8 4096
 run_twice tight math.c beta 1 0
+run_twice python example.py helper 8 4096
+
+grep -q '"calleeText":"helper"' "$work/python.1.json"
+grep -q '"direction":"incoming"' "$work/python.1.json"
+grep -q '"resolution":"resolved"' "$work/python.1.json"
+grep -q 'return 1' "$work/python.1.json"
+grep -q 'return 2' "$work/python.1.json"
 
 grep -q '"schemaVersion":1' "$work/modified.1.json"
 grep -q '\\"math.c\\",\\"beta\\"' "$work/modified.1.json"

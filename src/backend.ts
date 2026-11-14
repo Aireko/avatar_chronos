@@ -269,6 +269,251 @@ export const rebaseFunction = (
   functionName: string,
 ) => call<ScopedActionResult>("rebase_function", { repoPath, revision, pathAtRevision, pathNow, functionName });
 
+/* ---------- context compiler views (context_views.h) ---------- */
+
+export type ContextScopeKind = "project" | "module" | "file" | "symbol";
+export type ContextRelationState =
+  | "selected"
+  | "omitted"
+  | "unresolved"
+  | "ambiguous"
+  | "unavailable";
+export type ContextEvidenceKind = "call" | "contains" | "change" | "source";
+export type ContextCoverage = "complete" | "incomplete" | "unavailable";
+
+export interface ContextRange {
+  startByte: number;
+  endByte: number;
+  startLine: number;
+  endLine: number;
+}
+
+export interface ContextRevision {
+  repositoryId: string;
+  commitSha: string;
+}
+
+export interface ContextLocation {
+  revision: ContextRevision;
+  filePath: string;
+  range: ContextRange;
+}
+
+export interface ContextCall {
+  caller: { revision: ContextRevision; id: string };
+  calleeText: string;
+  callSite: ContextLocation;
+  resolution: "resolved" | "unresolved" | "ambiguous";
+  callee: { revision: ContextRevision; id: string } | null;
+  candidates: { revision: ContextRevision; id: string }[];
+}
+
+export interface ContextEvidence {
+  id: string;
+  kind: ContextEvidenceKind;
+  state: ContextRelationState;
+  location: ContextLocation | null;
+  call: ContextCall | null;
+}
+
+export interface ContextCollection<T> {
+  status: ContextCoverage;
+  items: T[] | null;
+}
+
+export interface ContextGraphNode {
+  id: string;
+  kind: ContextScopeKind;
+  parentId: string | null;
+  label: string;
+  symbol: { revision: ContextRevision; id: string } | null;
+  coverage: ContextCoverage;
+  state: ContextRelationState;
+}
+
+export interface ContextGraphEdge {
+  id: string;
+  from: string;
+  to: string | null;
+  kind: ContextEvidenceKind;
+  state: ContextRelationState;
+  evidenceId: string;
+  call: ContextCall | null;
+}
+
+export interface ContextGraphDocument {
+  schemaVersion: number;
+  repositoryId: string;
+  revision: ContextRevision;
+  nodes: ContextCollection<ContextGraphNode>;
+  edges: ContextCollection<ContextGraphEdge>;
+  evidence: ContextCollection<ContextEvidence>;
+  diagnostics: unknown[];
+  adapter: {
+    name: string;
+    schemaVersion: number;
+    graphSchemaVersion: number;
+    briefSchemaVersion: number;
+    reviewContextSchemaVersion: number;
+  };
+}
+
+export interface ContextBriefItem {
+  text: string;
+  evidenceIds: string[];
+  state: ContextRelationState;
+}
+
+export interface ContextBriefSection {
+  id: string;
+  title: string;
+  items: ContextBriefItem[];
+}
+
+export interface ContextBriefDocument {
+  schemaVersion: number;
+  repositoryId: string;
+  revision: ContextRevision;
+  comparison: { base: ContextRevision; head: ContextRevision } | null;
+  sections: ContextBriefSection[];
+  budget: { usedSourceBytes: number };
+  omittedEvidenceIds: string[];
+  coverage: ContextCoverage;
+  evidence: ContextCollection<ContextEvidence>;
+}
+
+export interface ContextViews {
+  schemaVersion: number;
+  repositoryId: string;
+  revision: ContextRevision;
+  targetCount?: number;
+  brief: ContextBriefDocument;
+  graph: ContextGraphDocument;
+  flows?: ContextFlowView[];
+  bridges?: ContextBridgeView[];
+}
+
+export interface ContextFlowNodeView {
+  symbol: { revision: ContextRevision; id: string };
+  name: string;
+  hop: number;
+  relevance: number;
+  fanIn: number;
+  isSeed: boolean;
+  viaIncoming: boolean;
+  crossedModule: boolean;
+}
+
+export interface ContextFlowEdgeView {
+  evidenceId: string;
+  from: number;
+  to: number;
+  forward: boolean;
+}
+
+export interface ContextFlowView {
+  id: string;
+  seed: { revision: ContextRevision; id: string };
+  relevance: number;
+  nodes: ContextFlowNodeView[];
+  edges: ContextFlowEdgeView[];
+}
+
+export interface ContextBridgeView {
+  kind: "invoke" | "registration" | "dispatch" | "ffi";
+  label: string;
+  from: { revision: ContextRevision; id: string } | null;
+  to: { revision: ContextRevision; id: string } | null;
+  evidenceId: string;
+  evidence: ContextLocation;
+}
+
+export interface ContextTarget {
+  path: string;
+  qualifiedName: string;
+}
+
+export interface CompileViewsOptions {
+  revision?: string;
+  mode?: "onboarding" | "task" | "review";
+  /** Task mode: exact repository-relative path. */
+  path?: string;
+  /** Task mode: qualified symbol name. */
+  qualifiedName?: string;
+  maxItems?: number;
+  maxSourceBytes?: number;
+}
+
+export interface SourceResponse {
+  repositoryId: string;
+  commitSha: string;
+  filePath: string;
+  startByte: number;
+  endByte: number;
+  source: string;
+}
+
+export async function compileViews(
+  repoPath: string,
+  options: CompileViewsOptions = {},
+): Promise<ContextViews> {
+  const raw = await call<{ viewsJson: string }>("compile_views", {
+    repoPath,
+    revision: options.revision?.trim() || "HEAD",
+    mode: options.mode ?? "onboarding",
+    path: options.path?.trim() || null,
+    qualifiedName: options.qualifiedName?.trim() || null,
+    maxItems: options.maxItems ?? null,
+    maxSourceBytes: options.maxSourceBytes ?? null,
+  });
+  return JSON.parse(raw.viewsJson) as ContextViews;
+}
+
+export interface CompileMultiViewsOptions {
+  revision?: string;
+  mode?: "onboarding" | "task" | "review";
+  targets?: ContextTarget[];
+  maxItems?: number;
+  maxSourceBytes?: number;
+}
+
+/** Compiles multiple task targets into one combined brief/graph. */
+export async function compileMultiViews(
+  repoPath: string,
+  options: CompileMultiViewsOptions = {},
+): Promise<ContextViews> {
+  const raw = await call<{ viewsJson: string }>("compile_multi_views", {
+    repoPath,
+    revision: options.revision?.trim() || "HEAD",
+    mode: options.mode ?? "task",
+    targets: (options.targets ?? []).map((target) => ({
+      path: target.path.trim(),
+      qualifiedName: target.qualifiedName.trim(),
+    })),
+    maxItems: options.maxItems ?? null,
+    maxSourceBytes: options.maxSourceBytes ?? null,
+  });
+  return JSON.parse(raw.viewsJson) as ContextViews;
+}
+
+/** Loads the pinned source range behind one evidence ID/location. */
+export async function readSource(
+  repoPath: string,
+  filePath: string,
+  startByte: number,
+  endByte: number,
+  revision = "HEAD",
+): Promise<SourceResponse> {
+  const raw = await call<{ sourceJson: string }>("read_source", {
+    repoPath,
+    revision: revision.trim() || "HEAD",
+    filePath,
+    startByte,
+    endByte,
+  });
+  return JSON.parse(raw.sourceJson) as SourceResponse;
+}
+
 /* ---------- errors ---------- */
 
 function isBackendError(error: unknown): error is BackendError {

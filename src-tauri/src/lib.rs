@@ -632,6 +632,8 @@ pub fn run() {
             review::commands::bug_check_watch_get,
             review::commands::bug_check_watch_start,
             review::commands::bug_check_watch_stop,
+            review::pr_create::pr_create_info,
+            review::pr_create::pr_create_open,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

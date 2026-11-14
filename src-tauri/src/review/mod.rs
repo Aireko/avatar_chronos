@@ -70,6 +70,7 @@ pub mod engine;
 pub mod error;
 pub mod findings;
 pub mod github;
+pub mod pr_create;
 pub mod prompt;
 pub mod store;
 pub mod types;

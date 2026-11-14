@@ -132,7 +132,7 @@ function App() {
   const repoLabel = graph?.repoPath.split(/[/\\]/).filter(Boolean).pop() || graph?.repoPath || "repo";
 
   // The map is on screen (not the editor, not an empty scope): find and the author chip live on it.
-  const mapShown = Boolean(graph && layout && scoped && !showEditor && layout.nodes.length > 0);
+  const mapShown = Boolean(graph && layout && scoped && !showEditor && !showContext && layout.nodes.length > 0);
   const findShown = findOpen && mapShown;
   // Matches among the commits in view, newest first like the history itself.
   // Deferred, so typing stays quick on a big history: the scan, the marks and the jump to
@@ -413,15 +413,13 @@ function App() {
           setDiffCompare(null);
         } else if (findShown) closeFind();
         else if (showTerminal) setShowTerminal(false);
+        else if (showContext) setShowContext(false);
         else if (highlightAuthor !== null) {
           // On the chip's own ×, focus would drop to the page as the chip goes; anywhere
           // else (the map), it stays where it is.
           if (target instanceof Element && target.closest(".highlight-chip")) clearHighlight();
           else setHighlightAuthor(null);
         } else setSelected(null);
-        } else if (showTerminal) setShowTerminal(false);
-        else if (showContext) setShowContext(false);
-        else setSelected(null);
         return;
       }
 
@@ -452,7 +450,7 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
     // openFind / closeFind only read the state listed here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layout, selected, panel, tool, showEditor, showTerminal, findOpen, findShown, mapShown, highlightAuthor]);
+  }, [layout, selected, panel, tool, showEditor, showTerminal, showContext, findOpen, findShown, mapShown, highlightAuthor]);
 
   function toggleEditor() {
     if (!graph) {

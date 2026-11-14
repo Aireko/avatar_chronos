@@ -11,7 +11,7 @@ import {
 } from "./backend";
 import AiPanel from "./ai/AiPanel";
 import ContributorsPanel from "./blame/ContributorsPanel";
-import ContextViewsPanel from "./context/ContextViewsPanel";
+import BugCheckPanel from "./bugcheck/BugCheckPanel";
 import "./App.css";
 
 const fmtRange = (r: LineRange | null) => (r ? `${r[0]}-${r[1]}` : "-");
@@ -223,6 +223,7 @@ function App() {
       <ContextViewsPanel repoPath={repoPath} />
 
       <AiPanel />
+      <BugCheckPanel />
     </main>
   );
 }

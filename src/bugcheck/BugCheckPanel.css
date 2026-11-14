@@ -1,0 +1,454 @@
+/* Plain, self-contained styles for the PR Bug Check panel. Every class is prefixed .bc- */
+.bc-panel {
+  max-width: 760px;
+  width: calc(100% - 32px);
+  margin: 2em auto;
+  padding: 1em 1.25em;
+  text-align: left;
+  border: 1px solid #d0d0d0;
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+
+.bc-panel h2 {
+  margin: 0 0 0.25em;
+  text-align: left;
+}
+
+.bc-panel h3 {
+  margin: 0;
+  font-size: 1em;
+}
+
+.bc-panel h4 {
+  margin: 0.75em 0 0.25em;
+  font-size: 0.95em;
+  word-break: break-all;
+}
+
+.bc-panel p {
+  margin: 0.4em 0;
+}
+
+.bc-panel code {
+  font-size: 0.9em;
+}
+
+.bc-panel button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.bc-panel input,
+.bc-panel select {
+  font: inherit;
+}
+
+.bc-panel select {
+  padding: 0.4em;
+  border-radius: 8px;
+  border: 1px solid #c0c0c0;
+}
+
+.bc-privacy {
+  margin: 0 0 1em;
+  padding: 0.5em 0.75em;
+  border-left: 4px solid #2e7d32;
+  background-color: #e8f5e9;
+  font-weight: 600;
+}
+
+.bc-block {
+  margin-top: 1em;
+  padding-top: 0.75em;
+  border-top: 1px solid #e0e0e0;
+}
+
+.bc-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5em;
+  margin: 0.5em 0;
+}
+
+.bc-grow {
+  flex: 1;
+  min-width: 10em;
+}
+
+.bc-number {
+  width: 6em;
+}
+
+.bc-ok {
+  color: #2e7d32;
+  font-weight: 600;
+}
+
+.bc-bad {
+  color: #c62828;
+  font-weight: 600;
+}
+
+.bc-warn {
+  color: #a15c00;
+}
+
+.bc-muted {
+  color: #6b6b6b;
+  font-size: 0.9em;
+}
+
+.bc-add {
+  color: #2e7d32;
+}
+
+.bc-del {
+  color: #c62828;
+}
+
+.bc-error {
+  margin: 0.5em 0;
+  padding: 0.5em 0.75em;
+  border-left: 4px solid #c62828;
+  background-color: #fdecea;
+}
+
+.bc-hint {
+  margin-top: 0.25em;
+}
+
+.bc-warning {
+  padding: 0.5em 0.75em;
+  border-left: 4px solid #ef6c00;
+  background-color: #fff3e0;
+  font-weight: 600;
+}
+
+.bc-prs,
+.bc-findings,
+.bc-plain,
+.bc-activity {
+  list-style: none;
+  margin: 0.5em 0;
+  padding: 0;
+}
+
+.bc-pr {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5em;
+  padding: 0.5em 0;
+  border-bottom: 1px solid #ececec;
+}
+
+.bc-pr-main {
+  flex: 1;
+  min-width: 14em;
+}
+
+.bc-pr-actions {
+  display: flex;
+  gap: 0.5em;
+}
+
+.bc-options summary {
+  cursor: pointer;
+}
+
+.bc-progress progress {
+  width: 100%;
+}
+
+.bc-files {
+  word-break: break-all;
+}
+
+.bc-notes {
+  margin: 0.5em 0;
+  padding-left: 1.25em;
+  color: #a15c00;
+}
+
+.bc-finding {
+  margin: 0.5em 0;
+  padding: 0.5em 0.75em;
+  border: 1px solid #e0e0e0;
+  border-left-width: 4px;
+  border-radius: 6px;
+}
+
+.bc-sev-critical {
+  border-left-color: #b71c1c;
+}
+
+.bc-sev-high {
+  border-left-color: #e65100;
+}
+
+.bc-sev-medium {
+  border-left-color: #f9a825;
+}
+
+.bc-sev-low {
+  border-left-color: #607d8b;
+}
+
+.bc-finding-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5em;
+}
+
+.bc-check {
+  display: inline-flex;
+}
+
+.bc-finding-title {
+  flex: 1;
+  min-width: 12em;
+}
+
+.bc-finding-meta {
+  margin-top: 0.25em;
+}
+
+.bc-explanation {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.bc-badge {
+  display: inline-block;
+  margin-left: 0.25em;
+  padding: 0.05em 0.5em;
+  border-radius: 999px;
+  font-size: 0.8em;
+  font-weight: 700;
+  color: #ffffff;
+  background-color: #607d8b;
+}
+
+.bc-badge-critical {
+  background-color: #b71c1c;
+}
+
+.bc-badge-high {
+  background-color: #e65100;
+}
+
+.bc-badge-medium {
+  color: #3e2c00;
+  background-color: #f9a825;
+}
+
+.bc-badge-low {
+  background-color: #607d8b;
+}
+
+.bc-badge-draft {
+  color: #3a3a3a;
+  background-color: #e0e0e0;
+}
+
+.bc-category {
+  font-size: 0.85em;
+  font-weight: 600;
+  color: #455a64;
+}
+
+.bc-not-postable {
+  margin-left: 0.5em;
+  padding: 0 0.4em;
+  border: 1px dashed #9e9e9e;
+  border-radius: 4px;
+}
+
+.bc-verdict {
+  margin-left: 0.5em;
+  padding: 0 0.4em;
+  border-radius: 4px;
+  font-size: 0.85em;
+  border: 1px solid currentColor;
+}
+
+.bc-verdict-confirmed {
+  color: #2e7d32;
+}
+
+.bc-verdict-refuted,
+.bc-verdict-uncertain,
+.bc-verdict-failed {
+  color: #8d6e63;
+}
+
+.bc-verification {
+  margin: 0.25em 0;
+  font-size: 0.9em;
+  font-style: italic;
+}
+
+.bc-filtered {
+  margin-top: 0.75em;
+}
+
+.bc-filtered summary {
+  cursor: pointer;
+}
+
+.bc-filtered li {
+  margin: 0.4em 0;
+}
+
+.bc-filtered-reason {
+  margin-left: 1em;
+  font-size: 0.9em;
+}
+
+.bc-fix summary {
+  cursor: pointer;
+  font-size: 0.9em;
+}
+
+.bc-fix pre {
+  margin: 0.4em 0;
+  padding: 0.6em;
+  max-height: 20em;
+  overflow: auto;
+  border-radius: 6px;
+  background-color: #f6f8fa;
+  border: 1px solid #e0e0e0;
+}
+
+.bc-post {
+  margin-top: 1em;
+}
+
+.bc-confirm {
+  padding: 0.5em 0.75em;
+  border: 1px solid #ef6c00;
+  border-radius: 6px;
+  background-color: #fff3e0;
+}
+
+.bc-danger {
+  font-weight: 700;
+  color: #ffffff;
+  background-color: #c62828;
+}
+
+.bc-activity li {
+  padding: 0.15em 0;
+  font-size: 0.9em;
+}
+
+@media (prefers-color-scheme: dark) {
+  .bc-panel {
+    border-color: #505050;
+  }
+
+  .bc-verdict-confirmed {
+    color: #81c784;
+  }
+
+  .bc-verdict-refuted,
+  .bc-verdict-uncertain,
+  .bc-verdict-failed {
+    color: #bcaaa4;
+  }
+
+  .bc-block {
+    border-top-color: #444444;
+  }
+
+  .bc-pr {
+    border-bottom-color: #3a3a3a;
+  }
+
+  .bc-privacy {
+    background-color: #1b3a1e;
+    border-left-color: #66bb6a;
+  }
+
+  .bc-ok,
+  .bc-add {
+    color: #81c784;
+  }
+
+  .bc-bad,
+  .bc-del {
+    color: #ff8a80;
+  }
+
+  .bc-warn,
+  .bc-notes {
+    color: #ffb74d;
+  }
+
+  .bc-muted {
+    color: #a0a0a0;
+  }
+
+  .bc-error {
+    background-color: #3b1f1f;
+    border-left-color: #ff8a80;
+  }
+
+  .bc-warning,
+  .bc-confirm {
+    background-color: #3a2a12;
+    border-color: #ffb74d;
+  }
+
+  .bc-panel select {
+    color: #ffffff;
+    background-color: #1f1f1f;
+    border-color: #505050;
+  }
+
+  .bc-finding {
+    border-color: #444444;
+  }
+
+  .bc-sev-critical {
+    border-left-color: #ef5350;
+  }
+
+  .bc-sev-high {
+    border-left-color: #ff9800;
+  }
+
+  .bc-sev-medium {
+    border-left-color: #fdd835;
+  }
+
+  .bc-sev-low {
+    border-left-color: #90a4ae;
+  }
+
+  .bc-category {
+    color: #b0bec5;
+  }
+
+  .bc-badge-draft {
+    color: #e0e0e0;
+    background-color: #505050;
+  }
+
+  .bc-fix pre {
+    background-color: #1f1f1f;
+    border-color: #444444;
+  }
+}
+
+.bc-posted {
+  margin-left: 0.5em;
+  padding: 0 0.4em;
+  border-radius: 4px;
+  color: #ffffff;
+  background-color: #2e7d32;
+}

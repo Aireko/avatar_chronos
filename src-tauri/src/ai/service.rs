@@ -45,6 +45,10 @@ const QUERY_TIMEOUT_CAP: Duration = Duration::from_secs(5);
 const PENDING_CANCEL_TTL: Duration = Duration::from_secs(10);
 /// Most early cancels remembered at once (older ones are dropped first).
 const MAX_PENDING_CANCELS: usize = 256;
+/// Accepted range of a per-call time budget ([`AiService::generate_with_timeout`]),
+/// the same as `OLLAMA_TIMEOUT`.
+const MIN_GENERATE_TIMEOUT: Duration = Duration::from_secs(1);
+const MAX_GENERATE_TIMEOUT: Duration = Duration::from_secs(3600);
 /// Lower bound for the gap between two download progress lines.
 const MIN_PULL_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// Longest accepted request id.
@@ -317,7 +321,23 @@ impl AiService {
     pub async fn generate(&self, request: GenerateRequest) -> Result<GenerateResponse, AiError> {
         let started = Instant::now();
         let request_id = self.resolve_request_id(&request);
-        let result = self.run_generate(&request, &request_id).await;
+        let result = self.run_generate(&request, &request_id, None).await;
+        log_outcome("generate", &request_id, &self.model_for_log(&request), &result, started);
+        result
+    }
+
+    /// Like [`AiService::generate`], but the model call may take `timeout`
+    /// (clamped to 1 s..=1 h) instead of `OLLAMA_TIMEOUT`. For long background
+    /// work, such as PR Bug Check reviews of large diffs on small GPUs.
+    pub async fn generate_with_timeout(
+        &self,
+        request: GenerateRequest,
+        timeout: Duration,
+    ) -> Result<GenerateResponse, AiError> {
+        let started = Instant::now();
+        let request_id = self.resolve_request_id(&request);
+        let timeout = timeout.clamp(MIN_GENERATE_TIMEOUT, MAX_GENERATE_TIMEOUT);
+        let result = self.run_generate(&request, &request_id, Some(timeout)).await;
         log_outcome("generate", &request_id, &self.model_for_log(&request), &result, started);
         result
     }
@@ -463,12 +483,17 @@ impl AiService {
         Ok(())
     }
 
-    async fn run_generate(&self, request: &GenerateRequest, request_id: &str) -> Result<GenerateResponse, AiError> {
+    async fn run_generate(
+        &self,
+        request: &GenerateRequest,
+        request_id: &str,
+        timeout: Option<Duration>,
+    ) -> Result<GenerateResponse, AiError> {
         let (ready, chat) = self.prepare(request, request_id, false)?;
         let guard = self.register(request_id, RequestKind::Generation)?;
         unless_cancelled(&guard.cancel, self.ensure_local_model(ready, &chat.model)).await?;
-        let chunk =
-            ready.client.chat(&chat, ready.config.timeout, &guard.cancel).await.map_err(|err| self.explain(err))?;
+        let timeout = timeout.unwrap_or(ready.config.timeout);
+        let chunk = ready.client.chat(&chat, timeout, &guard.cancel).await.map_err(|err| self.explain(err))?;
         let message = chunk.message.clone().unwrap_or_default();
         Ok(build_response(request_id, &chat.model, message.content, message.thinking.unwrap_or_default(), &chunk))
     }

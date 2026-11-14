@@ -28,6 +28,11 @@ React (src/)  --invoke()-->  Tauri commands (src-tauri/src/lib.rs)
 | `src/ai/types.ts` | TypeScript mirrors of the AI request, response, event and error shapes |
 | `src/ai/AiPanel.tsx` | Minimal test panel for the AI integration: connection, model, download, streaming prompt |
 | `docs/ollama.md` | Setup and developer guide for Ollama + Qwen 3.5 |
+| `src-tauri/src/review/` | PR Bug Check: `gh` CLI access, diff parsing and chunking, the review engine, report store, auto-review watcher and the `bug_check_*` Tauri commands |
+| `src/bugcheck/bugCheckService.ts` | The single frontend entry point for PR Bug Check (typed wrappers around the `bug_check_*` commands and watcher events) |
+| `src/bugcheck/types.ts` | TypeScript mirrors of the PR Bug Check report, finding, event, watcher and error shapes |
+| `src/bugcheck/BugCheckPanel.tsx` | The PR Bug Check panel: open PRs, run and cancel checks, findings, posting, auto review |
+| `docs/pr-bug-check.md` | User and developer guide for PR Bug Check |
 
 ## Prerequisites
 
@@ -208,6 +213,19 @@ Supported resolution is deliberately syntactic and deterministic:
   Rust `ffi::` dispatch, and a matching C symbol.
 - Unsupported or partial parse coverage is reported as incomplete coverage,
   never as a resolved relationship.
+
+## PR Bug Check
+
+PR Bug Check reviews GitHub pull requests for logic bugs, state leaks, unit mismatches, security, concurrency and error-handling bugs with the local Qwen 3.5 model. It shows each finding with an explanation and a suggested fix, and posts the findings you select as inline review comments. Run it per PR from the **PR Bug Check** panel, or turn on auto review to check, while the app runs, open PRs that have no up-to-date check: at first every open PR not checked yet (up to 50), then PRs that are opened or get new commits (posting stays manual unless you turn on auto-post, which never posts the same finding on a PR twice).
+
+PR code is analysed only on this machine; GitHub is reached only through the [GitHub CLI](https://cli.github.com), and only the comments you post are sent to GitHub. It needs the Ollama setup above plus a logged-in `gh`:
+
+```bash
+gh auth login
+npm run tauri:dev
+```
+
+See [docs/pr-bug-check.md](docs/pr-bug-check.md) for how checks and auto review work, what is sent where, posting, limitations, troubleshooting, tests (including a real read-only test) and reuse from TypeScript and Rust.
 
 ## Adding a C function
 

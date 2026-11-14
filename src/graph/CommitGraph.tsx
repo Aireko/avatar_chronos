@@ -7,6 +7,7 @@ import {
 } from "react";
 import type { ChronosGraph } from "../backend";
 import { STATION_R, type GraphLayout } from "./layout";
+import { scopeNoun, type Scope } from "./scope";
 
 export type PanelMode = "details" | "diff" | "rebase";
 
@@ -17,6 +18,9 @@ interface Props {
   panelOpen: boolean;
   onSelect: (hash: string | null) => void;
   onAction: (mode: PanelMode) => void;
+  scope: Scope;
+  gone: Set<string>;
+  currentBranch: string | null;
 }
 
 const R = STATION_R;
@@ -30,7 +34,7 @@ function clampZoom(z: number) {
   return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(z * 100) / 100));
 }
 
-export function CommitGraph({ graph, layout, selected, panelOpen, onSelect, onAction }: Props) {
+export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, currentBranch, onSelect, onAction }: Props) {
   const viewport = useRef<HTMLDivElement>(null);
   const drag = useRef({ moved: false });
   const shownRepo = useRef<string | null>(null);
@@ -188,25 +192,37 @@ export function CommitGraph({ graph, layout, selected, panelOpen, onSelect, onAc
   const ghosts = layout.edges.filter((e) => e.ghost);
 
   const menuNode = selected && !panelOpen ? layout.byHash.get(selected) : undefined;
-  const currentBranch = graph.branches.find((b) => b.isHead)?.name ?? null;
   const menuIsHead = menuNode?.commit.hash === graph.head;
+  const scoped = scope.kind !== "project";
+  const noun = scopeNoun(scope);
+  const menuGone = !!menuNode && gone.has(menuNode.commit.hash);
   const menu: { mode: PanelMode; label: string; disabled: boolean; hint: string }[] = [
     { mode: "details", label: "Details", disabled: false, hint: "Author, date and changed files" },
     {
       mode: "diff",
       label: "Diff",
       disabled: menuIsHead,
-      hint: menuIsHead ? "Nothing newer to compare" : "What your branch changed since this commit",
+      hint: menuIsHead
+        ? "Nothing newer to compare"
+        : scoped
+          ? `What this ${noun} changed since this commit`
+          : "What your branch changed since this commit",
     },
     {
       mode: "rebase",
       label: "Rebase",
-      disabled: menuIsHead || !currentBranch,
+      disabled: menuIsHead || (scoped ? menuGone : !currentBranch),
       hint: menuIsHead
-        ? "You are already on this commit"
-        : currentBranch
-          ? `Rebase ${currentBranch} onto this commit`
-          : "Check out a branch first",
+        ? scoped
+          ? "This is already the latest version"
+          : "You are already on this commit"
+        : scoped
+          ? menuGone
+            ? "It was deleted here"
+            : `Rebase only this ${noun} onto this commit`
+          : currentBranch
+            ? `Rebase ${currentBranch} onto this commit`
+            : "Check out a branch first",
     },
   ];
 

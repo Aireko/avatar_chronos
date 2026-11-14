@@ -1,6 +1,7 @@
 pub mod ai;
 pub mod review;
 mod ffi;
+mod history;
 
 use ffi::BackendError;
 use serde::{Deserialize, Serialize};
@@ -441,6 +442,10 @@ pub fn run() {
             read_repo_file,
             write_repo_file,
             run_shell_command,
+            history::list_files,
+            history::function_versions,
+            history::rebase_file,
+            history::rebase_function,
             compile_views,
             compile_multi_views,
             read_source,

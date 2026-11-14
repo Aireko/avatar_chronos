@@ -257,6 +257,44 @@ export const writeRepoFile = (repoPath: string, relativePath: string, content: s
 /** Runs an arbitrary shell command with cwd set to the open repository. */
 export const runShellCommand = (cwd: string, command: string) =>
   call<ShellCommandResult>("run_shell_command", { cwd, command });
+
+/* ---------- file / function scope ---------- */
+
+export interface ScopedActionResult {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  error: string | null;
+}
+
+export interface FunctionVersions {
+  before: string | null;
+  after: string | null;
+  beforeStart: number;
+  afterStart: number;
+}
+
+export const listFiles = (repoPath: string) => call<string[]>("list_files", { repoPath });
+
+export const functionVersions = (
+  repoPath: string,
+  revision: string,
+  pathAtRevision: string,
+  pathNow: string,
+  functionName: string,
+) => call<FunctionVersions>("function_versions", { repoPath, revision, pathAtRevision, pathNow, functionName });
+
+export const rebaseFile = (repoPath: string, revision: string, pathAtRevision: string, pathNow: string) =>
+  call<ScopedActionResult>("rebase_file", { repoPath, revision, pathAtRevision, pathNow });
+
+export const rebaseFunction = (
+  repoPath: string,
+  revision: string,
+  pathAtRevision: string,
+  pathNow: string,
+  functionName: string,
+) => call<ScopedActionResult>("rebase_function", { repoPath, revision, pathAtRevision, pathNow, functionName });
+
 /* ---------- context compiler views (context_views.h) ---------- */
 
 export type ContextScopeKind = "project" | "module" | "file" | "symbol";

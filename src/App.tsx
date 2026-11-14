@@ -7,6 +7,8 @@ import { CommitGraph, type PanelMode } from "./graph/CommitGraph";
 import { carryIds, layoutGraph } from "./graph/layout";
 import { Terminal } from "./graph/Terminal";
 import "./graph/graph.css";
+import { ScopeBar } from "./graph/ScopeBar";
+import { PROJECT, scopeGraph, scopeKey, type Scope } from "./graph/scope";
 
 type Theme = "paper" | "board";
 
@@ -16,6 +18,7 @@ function App() {
   const [connected, setConnected] = useState<boolean | null>(null);
   const [path, setPath] = useState("");
   const [graph, setGraph] = useState<ChronosGraph>();
+  const [scope, setScope] = useState<Scope>(PROJECT);
   const [selected, setSelected] = useState<string | null>(null);
   const [panel, setPanel] = useState<{ mode: PanelMode; id: number } | null>(null);
   const [showEditor, setShowEditor] = useState(false);
@@ -25,9 +28,10 @@ function App() {
   const [error, setError] = useState("");
   const ids = useRef(new Map<string, string>());
 
+  const scoped = useMemo(() => (graph ? scopeGraph(graph, scope) : null), [graph, scope]);
   const layout = useMemo(
-    () => (graph ? layoutGraph(graph.commits, graph.branches, graph.head, ids.current) : null),
-    [graph],
+    () => (scoped ? layoutGraph(scoped.graph.commits, scoped.graph.branches, scoped.graph.head, ids.current) : null),
+    [scoped],
   );
 
   const selectedNode = selected && layout ? layout.byHash.get(selected) : undefined;
@@ -73,12 +77,21 @@ function App() {
         setGraph(next);
         setSelected(null);
         setPanel(null);
+        setScope(PROJECT);
       }
     } catch (e) {
       setError(errorMessage(e));
     } finally {
       setLoading(false);
     }
+  }
+
+  function changeScope(next: Scope) {
+    setScope(next);
+    setSelected(null);
+    setPanel(null);
+    setShowEditor(false);
+    setDiffCompare(null);
   }
 
   /** Clicking a commit shows its action bar; the details panel only opens from that bar. */
@@ -196,6 +209,7 @@ function App() {
             Open
           </button>
         </form>
+        <ScopeBar graph={graph} scope={scope} onChange={changeScope} />
 
         <button
           className="btn"
@@ -223,10 +237,10 @@ function App() {
 
       <main className="stage">
         <div className="workspace">
-          {graph && layout && showEditor ? (
+          {graph && layout && scoped && showEditor ? (
             <CodeEditor
               repoPath={graph.repoPath}
-              graph={graph}
+              graph={scoped.graph}
               layout={layout}
               selected={selected}
               compare={diffCompare}
@@ -234,15 +248,26 @@ function App() {
               onCompare={setDiffCompare}
               onClose={closeEditor}
             />
-          ) : graph && layout ? (
-            <CommitGraph
-              graph={graph}
-              layout={layout}
-              selected={selected}
-              panelOpen={panel !== null}
-              onSelect={pick}
-              onAction={(mode) => setPanel({ mode, id: Date.now() })}
-            />
+          ) : graph && layout && scoped ? (
+            layout.nodes.length === 0 ? (
+              <div className="empty">
+                <h1>Nothing here</h1>
+                <p>No loaded commit touches this {scope.kind}.</p>
+              </div>
+            ) : (
+              <CommitGraph
+                key={scopeKey(scope)}
+                graph={scoped.graph}
+                layout={layout}
+                selected={selected}
+                panelOpen={panel !== null}
+                scope={scope}
+                gone={scoped.gone}
+                currentBranch={currentBranch}
+                onSelect={pick}
+                onAction={(mode) => setPanel({ mode, id: Date.now() })}
+              />
+            )
           ) : (
             <div className="empty">
               <h1>Open a repository</h1>
@@ -250,15 +275,19 @@ function App() {
             </div>
           )}
 
-          {graph && layout && selectedNode && panel && !showEditor && (
+          {graph && layout && scoped && selectedNode && panel && !showEditor && (
             <CommitDetails
               key={`${selectedNode.commit.hash}:${panel.id}`}
               start={panel.mode}
               repoPath={graph.repoPath}
-              graph={graph}
+              graph={scoped.graph}
               layout={layout}
               commit={selectedNode.commit}
               lane={layout.lanes[selectedNode.lane]}
+              scope={scope}
+              pathAtCommit={scoped.pathAt.get(selectedNode.commit.hash)}
+              removed={scoped.gone.has(selectedNode.commit.hash)}
+              currentBranch={currentBranch}
               onGraphChange={applyGraph}
               onSelect={(hash) => {
                 setSelected(hash);
@@ -306,7 +335,9 @@ function App() {
               {graph.repoPath}
             </span>
             <span>{currentBranch ? `On ${currentBranch}` : "Detached HEAD"}</span>
-            <span>{graph.commits.length} commits</span>
+            <span>
+              {scoped?.graph.commits.length ?? 0} commits{scope.kind !== "project" ? ` touching this ${scope.kind}` : ""}
+            </span>
             <span>{graph.branches.length} branches</span>
           </>
         ) : (

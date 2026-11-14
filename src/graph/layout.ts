@@ -12,7 +12,7 @@ export const PAD_B = 84;
 const CORRIDOR = 84; // lines may only turn up/down this far from a column centre...
 const CORRIDOR_STEP = 12; // ...or one step further, so two turns never share a path
 const CORNER = 30; // how wide a turn sweeps
-const WOBBLE = 2.2; // how far a "straight" pen stroke may drift, in pixels
+const WOBBLE = 0; // how far a "straight" pen stroke may drift, in pixels
 const MAX_LABEL_W = 140; // commit messages stay narrower than the corridor
 const MAX_FLAG_W = 120; // so do branch names
 
@@ -309,7 +309,7 @@ function straight(p: GraphNode, c: GraphNode, rnd: () => number): string {
 function elbow(p: GraphNode, c: GraphNode, xv: number, rnd: () => number): string {
   const s = c.y > p.y ? 1 : -1;
   const r = Math.min(CORNER, Math.abs(c.y - p.y) / 2);
-  const x = xv + rnd() * 2; // the pen never lands on exactly the same spot
+  const x = xv;
   return [
     `M ${p.x} ${p.y}`,
     bow(p.x, p.y, x - r, p.y, rnd),

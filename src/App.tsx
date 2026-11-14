@@ -42,7 +42,9 @@ import { FindBar } from "./graph/FindBar";
 import { findJumpTarget, findMatches, stepMatch } from "./graph/findCommits";
 import { carryIds, layoutGraph } from "./graph/layout";
 import { Terminal } from "./graph/Terminal";
+import { CallGraphView } from "./graph/CallGraphView";
 import { ScopeBar } from "./graph/ScopeBar";
+import { FunctionViewSwitch, callsOffReason, type FunctionView } from "./graph/FunctionViewSwitch";
 import { BranchSwitcher } from "./push/BranchSwitcher";
 import { PushPanel } from "./push/PushPanel";
 import { PROJECT, scopeGraph, scopeKey, type Scope } from "./graph/scope";
@@ -190,6 +192,7 @@ function App() {
   const [path, setPath] = useState("");
   const [graph, setGraph] = useState<ChronosGraph>();
   const [scope, setScope] = useState<Scope>(PROJECT);
+  const [functionView, setFunctionView] = useState<FunctionView>("history");
   const [selected, setSelected] = useState<string | null>(null);
   // `focus`: the ticket takes the keyboard when it opens (not while arrow keys walk the map).
   const [panel, setPanel] = useState<{ mode: PanelMode; id: number; focus: boolean } | null>(null);
@@ -421,8 +424,12 @@ function App() {
   const currentBranch = graph?.branches.find((b) => b.isHead)?.name ?? null;
   const repoLabel = graph?.repoPath.split(/[/\\]/).filter(Boolean).pop() || graph?.repoPath || "repo";
 
+  // The call map replaces the commit map while a function is in scope and "Calls" is chosen.
+  const callsShown = Boolean(graph?.head && scope.kind === "function" && functionView === "calls" && !showContext);
   // The map is on screen (not the editor, not an empty scope): find and the author chip live on it.
-  const mapShown = Boolean(graph && layout && scoped && !showEditor && !showContext && layout.nodes.length > 0);
+  const mapShown = Boolean(
+    graph && layout && scoped && !showEditor && !showContext && !callsShown && layout.nodes.length > 0,
+  );
   const findShown = findOpen && mapShown;
   // Matches among the commits in view, newest first like the history itself.
   // Deferred, so typing stays quick on a big history: the scan, the marks and the jump to
@@ -609,6 +616,7 @@ function App() {
           setSelected(null);
           setPanel(null);
           setScope(PROJECT);
+          setFunctionView("history");
           setHighlightAuthor(null);
           setEditorStart(null);
           setPaused(null);
@@ -650,6 +658,11 @@ function App() {
   function changeScope(next: Scope) {
     const go = () => {
       setScope(next);
+      // Picking another function keeps the call map open; any other scope, or a function
+      // whose file has no call map (where Calls is off), goes back to history.
+      if (next.kind !== "function" || callsOffReason(Boolean(graphRef.current?.head), next.path) !== null) {
+        setFunctionView("history");
+      }
       setSelected(null);
       setPanel(null);
       if (showEditorRef.current) closeEditorNow();
@@ -859,9 +872,9 @@ function App() {
   }
 
   // Esc closes the commit panel, then a tool, the editor (asking about unsaved edits), the
-  // find bar, the terminal, the context view, then clears the author highlight, and finally
-  // the selection; inside the find bar, it closes the find bar first. Arrow keys move along
-  // the branch.
+  // find bar, the terminal, the context view, goes from the call map back to the history,
+  // then clears the author highlight, and finally the selection; inside the find bar, it
+  // closes the find bar first. Arrow keys move along the branch (not on the call map).
 
   // Ctrl+F opens the find bar, Ctrl+E toggles the editor and Ctrl+` the terminal.
   useEffect(() => {
@@ -937,6 +950,7 @@ function App() {
         else if (findShown) closeFind();
         else if (showTerminal) closeTerminal();
         else if (showContext) closeContext();
+        else if (callsShown) closeCalls();
         else if (highlightAuthor !== null) {
           // On the chip's own ×, focus would drop to the page as the chip goes; anywhere
           // else (the map), it stays where it is.
@@ -948,7 +962,7 @@ function App() {
 
       // The map may handle its own arrow keys; then there is nothing left to do here.
       if (e.defaultPrevented) return;
-      if (tool || showEditor || showContext || !layout || !selected) return;
+      if (tool || showEditor || showContext || callsShown || !layout || !selected) return;
 
       const node = layout.byHash.get(selected);
       if (!node) return;
@@ -998,6 +1012,7 @@ function App() {
     showEditor,
     showTerminal,
     showContext,
+    callsShown,
     findOpen,
     findShown,
     mapShown,
@@ -1052,6 +1067,30 @@ function App() {
   function closeContext() {
     setShowContext(false);
     returnFocus("context", () => contextKey.current);
+  }
+
+  /**
+   * History | Calls for the function in scope (the switch on the stage). Either one takes
+   * the stage, so the editor (after asking about unsaved edits) and the context view make
+   * way, should either be up; the switch itself is only shown when they are not. The
+   * keyboard stays on the tab. The call map has no commit ticket, so choosing it closes it.
+   */
+  function changeFunctionView(next: FunctionView) {
+    const go = () => {
+      if (showEditorRef.current) closeEditorNow(false);
+      setShowContext(false);
+      openers.current.context = null;
+      if (next === "calls") setPanel(null);
+      setFunctionView(next);
+    };
+    if (showEditor) guardEditor(LEAVE_CLOSE, go);
+    else go();
+  }
+
+  /** Back from the call map to the function's history; the keyboard goes to the Calls tab. */
+  function closeCalls() {
+    setFunctionView("history");
+    focusLater(() => document.querySelector(".view-switch-pop:not(.is-leaving) .view-calls") ?? pathInputEl());
   }
 
   /** The context view takes the map's place (closing the editor, after asking, and the terminal). */
@@ -1123,6 +1162,9 @@ function App() {
   // While the drawer slides away (or waits, closed) it keeps the last tool's band.
   const drawerTool = TOOLS.find((t) => t.id === (tool ?? lastTool));
   const editorUp = Boolean(graph && layout && scoped && showEditor);
+  // History | Calls sits on the stage while a function's history or call map is there
+  // (not over the editor or the context view, which have the stage to themselves).
+  const viewSwitchUp = Boolean(graph && layout && scoped && scope.kind === "function" && !showEditor && !showContext);
 
   return (
     <div className="app" data-theme={theme}>
@@ -1330,12 +1372,34 @@ function App() {
           {/* The graph, context compiler, or code editor; the editor overlays only
               this area, so a tool drawer beside it stays visible. */}
           <div className="workspace-main">
+          {/* History | Calls for the function in scope, in the top-left corner of the stage.
+              First in the page, so Tab reaches it before the history or call map it
+              switches (as it reads), not after every box on the call map. */}
+          <Presence show={viewSwitchUp} className="view-switch-pop" exitMs={140}>
+            {graph && scope.kind === "function" && (
+              <FunctionViewSwitch
+                view={functionView}
+                onViewChange={changeFunctionView}
+                callsOff={callsOffReason(Boolean(graph.head), scope.path)}
+              />
+            )}
+          </Presence>
+
           {graph && showContext ? (
             <div className="context-panel">
               <ContextViewsPanel key={graph.repoPath} repoPath={graph.repoPath} />
             </div>
           ) : graph && layout && scoped ? (
-            showEditor ? null : layout.nodes.length === 0 ? (
+            showEditor ? null : callsShown && scope.kind === "function" && graph.head ? (
+              <CallGraphView
+                key={`${scopeKey(scope)}@${graph.head}`}
+                repoPath={graph.repoPath}
+                revision={graph.head}
+                path={scope.path}
+                name={scope.name}
+                onClose={closeCalls}
+              />
+            ) : layout.nodes.length === 0 ? (
               <div key={scopeKey(scope)} className="empty shell-empty">
                 <EmptyScopeDoodle />
                 <h1>Nothing here</h1>

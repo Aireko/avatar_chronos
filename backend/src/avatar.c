@@ -3213,6 +3213,425 @@ void chronos_views_close(uint64_t handle)
     g_view_sessions[slot] = NULL;
 }
 
+/* ========================================================================== */
+/* Call tree: bounded caller/callee neighborhood of one function              */
+/* ========================================================================== */
+
+#define CT_MAX_SITES 8
+#define CT_MAX_CANDIDATES 16
+#define CT_DEFAULT_DEPTH 2
+#define CT_MAX_DEPTH 6
+#define CT_DEFAULT_NODES 48
+#define CT_MAX_NODES 256
+#define CT_MAX_EDGES 1024
+#define CT_NONE ((size_t)-1)
+
+enum { CT_ROOT = 0, CT_CALLER = 1, CT_CALLEE = 2 };
+
+typedef struct {
+    size_t scope;   /* Index scope ID of the symbol. */
+    int side;       /* CT_ROOT, CT_CALLER or CT_CALLEE. */
+    size_t depth;   /* Root is zero. */
+    size_t parent;  /* Node index this one was reached from, or CT_NONE. */
+    int has_more;   /* Neighbors exist that the depth or node cap left out. */
+} ct_node_t;
+
+typedef struct {
+    size_t from;    /* Node index of the caller. */
+    size_t to;      /* Node index of the callee; CT_NONE for unresolved/ambiguous. */
+    int side;
+    const GraphCall* call; /* First call folded into this edge. */
+    size_t count;
+    const SourceLocation* sites[CT_MAX_SITES];
+    size_t site_count;
+} ct_edge_t;
+
+typedef struct {
+    ct_node_t* nodes;
+    size_t node_count;
+    ct_edge_t* edges;
+    size_t edge_count;
+    int edges_truncated;
+} ct_state_t;
+
+static size_t ct_find_node(const ct_state_t* st, size_t scope, int side)
+{
+    for (size_t i = 0; i < st->node_count; ++i)
+        if (st->nodes[i].scope == scope &&
+            (st->nodes[i].side == side || st->nodes[i].side == CT_ROOT)) return i;
+    return CT_NONE;
+}
+
+static size_t ct_add_node(ct_state_t* st, size_t scope, int side, size_t depth, size_t parent)
+{
+    size_t at = st->node_count++;
+    st->nodes[at] = (ct_node_t){scope, side, depth, parent, 0};
+    return at;
+}
+
+/* Calls between the same two nodes fold into one edge that counts them. */
+static void ct_add_edge(ct_state_t* st, size_t from, size_t to, int side, const GraphCall* call)
+{
+    for (size_t i = 0; i < st->edge_count; ++i) {
+        ct_edge_t* e = &st->edges[i];
+        if (e->from != from || e->to != to || e->side != side) continue;
+        if (to == CT_NONE && (e->call->resolution != call->resolution ||
+                              strcmp(e->call->callee_text, call->callee_text) != 0)) continue;
+        ++e->count;
+        if (e->site_count < CT_MAX_SITES) e->sites[e->site_count++] = &call->call_site;
+        return;
+    }
+    if (st->edge_count >= CT_MAX_EDGES) { st->edges_truncated = 1; return; }
+    ct_edge_t* e = &st->edges[st->edge_count++];
+    *e = (ct_edge_t){from, to, side, call, 1, {NULL}, 0};
+    e->sites[e->site_count++] = &call->call_site;
+}
+
+/* Breadth-first walk of one side. Callers follow resolved incoming links;
+ * callees follow outgoing links and also keep unresolved and ambiguous calls
+ * as edges without a target. A self-call is reported once, on the callee side. */
+static void ct_walk(ct_state_t* st, const IndexCallLink* links, size_t link_count,
+                    int side, size_t max_depth, size_t max_nodes)
+{
+    for (size_t i = 0; i < st->node_count; ++i) {
+        if (i != 0 && st->nodes[i].side != side) continue;
+        size_t scope = st->nodes[i].scope;
+        size_t depth = st->nodes[i].depth;
+        for (size_t k = 0; k < link_count; ++k) {
+            const IndexCallLink* link = &links[k];
+            if (link->caller == INDEX_NO_SCOPE) continue;
+            if (side == CT_CALLEE) {
+                if (link->caller != scope) continue;
+                if (link->callee == INDEX_NO_SCOPE) {
+                    ct_add_edge(st, i, CT_NONE, side, link->call);
+                    continue;
+                }
+            } else if (link->callee != scope || link->caller == scope) {
+                continue;
+            }
+            size_t neighbor = side == CT_CALLEE ? link->callee : link->caller;
+            size_t at = ct_find_node(st, neighbor, side);
+            if (at == CT_NONE) {
+                if (depth >= max_depth || st->node_count >= max_nodes) {
+                    st->nodes[i].has_more = 1;
+                    continue;
+                }
+                at = ct_add_node(st, neighbor, side, depth + 1, i);
+            }
+            if (side == CT_CALLEE) ct_add_edge(st, i, at, side, link->call);
+            else ct_add_edge(st, at, i, side, link->call);
+        }
+    }
+}
+
+typedef struct {
+    const GraphSymbol* items[CT_MAX_CANDIDATES];
+    size_t count; /* Stored. */
+    size_t total; /* Found, which can exceed the stored count. */
+} ct_targets_t;
+
+/* Definitions of functions and methods in `path`. An exact qualified name wins;
+ * otherwise the short name is tried, because the history view only knows that.
+ * A nonzero `line` keeps only the definition that starts on that line. */
+static void ct_find_targets(const RepositoryIndex* index, const char* path, const char* name,
+                            size_t line, ct_targets_t* out)
+{
+    size_t scope_count = 0;
+    const IndexScope* scopes = index_scopes(index, &scope_count);
+    memset(out, 0, sizeof *out);
+    for (int pass = 0; pass < 2 && out->total == 0; ++pass) {
+        for (size_t i = 0; i < scope_count; ++i) {
+            const GraphSymbol* symbol = scopes[i].kind == INDEX_SYMBOL ? scopes[i].symbol : NULL;
+            if (!symbol || symbol->form != PARSER_DEFINITION || symbol->kind == PARSER_CLASS) continue;
+            if (strcmp(symbol->location.file_path, path) != 0) continue;
+            if (line != 0 && symbol->location.range.start_line != line) continue;
+            if (strcmp(pass == 0 ? symbol->qualified_name : symbol->name, name) != 0) continue;
+            if (out->count < CT_MAX_CANDIDATES) out->items[out->count++] = symbol;
+            ++out->total;
+        }
+    }
+}
+
+static const char* ct_kind_name(ParserSymbolKind kind)
+{
+    return kind == PARSER_METHOD ? "method" : kind == PARSER_CLASS ? "class" : "function";
+}
+
+static const char* ct_side_name(int side)
+{
+    return side == CT_CALLER ? "caller" : side == CT_CALLEE ? "callee" : "root";
+}
+
+static void ct_json_symbol_fields(sbuf_t* b, const GraphSymbol* symbol)
+{
+    sb_puts(b, "\"symbol\":");
+    json_ref(b, &symbol->ref);
+    sb_puts(b, ",\"name\":");
+    json_str(b, symbol->name);
+    sb_puts(b, ",\"qualifiedName\":");
+    json_str(b, symbol->qualified_name);
+    sb_puts(b, ",\"kind\":");
+    json_str(b, ct_kind_name(symbol->kind));
+    sb_puts(b, ",\"filePath\":");
+    json_str(b, symbol->location.file_path);
+    sb_puts(b, ",\"startLine\":");
+    sb_put_i64(b, (long long)symbol->location.range.start_line);
+    sb_puts(b, ",\"endLine\":");
+    sb_put_i64(b, (long long)symbol->location.range.end_line);
+    sb_puts(b, ",\"startByte\":");
+    sb_put_i64(b, (long long)symbol->location.range.start_byte);
+    sb_puts(b, ",\"endByte\":");
+    sb_put_i64(b, (long long)symbol->location.range.end_byte);
+}
+
+static void ct_json_head(sbuf_t* b, const char* status, const RevisionRef* revision)
+{
+    sb_puts(b, "{\"schemaVersion\":1,\"status\":");
+    json_str(b, status);
+    sb_puts(b, ",\"revision\":");
+    json_revision(b, revision);
+}
+
+static void ct_json_tree(sbuf_t* b, const RepositoryIndex* index, const ct_state_t* st,
+                         size_t max_depth, size_t max_nodes)
+{
+    size_t scope_count = 0;
+    const IndexScope* scopes = index_scopes(index, &scope_count);
+    int truncated = st->edges_truncated;
+    for (size_t i = 0; i < st->node_count; ++i) truncated = truncated || st->nodes[i].has_more;
+
+    ct_json_head(b, "ok", index_revision(index));
+    sb_puts(b, ",\"maxDepth\":");
+    sb_put_i64(b, (long long)max_depth);
+    sb_puts(b, ",\"maxNodes\":");
+    sb_put_i64(b, (long long)max_nodes);
+    sb_puts(b, ",\"truncated\":");
+    json_bool(b, truncated);
+    sb_puts(b, ",\"coverage\":");
+    json_str(b, index_call_coverage(index) == CHRONOS_COMPLETE ? "complete" : "incomplete");
+    sb_puts(b, ",\"root\":\"n0\",\"nodes\":[");
+    for (size_t i = 0; i < st->node_count; ++i) {
+        const ct_node_t* n = &st->nodes[i];
+        if (i) sb_putc(b, ',');
+        sb_puts(b, "{\"id\":\"n");
+        sb_put_i64(b, (long long)i);
+        sb_puts(b, "\",\"side\":");
+        json_str(b, ct_side_name(n->side));
+        sb_puts(b, ",\"depth\":");
+        sb_put_i64(b, (long long)n->depth);
+        sb_puts(b, ",\"parent\":");
+        if (n->parent == CT_NONE) {
+            sb_puts(b, "null");
+        } else {
+            sb_puts(b, "\"n");
+            sb_put_i64(b, (long long)n->parent);
+            sb_putc(b, '"');
+        }
+        sb_puts(b, ",\"hasMore\":");
+        json_bool(b, n->has_more);
+        sb_putc(b, ',');
+        ct_json_symbol_fields(b, scopes[n->scope].symbol);
+        sb_putc(b, '}');
+    }
+    sb_puts(b, "],\"edges\":[");
+    for (size_t i = 0; i < st->edge_count; ++i) {
+        const ct_edge_t* e = &st->edges[i];
+        const GraphCall* call = e->call;
+        if (i) sb_putc(b, ',');
+        sb_puts(b, "{\"id\":\"e");
+        sb_put_i64(b, (long long)i);
+        sb_puts(b, "\",\"from\":\"n");
+        sb_put_i64(b, (long long)e->from);
+        sb_puts(b, "\",\"to\":");
+        if (e->to == CT_NONE) {
+            sb_puts(b, "null");
+        } else {
+            sb_puts(b, "\"n");
+            sb_put_i64(b, (long long)e->to);
+            sb_putc(b, '"');
+        }
+        sb_puts(b, ",\"side\":");
+        json_str(b, ct_side_name(e->side));
+        sb_puts(b, ",\"state\":");
+        json_str(b, call->resolution == CALL_RESOLVED ? "resolved"
+                    : call->resolution == CALL_AMBIGUOUS ? "ambiguous" : "unresolved");
+        sb_puts(b, ",\"calleeText\":");
+        json_str(b, call->callee_text);
+        sb_puts(b, ",\"callCount\":");
+        sb_put_i64(b, (long long)e->count);
+        sb_puts(b, ",\"callSites\":[");
+        for (size_t s = 0; s < e->site_count; ++s) {
+            if (s) sb_putc(b, ',');
+            json_location(b, e->sites[s]);
+        }
+        sb_puts(b, "],\"candidateCount\":");
+        sb_put_i64(b, (long long)call->candidate_count);
+        sb_puts(b, ",\"candidates\":[");
+        size_t shown = 0;
+        for (size_t c = 0; c < call->candidate_count && shown < CT_MAX_CANDIDATES; ++c) {
+            size_t at = index_find_symbol(index, &call->candidates[c]);
+            if (at == INDEX_NO_SCOPE || !scopes[at].symbol) continue;
+            if (shown++) sb_putc(b, ',');
+            sb_putc(b, '{');
+            ct_json_symbol_fields(b, scopes[at].symbol);
+            sb_putc(b, '}');
+        }
+        sb_puts(b, "]}");
+    }
+    sb_puts(b, "]}");
+}
+
+/* One index is kept between calls, keyed by repository and resolved commit, so
+ * opening the map, re-centering it and expanding nodes do not re-parse the repo.
+ * Calls are serialized by the Rust backend lock, like the view sessions. */
+static struct {
+    char* top;
+    char* sha;
+    RepositoryIndex* index;
+} g_ct_cache;
+
+static void ct_cache_clear(void)
+{
+    free(g_ct_cache.top);
+    free(g_ct_cache.sha);
+    if (g_ct_cache.index) index_free(g_ct_cache.index);
+    memset(&g_ct_cache, 0, sizeof g_ct_cache);
+}
+
+/* On success *out is borrowed from the cache and valid until the next call. */
+static int ct_get_index(const char* repo_path, const char* revision, RepositoryIndex** out)
+{
+    char* top = NULL;
+    RevisionRef resolved;
+    RepositoryIndex* index = NULL;
+    int rc = resolve_repo(repo_path, &top);
+    if (rc != CHRONOS_OK) return rc;
+    memset(&resolved, 0, sizeof resolved);
+    GitRepository repo = {top, top};
+    rc = git_resolve_revision(&repo, revision, &resolved);
+    if (rc < 0) {
+        set_error("cannot resolve revision (status %d)", rc);
+        free(top);
+        return rc;
+    }
+    if (g_ct_cache.index && strcmp(g_ct_cache.top, top) == 0 &&
+        strcmp(g_ct_cache.sha, resolved.commit_sha) == 0) {
+        free(top);
+        git_revision_free(&resolved);
+        *out = g_ct_cache.index;
+        return CHRONOS_OK;
+    }
+    rc = index_build_revision(&repo, resolved.commit_sha, &index);
+    if (rc < 0) {
+        set_error("index build failed (status %d)", rc);
+        free(top);
+        git_revision_free(&resolved);
+        return rc;
+    }
+    char* sha = xstrdup(resolved.commit_sha);
+    git_revision_free(&resolved);
+    if (!sha) {
+        index_free(index);
+        free(top);
+        return nomem();
+    }
+    ct_cache_clear();
+    g_ct_cache.top = top;
+    g_ct_cache.sha = sha;
+    g_ct_cache.index = index;
+    *out = index;
+    return CHRONOS_OK;
+}
+
+int chronos_call_tree(const char* repo_path,
+                      const char* revision,
+                      const char* path,
+                      const char* name,
+                      size_t max_depth,
+                      size_t max_nodes,
+                      char** out_json)
+{
+    RepositoryIndex* index = NULL;
+    char* file = NULL;
+    char* wanted = NULL;
+    size_t line = 0;
+    ct_state_t st;
+    ct_targets_t targets;
+    sbuf_t j = {0};
+    int rc;
+
+    clear_error();
+    memset(&st, 0, sizeof st);
+    if (!out_json) { set_error("out_json is required"); return CHRONOS_ERR_ARGS; }
+    *out_json = NULL;
+    if (!revision || !*revision) revision = "HEAD";
+    if (!validate_revision(revision)) return CHRONOS_ERR_ARGS;
+    if (!name || !*name) { set_error("name is required"); return CHRONOS_ERR_ARGS; }
+    file = normalize_repo_file(path);
+    if (!file) return CHRONOS_ERR_ARGS;
+    wanted = xstrdup(name);
+    if (!wanted) { free(file); return nomem(); }
+    {
+        /* "name#12" picks the definition that starts on line 12. */
+        char* hash = strrchr(wanted, '#');
+        if (hash && hash != wanted && hash[1] != '\0') {
+            char* end = NULL;
+            unsigned long value = strtoul(hash + 1, &end, 10);
+            if (end && *end == '\0') {
+                line = (size_t)value;
+                *hash = '\0';
+            }
+        }
+    }
+    if (max_depth == 0) max_depth = CT_DEFAULT_DEPTH;
+    if (max_depth > CT_MAX_DEPTH) max_depth = CT_MAX_DEPTH;
+    if (max_nodes == 0) max_nodes = CT_DEFAULT_NODES;
+    if (max_nodes > CT_MAX_NODES) max_nodes = CT_MAX_NODES;
+
+    rc = ct_get_index(repo_path, revision, &index);
+    if (rc != CHRONOS_OK) goto done;
+
+    ct_find_targets(index, file, wanted, line, &targets);
+    if (targets.total != 1) {
+        ct_json_head(&j, targets.total == 0 ? "not_found" : "ambiguous", index_revision(index));
+        sb_puts(&j, ",\"candidates\":[");
+        for (size_t i = 0; i < targets.count; ++i) {
+            if (i) sb_putc(&j, ',');
+            sb_putc(&j, '{');
+            ct_json_symbol_fields(&j, targets.items[i]);
+            sb_putc(&j, '}');
+        }
+        sb_puts(&j, "]}");
+    } else {
+        size_t link_count = 0;
+        const IndexCallLink* links = index_call_links(index, &link_count);
+        size_t root = index_find_symbol(index, &targets.items[0]->ref);
+        st.nodes = (ct_node_t*)calloc(max_nodes, sizeof *st.nodes);
+        st.edges = (ct_edge_t*)calloc(CT_MAX_EDGES, sizeof *st.edges);
+        if (root == INDEX_NO_SCOPE || !st.nodes || !st.edges) {
+            rc = root == INDEX_NO_SCOPE ? CHRONOS_ERR_ARGS : nomem();
+            if (root == INDEX_NO_SCOPE) set_error("symbol is not in the index");
+            goto done;
+        }
+        ct_add_node(&st, root, CT_ROOT, 0, CT_NONE);
+        ct_walk(&st, links, link_count, CT_CALLER, max_depth, max_nodes);
+        ct_walk(&st, links, link_count, CT_CALLEE, max_depth, max_nodes);
+        ct_json_tree(&j, index, &st, max_depth, max_nodes);
+    }
+    if (j.oom || !j.data) { rc = nomem(); goto done; }
+    *out_json = j.data;
+    j.data = NULL;
+    rc = CHRONOS_OK;
+
+done:
+    sb_free(&j);
+    free(st.nodes);
+    free(st.edges);
+    free(wanted);
+    free(file);
+    return rc;
+}
+
 int chronos_read_source(const char* repo_path,
                         const char* revision,
                         const char* file_path,

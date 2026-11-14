@@ -1,0 +1,316 @@
+/* The call map. Same paper, ink and marker-pen palette as the commit map, so it flips with the theme. */
+.calls {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper);
+  color: var(--ink);
+  text-align: left;
+}
+
+.calls-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 16px;
+  border-bottom: 2px solid var(--ink);
+}
+.calls-title {
+  font-family: var(--mono);
+  font-size: 16px;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.calls-rev {
+  padding: 1px 8px;
+  border: 2px dashed var(--pen-2);
+  border-radius: var(--sketch);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.calls-depth {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.calls-depth-label {
+  margin-right: 2px;
+  color: var(--soft);
+  font-size: 15px;
+}
+.calls-depth .btn {
+  min-width: 32px;
+  padding-inline: 8px;
+}
+.calls-depth .btn[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--paper);
+}
+.calls-summary {
+  color: var(--soft);
+  font-size: 15px;
+}
+.calls-history {
+  margin-left: auto;
+}
+
+.calls-notes p {
+  margin: 0;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--grid-strong);
+  background: var(--wash);
+  font-size: 15px;
+}
+.calls-notes:empty {
+  display: none;
+}
+
+.calls-canvas {
+  flex: 1 1 60%;
+  min-height: 180px;
+  overflow: auto;
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+.calls-svg {
+  display: block;
+}
+
+.calls-head {
+  fill: var(--soft);
+  font-family: var(--hand);
+  font-size: 18px;
+}
+
+/* ---------- boxes ---------- */
+.calls-node,
+.calls-ghost,
+.calls-edge {
+  cursor: pointer;
+  outline: none;
+}
+.calls-box {
+  fill: var(--paper);
+  stroke: var(--ink);
+  stroke-width: 2;
+}
+.calls-node.root .calls-box {
+  fill: var(--highlight);
+  stroke-width: 3;
+}
+.calls-node:hover .calls-box {
+  fill: var(--wash);
+}
+.calls-node.root:hover .calls-box {
+  fill: var(--highlight);
+}
+.calls-name {
+  fill: var(--ink);
+  font-family: var(--hand);
+  font-size: 18px;
+}
+.calls-file {
+  fill: var(--soft);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.calls-node.picked .calls-box,
+.calls-ghost.picked .calls-box {
+  stroke: var(--pen-2);
+  stroke-width: 3.5;
+}
+.calls-node:focus-visible .calls-box,
+.calls-ghost:focus-visible .calls-box {
+  stroke: var(--pen-2);
+  stroke-dasharray: 6 4;
+  stroke-width: 3;
+}
+
+/* A call the index could not tie to one function: dashed, so it reads as "unknown", not as a link. */
+.calls-ghost .calls-box {
+  fill: transparent;
+  stroke: var(--soft);
+  stroke-dasharray: 6 5;
+}
+.calls-ghost:hover .calls-box {
+  fill: var(--wash);
+}
+.calls-ghost-name {
+  fill: var(--ink);
+  font-family: var(--mono);
+  font-size: 14px;
+}
+
+.calls-more circle {
+  fill: var(--paper);
+  stroke: var(--ink);
+  stroke-width: 2;
+}
+.calls-more text {
+  fill: var(--ink);
+  font-family: var(--hand);
+  font-size: 16px;
+  pointer-events: none;
+}
+
+/* ---------- arrows ---------- */
+.calls-line {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.calls-edge.back .calls-line,
+.calls-edge.ghost .calls-line {
+  stroke: var(--soft);
+  stroke-dasharray: 6 5;
+}
+.calls-edge:hover .calls-line {
+  stroke-width: 3;
+}
+.calls-edge.picked .calls-line {
+  stroke: var(--pen-2);
+  stroke-width: 3;
+  stroke-dasharray: none;
+}
+.calls-edge:focus-visible .calls-line {
+  stroke: var(--pen-2);
+  stroke-width: 3;
+}
+/* A wide invisible stroke, so a thin line is easy to click. */
+.calls-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14;
+  pointer-events: stroke;
+}
+.calls-count {
+  fill: var(--ink);
+  font-family: var(--mono);
+  font-size: 12px;
+  paint-order: stroke;
+  stroke: var(--paper);
+  stroke-width: 4px;
+  pointer-events: none;
+}
+.calls-arrow-ink {
+  fill: var(--ink);
+}
+.calls-arrow-soft {
+  fill: var(--soft);
+}
+.calls-arrow-pen {
+  fill: var(--pen-2);
+}
+
+/* ---------- states ---------- */
+.calls-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 640px;
+  margin: 0;
+  padding: 24px;
+  font-size: 18px;
+}
+.calls-state p {
+  margin: 0;
+}
+.calls-bad {
+  color: var(--bad);
+}
+.calls-quiet {
+  color: var(--soft);
+  font-size: 15px;
+}
+.calls-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--pen-2);
+  animation: calls-pulse 1s ease-in-out infinite;
+}
+@keyframes calls-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+.calls-choices {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.calls code {
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+/* ---------- selection details ---------- */
+.calls-detail {
+  flex: 0 1 auto;
+  max-height: 42%;
+  overflow: auto;
+  padding: 10px 16px 14px;
+  border-top: 2.5px solid var(--ink);
+  background: var(--paper);
+}
+.calls-detail-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+.calls-close {
+  margin-left: auto;
+}
+.calls-edge-info p {
+  margin: 6px 0 0;
+}
+.calls-source {
+  margin: 10px 0 0;
+  padding: 8px 0;
+  overflow: auto;
+  border: 2px solid var(--grid-strong);
+  border-radius: 8px;
+  background: var(--wash);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  tab-size: 4;
+}
+.calls-line-row {
+  display: block;
+  padding-right: 12px;
+  white-space: pre;
+}
+.calls-line-row.hit {
+  background: var(--highlight);
+  box-shadow: inset 4px 0 0 var(--pen-2);
+}
+.calls-gutter {
+  display: inline-block;
+  width: 3.5em;
+  padding-right: 10px;
+  color: var(--soft);
+  text-align: right;
+  user-select: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .calls-dot {
+    animation: none;
+  }
+}

@@ -2600,6 +2600,137 @@ static const GraphSymbol* find_views_symbol(const RepositoryIndex* index,
     return found;
 }
 
+static void json_revision(sbuf_t* b, const RevisionRef* revision)
+{
+    sb_puts(b, "{\"repositoryId\":");
+    json_str(b, revision->repository_id);
+    sb_puts(b, ",\"commitSha\":");
+    json_str(b, revision->commit_sha);
+    sb_putc(b, '}');
+}
+
+static void json_ref(sbuf_t* b, const SymbolVersionRef* ref)
+{
+    if (!ref) { sb_puts(b, "null"); return; }
+    sb_puts(b, "{\"revision\":");
+    json_revision(b, &ref->revision);
+    sb_puts(b, ",\"id\":");
+    json_str(b, ref->id);
+    sb_putc(b, '}');
+}
+
+static void json_location(sbuf_t* b, const SourceLocation* location)
+{
+    if (!location) { sb_puts(b, "null"); return; }
+    sb_puts(b, "{\"revision\":");
+    json_revision(b, &location->revision);
+    sb_puts(b, ",\"filePath\":");
+    json_str(b, location->file_path);
+    sb_puts(b, ",\"range\":{\"startByte\":");
+    sb_put_i64(b, (long long)location->range.start_byte);
+    sb_puts(b, ",\"endByte\":");
+    sb_put_i64(b, (long long)location->range.end_byte);
+    sb_puts(b, ",\"startLine\":");
+    sb_put_i64(b, (long long)location->range.start_line);
+    sb_puts(b, ",\"endLine\":");
+    sb_put_i64(b, (long long)location->range.end_line);
+    sb_puts(b, "}}");
+}
+
+static void json_number(sbuf_t* b, double value)
+{
+    char digits[64];
+    (void)snprintf(digits, sizeof digits, "%.6f", value);
+    sb_puts(b, digits);
+}
+
+static void json_flow_set(sbuf_t* b, const ContextFlowSet* flows)
+{
+    sb_putc(b, '[');
+    for (size_t i = 0; i < flows->count; ++i) {
+        const ContextFlow* flow = &flows->flows[i];
+        if (i) sb_putc(b, ',');
+        sb_puts(b, "{\"id\":");
+        json_str(b, flow->id);
+        sb_puts(b, ",\"seed\":");
+        json_ref(b, &flow->seed->ref);
+        sb_puts(b, ",\"relevance\":");
+        json_number(b, flow->relevance);
+        sb_puts(b, ",\"nodes\":[");
+        for (size_t j = 0; j < flow->node_count; ++j) {
+            const ContextFlowNode* node = &flow->nodes[j];
+            if (j) sb_putc(b, ',');
+            sb_puts(b, "{\"symbol\":");
+            json_ref(b, &node->symbol->ref);
+            sb_puts(b, ",\"name\":");
+            json_str(b, node->symbol->name);
+            sb_puts(b, ",\"hop\":");
+            sb_put_i64(b, (long long)node->hop);
+            sb_puts(b, ",\"relevance\":");
+            json_number(b, node->relevance);
+            sb_puts(b, ",\"fanIn\":");
+            sb_put_i64(b, (long long)node->fan_in);
+            sb_puts(b, ",\"isSeed\":");
+            sb_puts(b, node->is_seed ? "true" : "false");
+            sb_puts(b, ",\"viaIncoming\":");
+            sb_puts(b, node->via_incoming ? "true" : "false");
+            sb_puts(b, ",\"crossedModule\":");
+            sb_puts(b, node->crossed_module ? "true" : "false");
+            sb_putc(b, '}');
+        }
+        sb_puts(b, "],\"edges\":[");
+        for (size_t j = 0; j < flow->edge_count; ++j) {
+            const ContextFlowEdge* edge = &flow->edges[j];
+            if (j) sb_putc(b, ',');
+            sb_puts(b, "{\"evidenceId\":");
+            json_str(b, edge->evidence_id);
+            sb_puts(b, ",\"from\":");
+            sb_put_i64(b, (long long)edge->from);
+            sb_puts(b, ",\"to\":");
+            sb_put_i64(b, (long long)edge->to);
+            sb_puts(b, ",\"forward\":");
+            sb_puts(b, edge->forward ? "true" : "false");
+            sb_putc(b, '}');
+        }
+        sb_puts(b, "]}");
+    }
+    sb_putc(b, ']');
+}
+
+static const char* bridge_kind_name(ContextBridgeKind kind)
+{
+    switch (kind) {
+    case CONTEXT_BRIDGE_INVOKE: return "invoke";
+    case CONTEXT_BRIDGE_REGISTRATION: return "registration";
+    case CONTEXT_BRIDGE_DISPATCH: return "dispatch";
+    case CONTEXT_BRIDGE_FFI: return "ffi";
+    default: return "unknown";
+    }
+}
+
+static void json_bridge_set(sbuf_t* b, const ContextBridgeSet* bridges)
+{
+    sb_putc(b, '[');
+    for (size_t i = 0; i < bridges->count; ++i) {
+        const ContextBridgeEdge* edge = &bridges->edges[i];
+        if (i) sb_putc(b, ',');
+        sb_puts(b, "{\"kind\":");
+        json_str(b, bridge_kind_name(edge->kind));
+        sb_puts(b, ",\"label\":");
+        json_str(b, edge->label);
+        sb_puts(b, ",\"from\":");
+        json_ref(b, edge->from);
+        sb_puts(b, ",\"to\":");
+        json_ref(b, edge->to);
+        sb_puts(b, ",\"evidenceId\":");
+        json_str(b, edge->evidence_id);
+        sb_puts(b, ",\"evidence\":");
+        json_location(b, &edge->evidence);
+        sb_putc(b, '}');
+    }
+    sb_putc(b, ']');
+}
+
 #define MAX_VIEW_TARGETS 64
 
 static int compile_views_from_index(const RepositoryIndex* index,
@@ -2669,6 +2800,10 @@ static int compile_views_from_index(const RepositoryIndex* index,
     sb_putn(&result, brief_json, (size_t)brief_len);
     sb_puts(&result, ",\"graph\":");
     sb_putn(&result, graph_json, (size_t)graph_len);
+    sb_puts(&result, ",\"flows\":");
+    json_flow_set(&result, &views.flows);
+    sb_puts(&result, ",\"bridges\":");
+    json_bridge_set(&result, &views.bridges);
     sb_puts(&result, "}");
     if (result.oom || !result.data) {
         rc = CHRONOS_ERR_NOMEM;

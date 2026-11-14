@@ -352,6 +352,43 @@ export interface ContextViews {
   targetCount?: number;
   brief: ContextBriefDocument;
   graph: ContextGraphDocument;
+  flows?: ContextFlowView[];
+  bridges?: ContextBridgeView[];
+}
+
+export interface ContextFlowNodeView {
+  symbol: { revision: ContextRevision; id: string };
+  name: string;
+  hop: number;
+  relevance: number;
+  fanIn: number;
+  isSeed: boolean;
+  viaIncoming: boolean;
+  crossedModule: boolean;
+}
+
+export interface ContextFlowEdgeView {
+  evidenceId: string;
+  from: number;
+  to: number;
+  forward: boolean;
+}
+
+export interface ContextFlowView {
+  id: string;
+  seed: { revision: ContextRevision; id: string };
+  relevance: number;
+  nodes: ContextFlowNodeView[];
+  edges: ContextFlowEdgeView[];
+}
+
+export interface ContextBridgeView {
+  kind: "invoke" | "registration" | "dispatch" | "ffi";
+  label: string;
+  from: { revision: ContextRevision; id: string } | null;
+  to: { revision: ContextRevision; id: string } | null;
+  evidenceId: string;
+  evidence: ContextLocation;
 }
 
 export interface ContextTarget {

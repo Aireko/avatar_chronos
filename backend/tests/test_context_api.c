@@ -12,6 +12,9 @@ int main(void)
     assert(views != NULL);
     assert(strstr(views, "\"brief\":{") != NULL);
     assert(strstr(views, "\"graph\":{") != NULL);
+    assert(strstr(views, "\"flows\":[") != NULL);
+    assert(strstr(views, "\"bridges\":[") != NULL);
+    assert(strstr(views, "\"kind\":\"invoke\"") != NULL);
     assert(strstr(views, "\"source\":") == NULL);
     chronos_free_string(views);
 
@@ -48,6 +51,8 @@ int main(void)
     assert(strstr(multi, "\"id\":\"targets\"") != NULL);
     assert(strstr(multi, "Target: chronos_compile_views") != NULL);
     assert(strstr(multi, "Target: chronos_read_source") != NULL);
+    assert(strstr(multi, "\"flows\":[") != NULL);
+    assert(strstr(multi, "\"bridges\":[") != NULL);
     chronos_free_string(multi);
     assert(chronos_compile_multi_views("..", "HEAD", "task", paths, names, 0, 8, 2048,
                                        &multi) < 0);

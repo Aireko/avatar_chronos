@@ -391,6 +391,62 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
                   )}
                 </div>
               </div>
+
+              {(views?.flows?.length ?? 0) > 0 && (
+                <div>
+                  <h4>Flows</h4>
+                  <ul style={{ textAlign: "left" }}>
+                    {(views?.flows ?? []).slice(0, 50).map((flow) => (
+                      <li key={flow.id}>
+                        {flow.nodes.map((node) => node.name).join(" → ")}{" "}
+                        <small>
+                          relevance {flow.relevance.toFixed(2)}, {flow.nodes.length} nodes
+                        </small>
+                        <div>
+                          {flow.edges.map((edge) => (
+                            <button
+                              key={edge.evidenceId}
+                              onClick={() => openEvidence(edge.evidenceId)}
+                              title={edge.evidenceId}
+                              style={{ marginRight: 4, marginTop: 4 }}
+                            >
+                              {evidenceLabel(edge.evidenceId)}
+                            </button>
+                          ))}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {(views?.bridges?.length ?? 0) > 0 && (
+                <div>
+                  <h4>Bridges</h4>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>kind</th>
+                        <th>label</th>
+                        <th>evidence</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(views?.bridges ?? []).map((bridge) => (
+                        <tr key={bridge.evidenceId}>
+                          <td>{bridge.kind}</td>
+                          <td>{bridge.label}</td>
+                          <td>
+                            <button onClick={() => openEvidence(bridge.evidenceId)}>
+                              open callsite
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
 

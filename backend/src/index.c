@@ -1,4 +1,5 @@
 #include "index.h"
+#include "context_compiler.h"
 #include "mapper_internal.h"
 
 #include <stdint.h>
@@ -8,6 +9,7 @@
 
 typedef struct {
     const unsigned char *bytes;
+    size_t byte_count;
     size_t scope;
     size_t first_symbol;
     size_t symbol_count;
@@ -453,6 +455,7 @@ static int build_scopes(RepositoryIndex *index, const IndexFileInput *inputs, si
             if (!bytes) return CHRONOS_OUT_OF_MEMORY;
             if (blob->byte_count) memcpy(bytes, blob->bytes, blob->byte_count);
             file->bytes = bytes;
+            file->byte_count = blob->byte_count;
         }
         for (size_t j = file->first_symbol; j < file->first_symbol + file->symbol_count; ++j) {
             const GraphSymbol *symbol = &graph->nodes[j];
@@ -565,6 +568,32 @@ int index_map_calls(const RepositoryIndex *index, size_t from, size_t to, IndexC
     }
     *out = (IndexCallMap){links, count, index->graph.edge_coverage};
     return out->coverage == CHRONOS_COMPLETE ? CHRONOS_OK : CHRONOS_PARTIAL;
+}
+
+const IndexCallLink *index_call_links(const RepositoryIndex *index, size_t *count)
+{
+    if (count) *count = index ? index->graph.edge_count : 0;
+    return index ? index->links : NULL;
+}
+
+ChronosCoverage index_call_coverage(const RepositoryIndex *index)
+{
+    return index ? index->graph.edge_coverage : CHRONOS_UNAVAILABLE;
+}
+
+const char *index_file_bytes(const RepositoryIndex *index, const char *path, size_t *length)
+{
+    if (length) *length = 0;
+    if (!index || !path) return NULL;
+    for (size_t i = 0; i < index->file_count; ++i) {
+        const IndexedFile *file = &index->files[i];
+        const IndexScope *scope = &index->scopes[file->scope];
+        if (!same_text(scope->path, path)) continue;
+        if (!file->bytes) return NULL;
+        if (length) *length = file->byte_count;
+        return (const char *)file->bytes;
+    }
+    return NULL;
 }
 
 
@@ -996,21 +1025,51 @@ static int collect_candidate(const RepositoryIndex *index, const IndexCallLink *
                              ContextCallDirection direction, ContextCandidate *item)
 {
     const GraphCall *call = link->call;
-    const char *caller = call->caller.id;
-    const char *callee = call->callee ? call->callee->id : call->callee_text;
-    SourceRange range = call->call_site.range;
-    int n = snprintf(NULL, 0, "%zu:%s%zu:%s:%zu:%zu", strlen(caller), caller,
-                     strlen(callee), callee, range.start_byte, range.end_byte);
-    if (n < 0) return CHRONOS_TOO_LARGE;
-    char *id = malloc((size_t)n + 1);
-    if (!id) return CHRONOS_OUT_OF_MEMORY;
-    (void)snprintf(id, (size_t)n + 1, "%zu:%s%zu:%s:%zu:%zu", strlen(caller), caller,
-                   strlen(callee), callee, range.start_byte, range.end_byte);
+    char *id = context_call_evidence_id_alloc(call);
+    if (id == NULL) return CHRONOS_OUT_OF_MEMORY;
     size_t neighbor = direction == CONTEXT_INCOMING_CALL ? link->caller : link->callee;
     ContextSource source = {.status = CONTEXT_SOURCE_UNAVAILABLE};
     if (neighbor != INDEX_NO_SCOPE) source = symbol_source(index, neighbor);
     *item = (ContextCandidate){id, direction, call, source};
     return CHRONOS_OK;
+}
+
+static int snippets_overlap(const ContextSource *left, const ContextSource *right)
+{
+    if (left->status != CONTEXT_SOURCE_PRESENT || right->status != CONTEXT_SOURCE_PRESENT)
+        return 0;
+    const SourceLocation *a = left->location;
+    const SourceLocation *b = right->location;
+    if (!same_revision(&a->revision, &b->revision) ||
+        !same_text(a->file_path, b->file_path)) return 0;
+    size_t a_start = a->range.start_byte, a_end = a->range.end_byte;
+    size_t b_start = b->range.start_byte, b_end = b->range.end_byte;
+    if (a_start == a_end || b_start == b_end) return a_start == b_start;
+    return a_start < b_end && b_start < a_end;
+}
+
+/* Keep one representative for overlapping, same-direction snippets. The
+ * candidate order is the deterministic callsite order from the index. */
+static void deduplicate_candidates(ContextCandidate *items, size_t *count)
+{
+    size_t kept = 0;
+    for (size_t i = 0; i < *count; ++i) {
+        int duplicate = 0;
+        for (size_t j = 0; j < kept; ++j) {
+            if (items[i].direction == items[j].direction &&
+                snippets_overlap(&items[i].snippet, &items[j].snippet)) {
+                duplicate = 1;
+                break;
+            }
+        }
+        if (duplicate) {
+            free((void *)items[i].id);
+            continue;
+        }
+        if (kept != i) items[kept] = items[i];
+        ++kept;
+    }
+    *count = kept;
 }
 
 int index_collect_context(const RepositoryIndex *index, const SymbolVersionRef *target,
@@ -1042,6 +1101,7 @@ int index_collect_context(const RepositoryIndex *index, const SymbolVersionRef *
     }
     if (status < 0) index_context_free(&result);
     else {
+        deduplicate_candidates(items, &result.candidates.count);
         *out = result;
         if (result.candidates.coverage != CHRONOS_COMPLETE) status = CHRONOS_PARTIAL;
     }

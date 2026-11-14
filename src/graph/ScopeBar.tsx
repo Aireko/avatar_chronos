@@ -113,6 +113,9 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
   function open(next: Picking) {
     setQuery("");
     setError("");
+    // Going back to the file step (or opening Function fresh) must drop the previous
+    // file's function list, or that selection hangs around as a leftover in the dialog.
+    if (next.kind === "function" && next.path === null) setFunctions([]);
     setPicking(next);
     // Moving between steps removes the button that was clicked; keep focus in the picker.
     filter.current?.focus();
@@ -178,6 +181,11 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
   const active = picking ? picking.kind : scope.kind;
   useSlidingInk(tabs, ink, active);
   const q = query.trim().toLowerCase();
+  // Only mark the active file while choosing a *file* scope. During the function
+  // wizard's file step, an old scope.path would otherwise look like a stuck selection
+  // after you pick a file and then go back with "‹ files".
+  const highlightedFile =
+    picking?.kind === "file" && scope.kind !== "project" ? scope.path : null;
   const isCurrent = (name: string) => scope.kind === "function" && scope.path === functionPath && scope.name === name;
   const fileMatches = files.filter((f) => f.toLowerCase().includes(q));
   const functionMatches = functions.filter((f) => f.name.toLowerCase().includes(q));
@@ -274,8 +282,8 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
                 fileMatches.slice(0, MAX_SHOWN).map((f) => (
                   <li key={f}>
                     <button
-                      className={scope.kind !== "project" && scope.path === f ? "on" : undefined}
-                      aria-current={scope.kind !== "project" && scope.path === f ? "true" : undefined}
+                      className={highlightedFile === f ? "on" : undefined}
+                      aria-current={highlightedFile === f ? "true" : undefined}
                       onClick={() => pickFile(f)}
                     >
                       {f}

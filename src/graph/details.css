@@ -47,6 +47,34 @@
   animation: details-stamp 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards;
 }
 
+/* The author is a key of its own: click to highlight their commits on the map. */
+.ticket .author-link {
+  padding: 0 4px;
+  margin: 0 -4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  text-decoration: underline wavy var(--soft);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+.ticket .author-link:hover { text-decoration-color: var(--ink); }
+/* While highlighted, the name carries the same highlighter stroke as the map's chip. */
+.ticket .author-link.is-on {
+  background: linear-gradient(transparent 52%, var(--highlight) 52%, var(--highlight) 92%, transparent 92%);
+  text-decoration: none;
+}
+.ticket .author-link:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: 2px; }
+
+/* "Explain this commit" spans the row under the two keys. */
+.ticket .explain-key { grid-column: 1 / -1; }
+
 /* The rebase question unfolds where the two keys were. */
 .ticket .confirm { animation: details-drop 0.18s ease-out backwards; }
 
@@ -262,6 +290,7 @@
   .term-running,
   .ctx-panel { animation: none; }
   .ticket .diff-file summary,
+  .ticket .author-link,
   .diff-caret,
   .file-tree .tree-chevron,
   .file-tree .tree-row,

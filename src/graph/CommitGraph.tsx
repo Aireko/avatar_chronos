@@ -1,13 +1,17 @@
 import {
+  memo,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
+  type ReactElement,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import type { ChronosGraph } from "../backend";
-import { STATION_R, drawDelay, drawInWindow, type GraphLayout, type Lane } from "./layout";
+import { STATION_R, drawDelay, drawInWindow, type GraphLayout, type GraphNode, type Lane } from "./layout";
+
 import { scopeNoun, type Scope } from "./scope";
 import { Presence } from "../tools/Presence";
 import { prefersReducedMotion } from "./drag";
@@ -24,6 +28,10 @@ interface Props {
   scope: Scope;
   gone: Set<string>;
   currentBranch: string | null;
+  /** Fade every commit not by this author (exactly as the graph data names them). */
+  highlightAuthor?: string | null;
+  /** Commits the find bar matched; they get a light highlighter mark. */
+  findMarks?: readonly string[];
 }
 
 const R = STATION_R;
@@ -34,6 +42,8 @@ const ZOOM_STEP = 0.12;
 const ZOOM_MS = 200;
 /** Extra space around the graph so you can drag past the edges. */
 const MAP_PAD = 280;
+/** More find matches than this are not marked: past that, the marks stop giving an overview. */
+const MAX_FIND_MARKS = 600;
 /** Stations land a little after their lines; crossing hops land last. */
 const STATION_LAG = 320;
 const BRIDGE_LAG = 400;
@@ -65,13 +75,110 @@ function planIntro(graph: ChronosGraph, layout: GraphLayout, zoom: number): Intr
   return { repo: graph.repoPath, plan };
 }
 
+/** The draw-in class and delay for one piece of the drawing; null is no animation. */
+function draw(delay: number | null, lag = 0) {
+  return delay === null ? { cls: "", delay: undefined } : { cls: " draw", delay: `${delay + lag}ms` };
+}
+
+interface StationProps {
+  node: GraphNode;
+  isSelected: boolean;
+  isHead: boolean;
+  /** Draw-in class (" draw" or "") and its delay. */
+  cls: string;
+  delay: string | undefined;
+  authorId: number | undefined;
+  /** `pointer`: a click, which a drag of the map must not count as. */
+  onPick: (hash: string, pointer: boolean) => void;
+}
+
+/** One commit on the map. Memoised, so a new selection re-renders two stations, not all. */
+const Station = memo(function Station({ node, isSelected, isHead, cls, delay, authorId, onPick }: StationProps) {
+  return (
+    <g
+      className={`node${isSelected ? " selected" : ""}${cls}`}
+      data-lane={node.lane}
+      data-author={authorId}
+      style={
+        {
+          transform: `translate(${node.x}px, ${node.y}px)`,
+          "--line": node.color,
+          "--d": delay,
+        } as CSSProperties
+      }
+      tabIndex={0}
+      role="button"
+      aria-label={node.commit.message}
+      onClick={(e) => {
+        e.stopPropagation();
+        onPick(node.commit.hash, true);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onPick(node.commit.hash, false);
+        }
+      }}
+    >
+      <title>{node.commit.message}</title>
+      <circle className="node-hit" r={26} />
+      <path className="halo" d={node.halo} />
+      <g className="station">
+        <path className="ring" d={node.shape} />
+        {node.kind === "interchange" && <circle className="ring-core" r={3.6} />}
+      </g>
+
+      {isHead && (
+        <g className="head-note">
+          <text y={-(R + 24)}>head</text>
+          <path d={`M 1 ${-(R + 19)} q 3 5 -1 11 m -5 -5 q 3 4 5 6 q 3 -3 5 -7`} pathLength={1} />
+        </g>
+      )}
+
+      {node.flags.map((flag) => (
+        <g key={flag.name} className="flag" transform={`translate(0 ${flag.dy})`}>
+          <text style={{ fill: flag.color }}>{flag.name}</text>
+          {flag.isCurrent && (
+            <path
+              className="flag-underline"
+              d={`M ${-flag.w / 2} 5 q ${flag.w / 4} 3.5 ${flag.w / 2} 0.5 t ${flag.w / 2} -0.5`}
+              pathLength={1}
+              style={{ stroke: flag.color }}
+            />
+          )}
+        </g>
+      ))}
+
+      <text className="map-label" y={R + 24}>
+        {node.label.map((line, i) => (
+          <tspan key={i} x={0} dy={i === 0 ? 0 : 18}>
+            {line}
+          </tspan>
+        ))}
+      </text>
+    </g>
+  );
+});
+
 /** null: no animation. A number: animate after that many ms. */
 function entryDelay(intro: Intro, key: string): number | null {
   const planned = intro.plan.get(key);
   return planned === undefined ? 0 : planned;
 }
 
-export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, currentBranch, onSelect, onAction }: Props) {
+export function CommitGraph({
+  graph,
+  layout,
+  selected,
+  panelOpen,
+  scope,
+  gone,
+  currentBranch,
+  highlightAuthor = null,
+  findMarks,
+  onSelect,
+  onAction,
+}: Props) {
   const viewport = useRef<HTMLDivElement>(null);
   const sheetEl = useRef<HTMLDivElement>(null);
   const zoomEl = useRef<HTMLDivElement>(null);
@@ -291,11 +398,69 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
     if (node) scrollToPoint(node.x, node.y);
   }
 
-  // The drawing only changes with the history, the selection and head. Zooming, panning and
-  // pointing at the legend re-render this component without touching thousands of circles.
-  const drawing = useMemo(() => {
-    const draw = (delay: number | null, lag = 0) =>
-      delay === null ? { cls: "", delay: undefined } : { cls: " draw", delay: `${delay + lag}ms` };
+  // One small number per author, written on each commit as data-author. Highlighting an
+  // author is then one generated CSS rule, never a re-render of thousands of circles.
+  const authorIds = useMemo(() => {
+    const ids = new Map<string, number>();
+    for (const n of layout.nodes) if (!ids.has(n.commit.author)) ids.set(n.commit.author, ids.size);
+    return ids;
+  }, [layout]);
+
+  const focusCss = useMemo(() => {
+    const rules: string[] = [];
+    if (highlightAuthor !== null) {
+      // An author with no commits in view fades everything (-1 is on no commit).
+      const id = authorIds.get(highlightAuthor) ?? -1;
+      // Find marks under another author's commits fade with them.
+      rules.push(
+        `.map-svg .node:not([data-author="${id}"]):not(.selected), .map-svg .find-marks .find-mark:not([data-author="${id}"]) { opacity: 0.18; }`,
+      );
+      // The lines stay, a little lighter (dotted ghost lines start at 0.55).
+      rules.push(".map-svg .tube, .map-svg .bridge-line { opacity: 0.6; }");
+      rules.push(".map-svg .tube-ghost { opacity: 0.33; }");
+    }
+    return rules.join("\n");
+  }, [highlightAuthor, authorIds]);
+
+  // Find matches: a highlighter blob under each one (find.css), drawn as its own small
+  // overlay between the lines and the stations. New matches re-render only these few
+  // hundred paths, never the drawing, and no stylesheet is matched against every commit.
+  const findOverlay = useMemo(() => {
+    if (!findMarks || findMarks.length === 0) return null;
+    const marks: ReactElement[] = [];
+    for (const hash of findMarks) {
+      if (marks.length >= MAX_FIND_MARKS) break;
+      // The selected commit has its own halo.
+      if (hash === selected) continue;
+      const node = layout.byHash.get(hash);
+      if (!node) continue;
+      marks.push(
+        <path
+          key={node.id}
+          className="find-mark"
+          d={node.halo}
+          data-lane={node.lane}
+          data-author={authorIds.get(node.commit.author)}
+          // Same glide as the stations when the layout changes.
+          style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
+        />,
+      );
+    }
+    return (
+      <g className="find-marks" aria-hidden="true">
+        {marks}
+      </g>
+    );
+  }, [findMarks, selected, layout, authorIds]);
+
+  // Stations call back through refs, so this never changes and never re-renders them.
+  const pick = useCallback((hash: string, pointer: boolean) => {
+    if (!pointer || !drag.current.moved) onSelectRef.current(hash);
+  }, []);
+
+  // The lines only change with the history. Zooming, panning, pointing at the legend and
+  // moving the selection re-render this component without touching them.
+  const lines = useMemo(() => {
     const solid = layout.edges.filter((e) => !e.ghost);
     const ghosts = layout.edges.filter((e) => e.ghost);
     const edgeIn = new Map(layout.edges.map((e) => [e.key, draw(entryDelay(intro, `e:${e.key}`))] as const));
@@ -309,6 +474,7 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
             .map((l) => `.map-svg[data-focus="${l.index}"] [data-lane]:not([data-lane="${l.index}"])`)
             .join(",\n")} { opacity: 0.16; }`;
 
+    // Lines and stations apart, so the find marks can sit between them.
     return (
       <>
         {laneCss && <style>{laneCss}</style>}
@@ -369,79 +535,31 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
             </g>
           );
         })}
-
-        {layout.nodes.map((node) => {
-          const isSelected = node.commit.hash === selected;
-          const isHead = node.commit.hash === graph.head;
-          const at = draw(entryDelay(intro, `n:${node.id}`), STATION_LAG);
-          return (
-            <g
-              key={node.id}
-              className={`node${isSelected ? " selected" : ""}${at.cls}`}
-              data-lane={node.lane}
-              style={
-                {
-                  transform: `translate(${node.x}px, ${node.y}px)`,
-                  "--line": node.color,
-                  "--d": at.delay,
-                } as CSSProperties
-              }
-              tabIndex={0}
-              role="button"
-              aria-label={node.commit.message}
-              onClick={(e) => {
-                e.stopPropagation();
-                if (!drag.current.moved) onSelectRef.current(node.commit.hash);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  onSelectRef.current(node.commit.hash);
-                }
-              }}
-            >
-              <title>{node.commit.message}</title>
-              <circle className="node-hit" r={26} />
-              <path className="halo" d={node.halo} />
-              <g className="station">
-                <path className="ring" d={node.shape} />
-                {node.kind === "interchange" && <circle className="ring-core" r={3.6} />}
-              </g>
-
-              {isHead && (
-                <g className="head-note">
-                  <text y={-(R + 24)}>head</text>
-                  <path d={`M 1 ${-(R + 19)} q 3 5 -1 11 m -5 -5 q 3 4 5 6 q 3 -3 5 -7`} pathLength={1} />
-                </g>
-              )}
-
-              {node.flags.map((flag) => (
-                <g key={flag.name} className="flag" transform={`translate(0 ${flag.dy})`}>
-                  <text style={{ fill: flag.color }}>{flag.name}</text>
-                  {flag.isCurrent && (
-                    <path
-                      className="flag-underline"
-                      d={`M ${-flag.w / 2} 5 q ${flag.w / 4} 3.5 ${flag.w / 2} 0.5 t ${flag.w / 2} -0.5`}
-                      pathLength={1}
-                      style={{ stroke: flag.color }}
-                    />
-                  )}
-                </g>
-              ))}
-
-              <text className="map-label" y={R + 24}>
-                {node.label.map((line, i) => (
-                  <tspan key={i} x={0} dy={i === 0 ? 0 : 18}>
-                    {line}
-                  </tspan>
-                ))}
-              </text>
-            </g>
-          );
-        })}
       </>
     );
-  }, [layout, selected, graph.head, intro]);
+  }, [layout, intro]);
+
+  // The stations follow the selection and head too. Each is memoised, so moving the
+  // selection (arrow keys, find) re-renders only the old and the new one.
+  const stations = useMemo(
+    () =>
+      layout.nodes.map((node) => {
+        const at = draw(entryDelay(intro, `n:${node.id}`), STATION_LAG);
+        return (
+          <Station
+            key={node.id}
+            node={node}
+            isSelected={node.commit.hash === selected}
+            isHead={node.commit.hash === graph.head}
+            cls={at.cls}
+            delay={at.delay}
+            authorId={authorIds.get(node.commit.author)}
+            onPick={pick}
+          />
+        );
+      }),
+    [layout, selected, graph.head, intro, authorIds, pick],
+  );
 
   const menuNode = selected && !panelOpen ? layout.byHash.get(selected) : undefined;
   const menuIsHead = menuNode?.commit.hash === graph.head;
@@ -480,6 +598,8 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
 
   return (
     <div className="map-wrap">
+      {/* Author highlight: a few generated rules over the static drawing. */}
+      {focusCss && <style>{focusCss}</style>}
       <div
         ref={viewport}
         className="map"
@@ -497,7 +617,10 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
               style={{ left: MAP_PAD, top: MAP_PAD }}
               data-focus={focusLane ?? undefined}
             >
-              {drawing}
+              {lines}
+              {findOverlay}
+              {stations}
+
             </svg>
 
             {/* The action bar pops up from the chosen commit and drops away when it closes. */}

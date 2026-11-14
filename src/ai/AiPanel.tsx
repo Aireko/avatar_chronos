@@ -1,6 +1,7 @@
 // Minimal test panel for the local AI integration (Ollama + Qwen 3.5).
 // It exercises every aiService call; it is not the product UI.
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { notReadyReason } from "./aiReady";
 import { aiErrorMessage, aiService, isAiError } from "./aiService";
 import type { AiError, AiStatus, GenerateResponse, GenerationStats, PullEvent } from "./types";
 import "./AiPanel.css";
@@ -56,7 +57,37 @@ function overallPercent(progress: PullProgress): number | undefined {
   return total > 0 ? Math.min(100, (completed / total) * 100) : undefined;
 }
 
-export default function AiPanel() {
+/**
+ * A prompt handed in by the app (e.g. "Explain this commit"). Each new `id` is run once.
+ * Without a `prompt` the app is still putting it together: the panel says so and waits.
+ */
+export interface AiRequest {
+  id: number;
+  prompt?: string;
+  system?: string;
+  /** What the request is about, for the status line, e.g. "commit 1a2b3c4". */
+  subject?: string;
+}
+
+interface AiPanelProps {
+  request?: AiRequest | null;
+  /** Called once the panel has taken `request` (with its prompt) into its prompt box. */
+  onRequestTaken?: (id: number) => void;
+}
+
+/** Matches the drawer's enter animation (.slide-panel ticket-in, 0.26s), so the scroll lands on settled layout. */
+const DRAWER_ENTER_MS = 280;
+
+/** The nearest ancestor that scrolls vertically (the drawer body). */
+function scrollParent(el: HTMLElement): HTMLElement | null {
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const { overflowY } = getComputedStyle(p);
+    if (overflowY === "auto" || overflowY === "scroll") return p;
+  }
+  return null;
+}
+
+export default function AiPanel({ request = null, onRequestTaken }: AiPanelProps = {}) {
   const [status, setStatus] = useState<AiStatus>();
   const [statusError, setStatusError] = useState<AiError>();
   const [loadingStatus, setLoadingStatus] = useState(false);
@@ -78,6 +109,16 @@ export default function AiPanel() {
   const [result, setResult] = useState<GenerateResponse>();
   const [genError, setGenError] = useState<AiError>();
   const genAbort = useRef<AbortController | null>(null);
+  // A handed-in prompt waits here until the status check says whether it can run.
+  const [pending, setPending] = useState<{ prompt: string; system: string } | null>(null);
+  // Set when a handed-in prompt could not run; the reason shown is re-derived live.
+  const [blocked, setBlocked] = useState(false);
+  const takenRequest = useRef<number | null>(null);
+  // The request whose run area was last brought into view and focused.
+  const revealedRequest = useRef<number | null>(null);
+  const runHead = useRef<HTMLHeadingElement>(null);
+  // The app is still preparing a handed-in prompt (e.g. reading the commit's changes).
+  const preparing = request !== null && request.prompt === undefined;
   // The streamed answer follows its newest line unless the reader scrolled up.
   const outputRef = useRef<HTMLPreElement>(null);
   const stickToEnd = useRef(true);
@@ -162,11 +203,15 @@ export default function AiPanel() {
     }
   }
 
-  async function onGenerate(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function generate(promptText: string, systemText: string) {
+    // A handed-in prompt replaces an answer that is still streaming.
+    genAbort.current?.abort();
     const controller = new AbortController();
     genAbort.current = controller;
+    // A replaced run must not touch the newer run's output or flags.
+    const current = () => genAbort.current === controller;
     stickToEnd.current = true;
+    setBlocked(false);
     setGenerating(true);
     setOutput("");
     setThinking("");
@@ -174,26 +219,102 @@ export default function AiPanel() {
     setGenError(undefined);
     try {
       const response = await aiService.generateStream(
-        { prompt, system: system.trim() ? system : undefined, think },
+        { prompt: promptText, system: systemText.trim() ? systemText : undefined, think },
         {
           signal: controller.signal,
           onDelta: (content, thought) => {
+            if (!current()) return;
             if (content) setOutput((text) => text + content);
             if (thought) setThinking((text) => text + thought);
           },
         },
       );
+      if (!current()) return;
       // The final response is authoritative (it also covers any missed deltas).
       setOutput(response.content);
       setThinking(response.thinking ?? "");
       setResult(response);
     } catch (error) {
-      setGenError(asAiError(error));
+      if (current()) setGenError(asAiError(error));
     } finally {
-      genAbort.current = null;
-      setGenerating(false);
+      if (current()) {
+        genAbort.current = null;
+        setGenerating(false);
+      }
     }
   }
+
+  function onGenerate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void generate(prompt, system);
+  }
+
+  // A handed-in request: once per id, bring the run area (heading, status line, answer)
+  // into view and move focus to it, after the drawer has slid in. The drawer opens
+  // scrolled to the top, where the connection facts are, and the button that asked
+  // (e.g. the ticket's "Explain this commit") is gone, so focus would drop to the page.
+  const revealTimer = useRef<number | undefined>(undefined);
+  // Unmount only. It also forgets the revealed id: StrictMode's trial unmount runs this
+  // between the two runs of the effect below, and the second run must set the timer again.
+  // (Not in the reveal effect's own cleanup: the app clears `request` soon after the
+  // prompt is taken, which would cancel the timer before it fires.)
+  useEffect(
+    () => () => {
+      window.clearTimeout(revealTimer.current);
+      revealedRequest.current = null;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!request || revealedRequest.current === request.id) return;
+    revealedRequest.current = request.id;
+    // Don't offer the old prompt while the new one is being put together.
+    if (request.prompt === undefined) {
+      setPrompt("");
+      setSystem("");
+    }
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    window.clearTimeout(revealTimer.current);
+    revealTimer.current = window.setTimeout(
+      () => {
+        const head = runHead.current;
+        if (!head) return;
+        const box = scrollParent(head);
+        if (box) {
+          const top = box.scrollTop + head.getBoundingClientRect().top - box.getBoundingClientRect().top - 8;
+          box.scrollTo({ top, behavior: reduce ? "auto" : "smooth" });
+        }
+        head.focus({ preventScroll: true });
+      },
+      reduce ? 0 : DRAWER_ENTER_MS,
+    );
+  }, [request]);
+
+  // A prompt handed in by the app: fill the box once per request id, then run it
+  // as soon as the status check says the model is ready.
+  useEffect(() => {
+    if (!request || request.prompt === undefined || takenRequest.current === request.id) return;
+    takenRequest.current = request.id;
+    setPrompt(request.prompt);
+    setSystem(request.system ?? "");
+    setBlocked(false);
+    setPending({ prompt: request.prompt, system: request.system ?? "" });
+    // Check again before running, so an Ollama that stopped since the drawer opened
+    // shows up as the reason instead of as a failed run.
+    void refresh();
+    onRequestTaken?.(request.id);
+  }, [request, onRequestTaken, refresh]);
+
+  useEffect(() => {
+    // Wait for the first (or a running) status check.
+    if (!pending || loadingStatus || (!status && !statusError)) return;
+    setPending(null);
+    if (notReadyReason(status, statusError)) setBlocked(true);
+    else void generate(pending.prompt, pending.system);
+    // generate is recreated each render; this only reacts to the check finishing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pending, loadingStatus, status, statusError]);
 
   const connection = status?.connection;
   // No download while a config problem (e.g. the model is a cloud alias) is reported.
@@ -203,7 +324,10 @@ export default function AiPanel() {
     ? status?.knownQwen35Tags.find((t) => t.tag === downloadTag || `qwen3.5:${t.tag}` === downloadTag)
     : undefined;
   const percent = pullProgress ? overallPercent(pullProgress) : undefined;
-  const canGenerate = !!status?.connection.reachable && status.selectedModelInstalled === true && !generating;
+  const canGenerate =
+    !!status?.connection.reachable && status.selectedModelInstalled === true && !generating && !preparing;
+  // Re-derived from the live status, so the note goes away once the model is ready.
+  const blockedReason = blocked && !generating ? notReadyReason(status, statusError) : null;
 
   return (
     <section className="ai-panel" aria-labelledby="ai-panel-title">
@@ -356,7 +480,9 @@ export default function AiPanel() {
       )}
 
       <form className="ai-block" onSubmit={onGenerate}>
-        <h3 className="section-title">Test prompt</h3>
+        <h3 ref={runHead} className="section-title ai-run-head" tabIndex={-1}>
+          Test prompt
+        </h3>
         <details className="ai-system">
           <summary>System prompt (optional)</summary>
           <textarea
@@ -373,6 +499,7 @@ export default function AiPanel() {
           onChange={(e) => setPrompt(e.target.value)}
           rows={4}
           aria-label="Prompt"
+          placeholder={preparing ? "The prompt is being put together…" : undefined}
         />
         <div className="ai-row ai-run">
           <label className="ai-check">
@@ -384,6 +511,26 @@ export default function AiPanel() {
           <button type="button" className="btn" onClick={() => genAbort.current?.abort()} disabled={!generating}>
             Stop
           </button>
+        </div>
+        {/* One live region that is always present, so each change in it is announced. */}
+        <div className="ai-run-status" role="status">
+          {preparing ? (
+            <p className="working">
+              <span className="working-dot" aria-hidden="true" />
+              Preparing {request?.subject ?? "the prompt"} for the model…
+            </p>
+          ) : pending ? (
+            <p className="working">
+              <span className="working-dot" aria-hidden="true" />
+              Checking the local AI before running…
+            </p>
+          ) : blockedReason ? (
+            <p className="ai-note ai-warn">The prompt is ready but can't run yet. {blockedReason}</p>
+          ) : generating ? (
+            <span className="ai-sr-only">Generating the answer…</span>
+          ) : result ? (
+            <span className="ai-sr-only">The answer is ready.</span>
+          ) : null}
         </div>
 
         {thinking && (

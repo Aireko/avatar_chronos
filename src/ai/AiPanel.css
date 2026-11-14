@@ -144,6 +144,9 @@
   outline: 2.5px dashed var(--pen-2);
   outline-offset: 3px;
 }
+/* Focus lands on the run heading when the app hands in a prompt; only the keyboard ring shows. */
+.ai-run-head:focus { outline: none; }
+.ai-run-head:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: 3px; }
 
 /* ---------- details (system prompt, thinking) ---------- */
 .ai-panel details { margin: 10px 0 0; }

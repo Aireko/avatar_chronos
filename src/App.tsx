@@ -18,6 +18,7 @@ import { carryIds, layoutGraph } from "./graph/layout";
 import { Terminal } from "./graph/Terminal";
 import { ScopeBar } from "./graph/ScopeBar";
 import { PROJECT, scopeGraph, scopeKey, type Scope } from "./graph/scope";
+import { useTheme } from "./tools/theme";
 import { ExplorerIcon, FolderIcon, PeopleIcon, ReloadIcon, ReviewIcon, SparkIcon, ThemeIcon } from "./tools/icons";
 import { Presence } from "./tools/Presence";
 import { ToolDrawer, type ToolId } from "./tools/ToolDrawer";
@@ -28,10 +29,9 @@ const TOOLS: { id: ToolId; label: string; title: string; hint: string; icon: () 
   { id: "people", label: "People", title: "Who worked on this?", hint: "Find who wrote a file and email them", icon: PeopleIcon },
 ];
 
-type Theme = "paper" | "board";
-
 function App() {
-  const [theme, setTheme] = useState<Theme>("paper");
+  // Follows the system light/dark setting until the user picks; their pick is remembered.
+  const [theme, setTheme] = useTheme();
   const [version, setVersion] = useState("");
   const [connected, setConnected] = useState<boolean | null>(null);
   const [path, setPath] = useState("");

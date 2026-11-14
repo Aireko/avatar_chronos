@@ -5,6 +5,24 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Avatar</title>
+    <script>
+      // Pick the theme before the page first paints. (The native window stays hidden until
+      // the page has loaded, see src-tauri/src/lib.rs, so nothing light shows before this.)
+      // Same rule as src/tools/theme.ts: the saved pick, otherwise the system setting.
+      (function () {
+        var theme = null;
+        try {
+          theme = localStorage.getItem("chronos.theme");
+        } catch (e) {}
+        if (theme !== "paper" && theme !== "board") {
+          theme = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "board" : "paper";
+        }
+        document.documentElement.dataset.theme = theme;
+      })();
+    </script>
+    <style>
+      html[data-theme="board"], html[data-theme="board"] body { background: #22302d; }
+    </style>
   </head>
 
   <body>

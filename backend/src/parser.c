@@ -939,6 +939,7 @@ static int observe_node(ParseState *state, TSNode node, size_t *parent)
                 }
             }
         }
+        return CHRONOS_OK;
     } else if (strcmp(type, "class_declaration") == 0 ||
                strcmp(type, "abstract_class_declaration") == 0 ||
                strcmp(type, "struct_item") == 0 || strcmp(type, "enum_item") == 0 ||

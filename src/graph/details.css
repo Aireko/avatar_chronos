@@ -212,6 +212,17 @@
   line-height: 1;
   cursor: pointer;
 }
+.ctx-node {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ctx-node:hover { text-decoration: underline; }
+.ctx-node:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: 2px; }
 .ctx table { width: 100%; border-collapse: collapse; font-size: 15px; }
 .ctx th { text-align: left; font-weight: 400; color: var(--soft); border-bottom: 2px solid var(--ink); }
 .ctx td { padding: 3px 6px 3px 0; border-bottom: 1.5px dashed var(--grid-strong); vertical-align: top; overflow-wrap: anywhere; }

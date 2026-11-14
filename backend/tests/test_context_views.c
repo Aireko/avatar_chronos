@@ -139,6 +139,17 @@ static const ContextGraphEdge *find_edge(const ContextGraph *graph, const char *
     return NULL;
 }
 
+static void assert_brief_evidence_resolves(const ContextGraph *graph,
+                                             const ContextBrief *brief)
+{
+    for (size_t i = 0; i < brief->section_count; ++i)
+        for (size_t j = 0; j < brief->sections[i].item_count; ++j)
+            for (size_t k = 0; k < brief->sections[i].items[j].evidence_count; ++k)
+                assert(find_evidence(graph, brief->sections[i].items[j].evidence_ids[k]) != NULL);
+    for (size_t i = 0; i < brief->omitted_count; ++i)
+        assert(find_evidence(graph, brief->omitted_ids[i]) != NULL);
+}
+
 static int has_edge_state(const ContextGraph *graph, ContextRelationState state)
 {
     for (size_t i = 0; i < graph->edge_count; ++i)
@@ -202,8 +213,7 @@ int main(void)
     };
     ContextViews views = {0};
     assert(context_build_views(index, &request, &views) == CHRONOS_OK);
-    assert(views.graph.evidence == views.brief.evidence);
-    assert(views.graph.evidence_count == views.brief.evidence_count);
+    assert_brief_evidence_resolves(&views.graph, &views.brief);
 
     const ContextBriefSection *entry = find_section(&views.brief, "entry-points");
     const ContextBriefSection *flows = find_section(&views.brief, "top-flows");
@@ -310,7 +320,7 @@ int main(void)
     assert(targets != NULL && targets->item_count == 2);
     assert(strcmp(targets->items[0].text, "Target: main in app/main.c.") == 0);
     assert(strcmp(targets->items[1].text, "Target: gamma in lib/remote.c.") == 0);
-    assert(multi_views.graph.evidence == multi_views.brief.evidence);
+    assert_brief_evidence_resolves(&multi_views.graph, &multi_views.brief);
     assert(item_count(&multi_views.brief) <= request.budget.max_items);
     assert_brief_json(&multi_views.brief, 0);
     context_views_free(&multi_views);

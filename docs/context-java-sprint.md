@@ -104,6 +104,25 @@ Java files themselves are fully covered.
 The synthetic Java coverage fixture in CI has 10 supported Java files and one
 unsupported Go file, so the assertion checks a mixed inventory above 90%.
 
+## Performance review
+
+The first resolver passed every same-name method through Java receiver matching
+for unqualified calls. A synthetic 500-file Java repository with repeated
+method names exposed that scan:
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Java index, 500 files / 6,509 scopes | ~1.35 s | ~1.20 s |
+| Context views, full graph | ~0.67 s | ~0.65 s |
+| `PetShop` index, 14 files | ~0.04 s | ~0.04 s |
+
+The resolver now keeps a file/name index in `MapperLookup`. Unqualified Java
+calls resolve against the caller's file first, so a repository with thousands
+of same-named methods no longer scans the global short-name set for every call.
+Qualified calls still use the receiver/import matcher. Full graph view
+materialization remains outside this slice; the payload-control page API is the
+long-term fix for that path.
+
 ## Definition of done
 
 - Java is included in the coverage diagnostic and the supported-language docs.

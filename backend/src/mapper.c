@@ -16,6 +16,7 @@ struct MapperLookup {
     NameEntry *refs;
     NameEntry *short_names;
     NameEntry *qualified_names;
+    NameEntry *file_names;
     size_t callable_count;
 };
 
@@ -26,6 +27,31 @@ static int compare_entries(const void *a, const void *b)
     int order = strcmp(left->name, right->name);
     if (order != 0) return order;
     return (left->symbol > right->symbol) - (left->symbol < right->symbol);
+}
+
+static int compare_file_entries(const void *a, const void *b)
+{
+    const NameEntry *left = a;
+    const NameEntry *right = b;
+    int order = strcmp(left->symbol->location.file_path, right->symbol->location.file_path);
+    if (order != 0) return order;
+    order = strcmp(left->name, right->name);
+    if (order != 0) return order;
+    return (left->symbol > right->symbol) - (left->symbol < right->symbol);
+}
+
+static size_t find_file_name(const NameEntry *entries, size_t count,
+                             const char *path, const char *name)
+{
+    size_t first = 0;
+    while (first < count) {
+        size_t middle = first + (count - first) / 2;
+        int order = strcmp(entries[middle].symbol->location.file_path, path);
+        if (order == 0) order = strcmp(entries[middle].name, name);
+        if (order < 0) first = middle + 1;
+        else count = middle;
+    }
+    return first;
 }
 
 static size_t find_name(const NameEntry *entries, size_t count, const char *name)
@@ -45,6 +71,7 @@ void mapper_lookup_free(MapperLookup *lookup)
     free(lookup->refs);
     free(lookup->short_names);
     free(lookup->qualified_names);
+    free(lookup->file_names);
     free(lookup);
 }
 
@@ -58,7 +85,9 @@ int mapper_lookup_build(const RepositoryGraph *graph, MapperLookup **out)
         lookup->refs = calloc(count, sizeof *lookup->refs);
         lookup->short_names = calloc(count, sizeof *lookup->short_names);
         lookup->qualified_names = calloc(count, sizeof *lookup->qualified_names);
-        if (!lookup->refs || !lookup->short_names || !lookup->qualified_names) {
+        lookup->file_names = calloc(count, sizeof *lookup->file_names);
+        if (!lookup->refs || !lookup->short_names || !lookup->qualified_names ||
+            !lookup->file_names) {
             mapper_lookup_free(lookup);
             return CHRONOS_OUT_OF_MEMORY;
         }
@@ -69,11 +98,13 @@ int mapper_lookup_build(const RepositoryGraph *graph, MapperLookup **out)
                 size_t j = lookup->callable_count++;
                 lookup->short_names[j] = (NameEntry){node->name, node};
                 lookup->qualified_names[j] = (NameEntry){node->qualified_name, node};
+                lookup->file_names[j] = (NameEntry){node->name, node};
             }
         }
         qsort(lookup->refs, count, sizeof *lookup->refs, compare_entries);
         qsort(lookup->short_names, lookup->callable_count, sizeof *lookup->short_names, compare_entries);
         qsort(lookup->qualified_names, lookup->callable_count, sizeof *lookup->qualified_names, compare_entries);
+        qsort(lookup->file_names, lookup->callable_count, sizeof *lookup->file_names, compare_file_entries);
     }
     *out = lookup;
     return CHRONOS_OK;
@@ -270,6 +301,38 @@ static int resolve_java_call(const MapperLookup *lookup, GraphCall *call, const 
 {
     const char *method = java_method_name(call->callee_text);
     if (*method == '\0') return CHRONOS_OK;
+
+    /* Unqualified calls usually resolve inside the caller's file. Use the
+     * file/name index so a large repository does not scan every method with
+     * the same short name for every call. */
+    if (call->callee_text == method) {
+        size_t first_file = find_file_name(lookup->file_names, lookup->callable_count,
+                                           file->file_path, method);
+        size_t last_file = first_file;
+        while (last_file < lookup->callable_count) {
+            const GraphSymbol *node = lookup->file_names[last_file].symbol;
+            if (strcmp(node->location.file_path, file->file_path) != 0 ||
+                strcmp(node->name, method) != 0) break;
+            ++last_file;
+        }
+        size_t local_count = last_file - first_file;
+        if (local_count == 1) {
+            call->resolution = CALL_RESOLVED;
+            call->callee = &lookup->file_names[first_file].symbol->ref;
+            return CHRONOS_OK;
+        }
+        if (local_count > 1) {
+            SymbolVersionRef *candidates = calloc(local_count, sizeof *candidates);
+            if (candidates == NULL) return CHRONOS_OUT_OF_MEMORY;
+            call->resolution = CALL_AMBIGUOUS;
+            call->candidates = candidates;
+            call->candidate_count = local_count;
+            for (size_t i = 0; i < local_count; ++i)
+                candidates[i] = lookup->file_names[first_file + i].symbol->ref;
+            return CHRONOS_OK;
+        }
+    }
+
     size_t first = find_name(lookup->short_names, lookup->callable_count, method);
     size_t last = first;
     while (last < lookup->callable_count && strcmp(lookup->short_names[last].name, method) == 0)

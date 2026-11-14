@@ -84,10 +84,20 @@
   display: none;
 }
 
-.calls-canvas {
+/* The stage holds the scrolling canvas and, above it, the zoom keys. */
+.calls-stage {
+  position: relative;
   flex: 1 1 60%;
+  min-width: 0;
   min-height: 180px;
+  display: flex;
+}
+.calls-canvas {
+  flex: 1;
+  min-width: 0;
   overflow: auto;
+  cursor: grab;
+  user-select: none;
   /* Room to scroll the lowest boxes clear of the dock keys in the stage's bottom-left
      corner (three 36px keys, two 8px gaps and the 16px inset), as the editor's file tree
      makes (tools.css). */
@@ -99,8 +109,22 @@
   scrollbar-width: thin;
   scrollbar-color: var(--soft) transparent;
 }
+.calls-canvas.dragging {
+  cursor: grabbing;
+}
 .calls-svg {
   display: block;
+}
+/* Same keys as the history map, kept clear of the scroll bars. */
+.calls-zoom {
+  position: absolute;
+  right: 22px;
+  bottom: 22px;
+  z-index: 2;
+}
+.calls-zoom .zoom-btn:nth-child(4) {
+  font-size: 12px;
+  letter-spacing: 0;
 }
 
 .calls-head {
@@ -213,6 +237,7 @@
   stroke-linecap: round;
   transition: stroke 0.15s ease, stroke-width 0.15s ease;
 }
+
 .calls-edge.back .calls-line,
 .calls-edge.ghost .calls-line {
   stroke: var(--soft);
@@ -246,13 +271,15 @@
   stroke-width: 4px;
   pointer-events: none;
 }
-.calls-arrow-ink {
+.calls-arrowhead {
   fill: var(--ink);
 }
-.calls-arrow-soft {
+.calls-edge.back .calls-arrowhead,
+.calls-edge.ghost .calls-arrowhead {
   fill: var(--soft);
 }
-.calls-arrow-pen {
+.calls-edge.picked .calls-arrowhead,
+.calls-edge:focus-visible .calls-arrowhead {
   fill: var(--pen-2);
 }
 
@@ -274,6 +301,10 @@
 .calls-edge.draw .calls-line { animation: calls-pen 0.26s ease-out var(--d, 0ms) backwards; }
 .calls-edge.draw.is-inward .calls-line { animation-name: calls-pen-back; }
 .calls-edge.back.draw .calls-line { animation: fade-in 0.3s ease-out var(--d, 0ms) backwards; }
+/* The head is its own shape: it shows once the pen reaches it (at the start for a line drawn inward). */
+.calls-edge.draw .calls-arrowhead { animation: fade-in 0.12s ease-out calc(var(--d, 0ms) + 200ms) backwards; }
+.calls-edge.draw.is-inward .calls-arrowhead { animation-delay: var(--d, 0ms); }
+.calls-edge.back.draw .calls-arrowhead { animation-delay: var(--d, 0ms); }
 .calls-edge.draw .calls-count { animation: fade-in 0.2s ease-out calc(var(--d, 0ms) + 260ms) backwards; }
 @keyframes calls-pen {
   from { clip-path: inset(-10px 100% -10px -10px); }
@@ -427,6 +458,7 @@
   .calls-edge.draw .calls-line,
   .calls-edge.draw.is-inward .calls-line,
   .calls-edge.back.draw .calls-line,
+  .calls-edge.draw .calls-arrowhead,
   .calls-edge.draw .calls-count,
   .calls-state,
   .calls-error,

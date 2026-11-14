@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { Presence } from "../tools/Presence";
 import {
   callTree,
@@ -10,7 +18,9 @@ import {
   type CallTreeOk,
   type CallTreeSymbol,
 } from "../backend";
+import { prefersReducedMotion } from "./drag";
 import {
+  HEAD_PATH,
   NODE_H,
   NODE_W,
   baseName,
@@ -42,7 +52,10 @@ interface Target {
   name: string;
 }
 
-type Load = { phase: "loading" } | { phase: "error"; message: string } | { phase: "done"; tree: CallTree };
+type Load =
+  | { phase: "loading" }
+  | { phase: "error"; message: string }
+  | { phase: "done"; tree: CallTree };
 
 type Pick = { kind: "node"; id: string } | { kind: "edges"; ids: string[] } | null;
 
@@ -53,6 +66,18 @@ type Shown =
   | { phase: "ready"; lines: SourceLine[]; clipped: number };
 
 const DEPTHS = [1, 2, 3, 4];
+
+// Zoom works like the history map: buttons, +/-, Ctrl/Cmd+wheel, all gliding. The range runs
+// further out than the history map's, because a function with dozens of callees is tall.
+const ZOOM_MIN = 0.25;
+const ZOOM_MAX = 2;
+const ZOOM_STEP = 0.12;
+/** How long a zoom key or button takes to glide to its new zoom. */
+const ZOOM_MS = 200;
+/** A drag shorter than this is a click, not a pan. */
+const DRAG_SLOP = 5;
+
+const clampZoom = (z: number) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(z * 100) / 100));
 const MAX_SHOWN_SITES = 8;
 
 const short = (sha: string) => (/^[0-9a-f]{40}$/i.test(sha) ? sha.slice(0, 7) : sha);
@@ -85,6 +110,17 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
   const [pick, setPick] = useState<Pick>(null);
   const [shown, setShown] = useState<Shown>({ phase: "idle" });
   const canvas = useRef<HTMLDivElement>(null);
+  const svgEl = useRef<SVGSVGElement>(null);
+  const drag = useRef({ moved: false });
+  // `zoom` is what React last drew; `goal` is where a gliding zoom is heading (shown on the keys).
+  const [zoom, setZoom] = useState(1);
+  const [goal, setGoal] = useState(1);
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+  /** The zoom on screen right now, which differs from `zoom` while a glide runs. */
+  const liveZoom = useRef(zoom);
+  const glide = useRef<{ raf: number; target: number } | null>(null);
+  const mapSize = useRef<{ w: number; h: number } | null>(null);
 
   // One request per target, depth and commit. A newer one makes an older answer stale.
   useEffect(() => {
@@ -130,9 +166,10 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
   useEffect(() => {
     const el = canvas.current;
     if (!el || !layout) return;
+    const z = liveZoom.current;
     el.scrollTo({
-      left: Math.max(0, layout.rootX - el.clientWidth / 2),
-      top: Math.max(0, layout.rootY - el.clientHeight / 2),
+      left: Math.max(0, layout.rootX * z - el.clientWidth / 2),
+      top: Math.max(0, layout.rootY * z - el.clientHeight / 2),
     });
   }, [layout]);
 
@@ -177,6 +214,150 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
       stale = true;
     };
   }, [repoPath, tree, nodes, edges, pick]);
+
+  mapSize.current = layout ? { w: layout.width, h: layout.height } : null;
+
+  /** Sizes the drawing for zoom `z` straight on the DOM, without rendering the whole map again. */
+  function paintZoom(z: number) {
+    liveZoom.current = z;
+    const size = mapSize.current;
+    const el = svgEl.current;
+    if (!size || !el) return;
+    el.setAttribute("width", String(size.w * z));
+    el.setAttribute("height", String(size.h * z));
+  }
+
+  function stopGlide() {
+    if (glide.current) cancelAnimationFrame(glide.current.raf);
+    glide.current = null;
+  }
+
+  /** Where the zoom is heading: the end of a running glide, or the current zoom. */
+  const targetZoom = () => glide.current?.target ?? liveZoom.current;
+
+  /** Zooms to `next`, keeping the point under `anchor` (default: the middle of the view) still. */
+  function applyZoom(next: number, anchor?: { x: number; y: number }, smooth = false) {
+    const el = canvas.current;
+    const prev = liveZoom.current;
+    const z = clampZoom(next);
+    stopGlide();
+    setGoal(z);
+    if (z === prev) {
+      if (z !== zoomRef.current) setZoom(z);
+      return;
+    }
+    if (!el) {
+      liveZoom.current = z;
+      setZoom(z);
+      return;
+    }
+    const ax = anchor?.x ?? el.clientWidth / 2;
+    const ay = anchor?.y ?? el.clientHeight / 2;
+    const contentX = (el.scrollLeft + ax) / prev;
+    const contentY = (el.scrollTop + ay) / prev;
+    const settle = (at: number) => {
+      el.scrollLeft = contentX * at - ax;
+      el.scrollTop = contentY * at - ay;
+    };
+    if (!smooth || prefersReducedMotion()) {
+      paintZoom(z);
+      settle(z);
+      setZoom(z);
+      return;
+    }
+    const start = performance.now();
+    const step = (now: number) => {
+      const t = Math.min(1, Math.max(0, (now - start) / ZOOM_MS));
+      const at = prev + (z - prev) * (1 - (1 - t) ** 3);
+      paintZoom(at);
+      settle(at);
+      if (t < 1) {
+        glide.current = { raf: requestAnimationFrame(step), target: z };
+      } else {
+        glide.current = null;
+        setZoom(z);
+      }
+    };
+    glide.current = { raf: requestAnimationFrame(step), target: z };
+  }
+
+  /** The zoom at which the whole map fits the view, never past 100%. */
+  function fitZoom() {
+    const el = canvas.current;
+    const size = mapSize.current;
+    if (!el || !size) return 1;
+    return Math.min(1, el.clientWidth / size.w, el.clientHeight / size.h);
+  }
+
+  useEffect(() => stopGlide, []);
+
+  // Ctrl/Cmd+wheel (and a trackpad pinch) zooms around the pointer; a plain wheel scrolls as usual.
+  useEffect(() => {
+    const el = canvas.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const factor = e.deltaY < 0 ? 1 + ZOOM_STEP : 1 / (1 + ZOOM_STEP);
+      applyZoom(liveZoom.current * factor, { x: e.clientX - rect.left, y: e.clientY - rect.top });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tree]);
+
+  // +/- on the keyboard zoom the map, and Ctrl/Cmd+0 resets it (ignored while typing).
+  useEffect(() => {
+    if (!tree) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === "+" || e.key === "=") {
+        e.preventDefault();
+        applyZoom(targetZoom() + ZOOM_STEP, undefined, true);
+      } else if (e.key === "-" || e.key === "_") {
+        e.preventDefault();
+        applyZoom(targetZoom() - ZOOM_STEP, undefined, true);
+      } else if (e.key === "0" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        applyZoom(1, undefined, true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tree]);
+
+  // Drag the background to pan, as on the history map. Starting on a box or a line is a click,
+  // and a drag never counts as one.
+  function onPointerDown(e: ReactPointerEvent<HTMLDivElement>) {
+    if (e.button !== 0) return;
+    if ((e.target as Element).closest('[role="button"]')) return;
+    const el = e.currentTarget;
+    if (e.nativeEvent.offsetX >= el.clientWidth || e.nativeEvent.offsetY >= el.clientHeight) return;
+    const start = { x: e.clientX, y: e.clientY, left: el.scrollLeft, top: el.scrollTop };
+    drag.current.moved = false;
+    const move = (ev: PointerEvent) => {
+      const dx = ev.clientX - start.x;
+      const dy = ev.clientY - start.y;
+      if (!drag.current.moved && Math.hypot(dx, dy) < DRAG_SLOP) return;
+      if (!drag.current.moved) {
+        drag.current.moved = true;
+        el.classList.add("dragging");
+      }
+      el.scrollLeft = start.left - dx;
+      el.scrollTop = start.top - dy;
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      el.classList.remove("dragging");
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  }
 
   function centre(symbol: CallTreeSymbol, remember = true) {
     if (remember) setTrail((t) => [...t, target]);
@@ -340,151 +521,188 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
         )}
       </div>
 
-      <div className="calls-canvas" ref={canvas}>
-        <svg
-          className="calls-svg"
-          width={layout.width}
-          height={layout.height}
-          viewBox={`0 0 ${layout.width} ${layout.height}`}
-          role="group"
-          aria-label={`Callers and callees of ${title}`}
-        >
-          <defs>
-            <marker id="calls-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto">
-              <path className="calls-arrow-ink" d="M 0 1 L 10 5 L 0 9 z" />
-            </marker>
-            <marker id="calls-arrow-soft" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto">
-              <path className="calls-arrow-soft" d="M 0 1 L 10 5 L 0 9 z" />
-            </marker>
-            <marker id="calls-arrow-pen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto">
-              <path className="calls-arrow-pen" d="M 0 1 L 10 5 L 0 9 z" />
-            </marker>
-          </defs>
+      <div className="calls-stage">
+        <div className="calls-canvas" ref={canvas} onPointerDown={onPointerDown}>
+          <svg
+            ref={svgEl}
+            className="calls-svg"
+            width={layout.width * zoom}
+            height={layout.height * zoom}
+            viewBox={`0 0 ${layout.width} ${layout.height}`}
+            role="group"
+            aria-label={`Callers and callees of ${title}`}
+          >
+            {layout.callerHeadX !== null && (
+              <text className={`calls-head${freshMap ? " draw" : ""}`} x={layout.callerHeadX} y={30} textAnchor="middle">
+                Called by
+              </text>
+            )}
+            {layout.calleeHeadX !== null && (
+              <text className={`calls-head${freshMap ? " draw" : ""}`} x={layout.calleeHeadX} y={30} textAnchor="middle">
+                Calls
+              </text>
+            )}
 
-          {layout.callerHeadX !== null && (
-            <text className={`calls-head${freshMap ? " draw" : ""}`} x={layout.callerHeadX} y={30} textAnchor="middle">
-              Called by
-            </text>
-          )}
-          {layout.calleeHeadX !== null && (
-            <text className={`calls-head${freshMap ? " draw" : ""}`} x={layout.calleeHeadX} y={30} textAnchor="middle">
-              Calls
-            </text>
-          )}
-
-          {layout.edges.map((line) => {
-            const selected = edgeSelected(line.edgeIds);
-            const marker = selected ? "calls-arrow-pen" : line.kind === "tree" ? "calls-arrow" : "calls-arrow-soft";
-            const first = edges.get(line.edgeIds[0]);
-            const label = first
-              ? `${nodes.get(first.from)?.name ?? "?"} calls ${first.to ? (nodes.get(first.to)?.name ?? "?") : first.calleeText}`
-              : "call";
-            const select = () => setPick({ kind: "edges", ids: line.edgeIds });
-            const draw = plan.lines.get(line.id);
-            return (
-              <g
-                key={line.id}
-                className={`calls-edge ${line.kind}${selected ? " picked" : ""}${draw ? " draw" : ""}${draw?.inward ? " is-inward" : ""}`}
-                style={drawDelay(draw?.delay)}
-                role="button"
-                tabIndex={0}
-                aria-label={`${label}${line.callCount > 1 ? `, ${line.callCount} calls` : ""}. Show the call site`}
-                onClick={select}
-                onKeyDown={activate(select)}
-              >
-                <path className="calls-hit" d={line.path} />
-                <path className="calls-line" d={line.path} markerEnd={`url(#${marker})`} />
-                {line.callCount > 1 && (
-                  <text className="calls-count" x={line.mid.x} y={line.mid.y - 5} textAnchor="middle">
-                    ×{line.callCount}
-                  </text>
-                )}
-              </g>
-            );
-          })}
-
-          {layout.ghosts.map((ghost) => {
-            const selected = edgeSelected(ghost.edgeIds);
-            const tag =
-              ghost.state === "ambiguous"
-                ? `ambiguous · ${ghost.candidates} matches`
-                : ghost.state === "mixed"
-                  ? "unresolved or ambiguous"
-                  : "unresolved";
-            return (
-              <g
-                key={ghost.id}
-                className={`calls-ghost${selected ? " picked" : ""}${plan.boxes.has(ghost.id) ? " draw" : ""}`}
-                style={drawDelay(plan.boxes.get(ghost.id))}
-                transform={`translate(${ghost.cx - NODE_W / 2} ${ghost.cy - NODE_H / 2})`}
-                role="button"
-                tabIndex={0}
-                aria-label={`${ghost.label}, ${tag}. Show the call site`}
-                onClick={() => pickGhost(ghost)}
-                onKeyDown={activate(() => pickGhost(ghost))}
-              >
-                <title>{`${ghost.label}: the indexer could not tie this call to one function (${tag})`}</title>
-                <rect className="calls-pad" width={NODE_W} height={NODE_H} rx={10} />
-                {/* The box lands and tilts in here: the outer group's transform places it. */}
-                <g className="calls-body">
-                  <rect className="calls-box" width={NODE_W} height={NODE_H} rx={10} />
-                  <text className="calls-ghost-name" x={12} y={21}>
-                    {fit(ghost.label, 24)}
-                    {ghost.callCount > 1 ? ` ×${ghost.callCount}` : ""}
-                  </text>
-                  <text className="calls-file" x={12} y={39}>
-                    {tag}
-                  </text>
-                </g>
-              </g>
-            );
-          })}
-
-          {layout.nodes.map(({ node, cx, cy }) => {
-            const isRoot = node.side === "root";
-            const selected = pickedNode?.id === node.id;
-            const outerX = node.side === "caller" ? 0 : NODE_W;
-            const choose = () => setPick({ kind: "node", id: node.id });
-            return (
-              <g
-                key={node.id}
-                className={`calls-node ${node.side}${selected ? " picked" : ""}${plan.boxes.has(node.id) ? " draw" : ""}`}
-                style={drawDelay(plan.boxes.get(node.id))}
-                transform={`translate(${cx - NODE_W / 2} ${cy - NODE_H / 2})`}
-                role="button"
-                tabIndex={0}
-                aria-current={isRoot ? "true" : undefined}
-                aria-label={`${node.qualifiedName}, ${node.kind} in ${node.filePath}${isRoot ? ", the function you chose" : ""}${node.hasMore ? ", has more neighbours not shown" : ""}`}
-                onClick={choose}
-                onDoubleClick={() => {
-                  if (!isRoot) centre(node);
-                }}
-                onKeyDown={activate(choose)}
-              >
-                <title>{`${node.qualifiedName} (${node.filePath}:${node.startLine})`}</title>
-                <rect className="calls-pad" width={NODE_W} height={NODE_H} rx={10} />
-                {/* The box lands and tilts in here: the outer group's transform places it. */}
-                <g className="calls-body">
-                  <rect className="calls-box" width={NODE_W} height={NODE_H} rx={10} />
-                  <text className="calls-name" x={12} y={21}>
-                    {fit(node.qualifiedName, 24)}
-                  </text>
-                  <text className="calls-file" x={12} y={39}>
-                    {fit(`${baseName(node.filePath)}:${node.startLine}`, 30)}
-                  </text>
-                  {node.hasMore && (
-                    <g className="calls-more" transform={`translate(${outerX} ${NODE_H / 2})`}>
-                      <circle r={10} />
-                      <text textAnchor="middle" y={4}>
-                        …
-                      </text>
-                    </g>
+            {layout.edges.map((line) => {
+              const selected = edgeSelected(line.edgeIds);
+              const first = edges.get(line.edgeIds[0]);
+              const label = first
+                ? `${nodes.get(first.from)?.name ?? "?"} calls ${first.to ? (nodes.get(first.to)?.name ?? "?") : first.calleeText}`
+                : "call";
+              const select = () => setPick({ kind: "edges", ids: line.edgeIds });
+              const draw = plan.lines.get(line.id);
+              return (
+                <g
+                  key={line.id}
+                  className={`calls-edge ${line.kind}${selected ? " picked" : ""}${draw ? " draw" : ""}${draw?.inward ? " is-inward" : ""}`}
+                  style={drawDelay(draw?.delay)}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`${label}${line.callCount > 1 ? `, ${line.callCount} calls` : ""}. Show the call site`}
+                  onClick={select}
+                  onKeyDown={activate(select)}
+                >
+                  <path className="calls-hit" d={line.path} />
+                  <path className="calls-line" d={line.path} />
+                  {/* The head is its own shape, aimed along the last stretch of the line. */}
+                  <g transform={`translate(${line.tip.x} ${line.tip.y}) rotate(${line.angle})`}>
+                    <path className="calls-arrowhead" d={HEAD_PATH} />
+                  </g>
+                  {line.callCount > 1 && (
+                    <text className="calls-count" x={line.mid.x} y={line.mid.y - 5} textAnchor="middle">
+                      ×{line.callCount}
+                    </text>
                   )}
                 </g>
-              </g>
-            );
-          })}
-        </svg>
+              );
+            })}
+
+            {layout.ghosts.map((ghost) => {
+              const selected = edgeSelected(ghost.edgeIds);
+              const tag =
+                ghost.state === "ambiguous"
+                  ? `ambiguous · ${ghost.candidates} matches`
+                  : ghost.state === "mixed"
+                    ? "unresolved or ambiguous"
+                    : "unresolved";
+              return (
+                <g
+                  key={ghost.id}
+                  className={`calls-ghost${selected ? " picked" : ""}${plan.boxes.has(ghost.id) ? " draw" : ""}`}
+                  style={drawDelay(plan.boxes.get(ghost.id))}
+                  transform={`translate(${ghost.cx - NODE_W / 2} ${ghost.cy - NODE_H / 2})`}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`${ghost.label}, ${tag}. Show the call site`}
+                  onClick={() => pickGhost(ghost)}
+                  onKeyDown={activate(() => pickGhost(ghost))}
+                >
+                  <title>{`${ghost.label}: the indexer could not tie this call to one function (${tag})`}</title>
+                  <rect className="calls-pad" width={NODE_W} height={NODE_H} rx={10} />
+                  {/* The box lands and tilts in here: the outer group's transform places it. */}
+                  <g className="calls-body">
+                    <rect className="calls-box" width={NODE_W} height={NODE_H} rx={10} />
+                    <text className="calls-ghost-name" x={12} y={21}>
+                      {fit(ghost.label, 24)}
+                      {ghost.callCount > 1 ? ` ×${ghost.callCount}` : ""}
+                    </text>
+                    <text className="calls-file" x={12} y={39}>
+                      {tag}
+                    </text>
+                  </g>
+                </g>
+              );
+            })}
+
+            {layout.nodes.map(({ node, cx, cy }) => {
+              const isRoot = node.side === "root";
+              const selected = pickedNode?.id === node.id;
+              const outerX = node.side === "caller" ? 0 : NODE_W;
+              const choose = () => setPick({ kind: "node", id: node.id });
+              return (
+                <g
+                  key={node.id}
+                  className={`calls-node ${node.side}${selected ? " picked" : ""}${plan.boxes.has(node.id) ? " draw" : ""}`}
+                  style={drawDelay(plan.boxes.get(node.id))}
+                  transform={`translate(${cx - NODE_W / 2} ${cy - NODE_H / 2})`}
+                  role="button"
+                  tabIndex={0}
+                  aria-current={isRoot ? "true" : undefined}
+                  aria-label={`${node.qualifiedName}, ${node.kind} in ${node.filePath}${isRoot ? ", the function you chose" : ""}${node.hasMore ? ", has more neighbours not shown" : ""}`}
+                  onClick={choose}
+                  onDoubleClick={() => {
+                    if (!isRoot) centre(node);
+                  }}
+                  onKeyDown={activate(choose)}
+                >
+                  <title>{`${node.qualifiedName} (${node.filePath}:${node.startLine})`}</title>
+                  <rect className="calls-pad" width={NODE_W} height={NODE_H} rx={10} />
+                  {/* The box lands and tilts in here: the outer group's transform places it. */}
+                  <g className="calls-body">
+                    <rect className="calls-box" width={NODE_W} height={NODE_H} rx={10} />
+                    <text className="calls-name" x={12} y={21}>
+                      {fit(node.qualifiedName, 24)}
+                    </text>
+                    <text className="calls-file" x={12} y={39}>
+                      {fit(`${baseName(node.filePath)}:${node.startLine}`, 30)}
+                    </text>
+                    {node.hasMore && (
+                      <g className="calls-more" transform={`translate(${outerX} ${NODE_H / 2})`}>
+                        <circle r={10} />
+                        <text textAnchor="middle" y={4}>
+                          …
+                        </text>
+                      </g>
+                    )}
+                  </g>
+                </g>
+              );
+            })}
+          </svg>
+        </div>
+
+        <div className="zoom-controls calls-zoom" role="toolbar" aria-label="Zoom">
+          <button
+            type="button"
+            className="btn zoom-btn"
+            aria-label="Zoom in"
+            title="Zoom in (+)"
+            disabled={goal >= ZOOM_MAX}
+            onClick={() => applyZoom(targetZoom() + ZOOM_STEP, undefined, true)}
+          >
+            +
+          </button>
+          <button
+            type="button"
+            className="btn zoom-btn"
+            aria-label={`Reset zoom, now ${Math.round(goal * 100)}%`}
+            title="Reset zoom (Ctrl/⌘ 0)"
+            onClick={() => applyZoom(1, undefined, true)}
+          >
+            <span key={Math.round(goal * 100)} className="zoom-level">
+              {Math.round(goal * 100)}%
+            </span>
+          </button>
+          <button
+            type="button"
+            className="btn zoom-btn"
+            aria-label="Zoom out"
+            title="Zoom out (−)"
+            disabled={goal <= ZOOM_MIN}
+            onClick={() => applyZoom(targetZoom() - ZOOM_STEP, undefined, true)}
+          >
+            −
+          </button>
+          <button
+            type="button"
+            className="btn zoom-btn"
+            aria-label="Fit the whole map in the view"
+            title="Fit everything in view"
+            onClick={() => applyZoom(fitZoom(), undefined, true)}
+          >
+            Fit
+          </button>
+        </div>
       </div>
 
       {/* The details roll down under the map and back up (roll-down / roll-up). */}

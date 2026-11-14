@@ -106,6 +106,18 @@ struct BlamePayload {
     blame_json: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ViewsPayload {
+    views_json: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourcePayload {
+    source_json: String,
+}
+
 /// Who wrote each line of `file_path` (relative to the repository root) at
 /// `revision` (default HEAD), plus the functions found in the file.
 #[tauri::command]
@@ -117,6 +129,56 @@ async fn blame_file(
     tauri::async_runtime::spawn_blocking(move || {
         let blame_json = ffi::blame(&repo_path, &file_path, revision.as_deref().unwrap_or(""))?;
         Ok(BlamePayload { blame_json })
+    })
+    .await
+    .map_err(join_error)?
+}
+
+/// Compiles the budgeted agent brief and module-oriented UI graph.
+#[tauri::command]
+async fn compile_views(
+    repo_path: String,
+    revision: Option<String>,
+    mode: String,
+    path: Option<String>,
+    qualified_name: Option<String>,
+    max_items: Option<u32>,
+    max_source_bytes: Option<u32>,
+) -> Result<ViewsPayload, BackendError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let views_json = ffi::compile_views(
+            &repo_path,
+            revision.as_deref().unwrap_or("HEAD"),
+            &mode,
+            path.as_deref().unwrap_or(""),
+            qualified_name.as_deref().unwrap_or(""),
+            max_items.unwrap_or(0) as usize,
+            max_source_bytes.unwrap_or(0) as usize,
+        )?;
+        Ok(ViewsPayload { views_json })
+    })
+    .await
+    .map_err(join_error)?
+}
+
+/// Reads the pinned source range behind an evidence ID/location.
+#[tauri::command]
+async fn read_source(
+    repo_path: String,
+    revision: Option<String>,
+    file_path: String,
+    start_byte: u64,
+    end_byte: u64,
+) -> Result<SourcePayload, BackendError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let source_json = ffi::read_source(
+            &repo_path,
+            revision.as_deref().unwrap_or("HEAD"),
+            &file_path,
+            start_byte as usize,
+            end_byte as usize,
+        )?;
+        Ok(SourcePayload { source_json })
     })
     .await
     .map_err(join_error)?
@@ -136,6 +198,8 @@ pub fn run() {
             run_git_command,
             analyze_merge,
             blame_file,
+            compile_views,
+            read_source,
             ai::commands::ai_status,
             ai::commands::ai_check_connection,
             ai::commands::ai_list_models,

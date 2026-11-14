@@ -1,6 +1,8 @@
 #ifndef CHRONOS_AVATAR_H
 #define CHRONOS_AVATAR_H
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -46,6 +48,31 @@ CHRONOS_API int chronos_analyze_merge(const char* repo_path,
                                       const char* source_branch,
                                       const char* target_branch,
                                       const char* output_json_path);
+
+/* Compiles the agent brief and UI graph for one revision. mode is
+ * "onboarding" or "task" (review is accepted as a task alias). Task mode
+ * requires path and qualified_name. The result is a heap JSON object with
+ * brief and graph documents; free it with chronos_free_string(). Returns
+ * AVATAR_OK, a nonnegative partial status, or a negative AVATAR_* code. On
+ * error *out_json is NULL. max_items/max_source_bytes of zero use defaults. */
+CHRONOS_API int chronos_compile_views(const char* repo_path,
+                                      const char* revision,
+                                      const char* mode,
+                                      const char* path,
+                                      const char* qualified_name,
+                                      size_t max_items,
+                                      size_t max_source_bytes,
+                                      char** out_json);
+
+/* Reads pinned source bytes for start_byte..end_byte and returns a heap JSON
+ * object with repository, revision, path, range and source. revision may be
+ * empty for HEAD. Free the result with chronos_free_string(). */
+CHRONOS_API int chronos_read_source(const char* repo_path,
+                                    const char* revision,
+                                    const char* file_path,
+                                    size_t start_byte,
+                                    size_t end_byte,
+                                    char** out_json);
 
 /* Who wrote each line of one file at `revision` (NULL or "" means HEAD), from
  * `git blame --porcelain -w -M`. `file_path` is relative to the repository

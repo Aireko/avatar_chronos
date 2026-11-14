@@ -23,6 +23,8 @@
 #include "git_process.h"
 #include "avatar_util.h"
 #include "parser_internal.h"
+#include "context_views.h"
+#include "index.h"
 
 /* Internal short names for the public AVATAR_* codes in avatar.h. */
 #define CHRONOS_OK                  AVATAR_OK
@@ -2574,6 +2576,244 @@ int chronos_blame(const char* repo_path, const char* file_path, const char* revi
     sb_free(&spec);
     blame_free(&b);
     free(oid);
+    free(path);
+    free(top);
+    return rc;
+}
+
+static const GraphSymbol* find_views_symbol(const RepositoryIndex* index,
+                                            const char* path,
+                                            const char* qualified_name,
+                                            int* ambiguous)
+{
+    size_t count = 0;
+    const IndexScope* scopes = index_scopes(index, &count);
+    const GraphSymbol* found = NULL;
+    *ambiguous = 0;
+    for (size_t i = 0; i < count; ++i) {
+        if (scopes[i].kind != INDEX_SYMBOL || !scopes[i].symbol) continue;
+        const GraphSymbol* symbol = scopes[i].symbol;
+        if (strcmp(symbol->location.file_path, path) != 0 ||
+            strcmp(symbol->qualified_name, qualified_name) != 0) continue;
+        if (found) {
+            *ambiguous = 1;
+            return NULL;
+        }
+        found = symbol;
+    }
+    return found;
+}
+
+int chronos_compile_views(const char* repo_path,
+                          const char* revision,
+                          const char* mode,
+                          const char* path,
+                          const char* qualified_name,
+                          size_t max_items,
+                          size_t max_source_bytes,
+                          char** out_json)
+{
+    char* top = NULL;
+    RepositoryIndex* index = NULL;
+    ContextViews views;
+    ContextFlowSeed seed;
+    ContextFlowRequest flow;
+    ContextViewsRequest request;
+    char* brief_json = NULL;
+    char* graph_json = NULL;
+    sbuf_t result = {0};
+    int rc, views_status;
+
+    clear_error();
+    memset(&views, 0, sizeof views);
+    memset(&seed, 0, sizeof seed);
+    if (!out_json) { set_error("out_json is required"); return CHRONOS_ERR_ARGS; }
+    *out_json = NULL;
+    if (!revision || !*revision) revision = "HEAD";
+    if (!validate_revision(revision)) return CHRONOS_ERR_ARGS;
+    if (!mode || !*mode) mode = "onboarding";
+
+    memset(&flow, 0, sizeof flow);
+    if (strcmp(mode, "onboarding") == 0) {
+        flow.mode = CONTEXT_FLOW_ONBOARDING;
+    } else if (strcmp(mode, "task") == 0 || strcmp(mode, "review") == 0) {
+        flow.mode = CONTEXT_FLOW_TASK;
+        if (!path || !*path || !qualified_name || !*qualified_name) {
+            set_error("task mode requires path and qualified_name");
+            return CHRONOS_ERR_ARGS;
+        }
+    } else {
+        set_error("mode must be onboarding or task");
+        return CHRONOS_ERR_ARGS;
+    }
+
+    rc = resolve_repo(repo_path, &top);
+    if (rc != CHRONOS_OK) return rc;
+    {
+        GitRepository repo = {top, top};
+        rc = index_build_revision(&repo, revision, &index);
+    }
+    if (rc < 0) {
+        set_error("index build failed (status %d)", rc);
+        free(top);
+        return rc;
+    }
+
+    if (flow.mode == CONTEXT_FLOW_TASK) {
+        int ambiguous = 0;
+        const GraphSymbol* target = find_views_symbol(index, path, qualified_name, &ambiguous);
+        if (!target) {
+            set_error(ambiguous ? "target symbol is ambiguous" : "target symbol not found");
+            index_free(index);
+            free(top);
+            return CHRONOS_ERR_ARGS;
+        }
+        seed = (ContextFlowSeed){CONTEXT_FLOW_SEED_SYMBOL, &target->ref, NULL};
+        flow.seeds = &seed;
+        flow.seed_count = 1;
+    }
+    flow.max_hops = 3;
+    flow.max_flows = 8;
+    flow.max_nodes = 8;
+    request = (ContextViewsRequest){&flow, {max_items, max_source_bytes}};
+
+    views_status = context_build_views(index, &request, &views);
+    if (views_status < 0) {
+        set_error("view build failed (status %d)", views_status);
+        rc = views_status;
+        goto done;
+    }
+
+    {
+        int brief_len = context_brief_write_json(&views.brief, NULL, 0);
+        int graph_len = context_graph_write_json(&views.graph, NULL, 0);
+        if (brief_len < 0 || graph_len < 0) {
+            rc = brief_len < 0 ? brief_len : graph_len;
+            set_error("context JSON sizing failed (status %d)", rc);
+            goto done;
+        }
+        brief_json = (char*)malloc((size_t)brief_len + 1);
+        graph_json = (char*)malloc((size_t)graph_len + 1);
+        if (!brief_json || !graph_json) {
+            rc = CHRONOS_ERR_NOMEM;
+            set_error("out of memory");
+            goto done;
+        }
+        if (context_brief_write_json(&views.brief, brief_json, (size_t)brief_len + 1) != brief_len ||
+            context_graph_write_json(&views.graph, graph_json, (size_t)graph_len + 1) != graph_len) {
+            rc = CHRONOS_ERR_IO;
+            set_error("context JSON serialization failed");
+            goto done;
+        }
+
+        sb_puts(&result, "{\"schemaVersion\":1,\"repositoryId\":");
+        json_str(&result, index_revision(index)->repository_id);
+        sb_puts(&result, ",\"revision\":{\"repositoryId\":");
+        json_str(&result, index_revision(index)->repository_id);
+        sb_puts(&result, ",\"commitSha\":");
+        json_str(&result, index_revision(index)->commit_sha);
+        sb_puts(&result, "},\"brief\":");
+        sb_putn(&result, brief_json, (size_t)brief_len);
+        sb_puts(&result, ",\"graph\":");
+        sb_putn(&result, graph_json, (size_t)graph_len);
+        sb_puts(&result, "}");
+        if (result.oom || !result.data) {
+            rc = CHRONOS_ERR_NOMEM;
+            set_error("out of memory");
+            goto done;
+        }
+        *out_json = result.data;
+        result.data = NULL;
+        rc = views_status == CHRONOS_PARTIAL ? CHRONOS_PARTIAL : CHRONOS_OK;
+    }
+
+done:
+    sb_free(&result);
+    free(brief_json);
+    free(graph_json);
+    context_views_free(&views);
+    index_free(index);
+    free(top);
+    return rc;
+}
+
+int chronos_read_source(const char* repo_path,
+                        const char* revision,
+                        const char* file_path,
+                        size_t start_byte,
+                        size_t end_byte,
+                        char** out_json)
+{
+    char* top = NULL;
+    char* path = NULL;
+    GitRepository repo;
+    RevisionRef resolved;
+    GitBlob blob;
+    sbuf_t j = {0};
+    int rc;
+
+    clear_error();
+    memset(&resolved, 0, sizeof resolved);
+    memset(&blob, 0, sizeof blob);
+    if (!out_json) { set_error("out_json is required"); return CHRONOS_ERR_ARGS; }
+    *out_json = NULL;
+    if (!revision || !*revision) revision = "HEAD";
+    if (!validate_revision(revision)) return CHRONOS_ERR_ARGS;
+    path = normalize_repo_file(file_path);
+    if (!path) return CHRONOS_ERR_ARGS;
+    if (start_byte > end_byte) {
+        set_error("start_byte is after end_byte");
+        free(path);
+        return CHRONOS_ERR_ARGS;
+    }
+
+    rc = resolve_repo(repo_path, &top);
+    if (rc != CHRONOS_OK) {
+        free(path);
+        return rc;
+    }
+    repo = (GitRepository){top, top};
+    rc = git_resolve_revision(&repo, revision, &resolved);
+    if (rc == CHRONOS_OK) rc = git_read_blob(&repo, &resolved, path, &blob);
+    if (rc < 0) {
+        if (rc == CHRONOS_NOT_FOUND) set_error("file not found at revision: %s", path);
+        else set_error("cannot read source (status %d)", rc);
+        goto done;
+    }
+    if (end_byte > blob.byte_count) {
+        set_error("range is outside the file");
+        rc = CHRONOS_ERR_ARGS;
+        goto done;
+    }
+
+    sb_puts(&j, "{\"repositoryId\":");
+    json_str(&j, resolved.repository_id);
+    sb_puts(&j, ",\"commitSha\":");
+    json_str(&j, resolved.commit_sha);
+    sb_puts(&j, ",\"filePath\":");
+    json_str(&j, path);
+    sb_puts(&j, ",\"startByte\":");
+    sb_put_i64(&j, (long long)start_byte);
+    sb_puts(&j, ",\"endByte\":");
+    sb_put_i64(&j, (long long)end_byte);
+    sb_puts(&j, ",\"source\":");
+    const char* source_bytes = blob.bytes
+        ? (const char*)blob.bytes + start_byte : "";
+    json_strn(&j, source_bytes, end_byte - start_byte);
+    sb_putc(&j, '}');
+    if (j.oom || !j.data) {
+        rc = CHRONOS_ERR_NOMEM;
+        set_error("out of memory");
+        goto done;
+    }
+    *out_json = j.data;
+    j.data = NULL;
+    rc = CHRONOS_OK;
+
+done:
+    sb_free(&j);
+    git_blob_free(&blob);
+    git_revision_free(&resolved);
     free(path);
     free(top);
     return rc;

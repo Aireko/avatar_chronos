@@ -180,6 +180,35 @@ source budget. Evidence skipped by the brief is still present in the graph as
 prompt. `test_context_views` covers the shared catalog, template text, tight
 budgets, omitted graph edges, and task-mode caller ranking.
 
+The Tauri app exposes `compile_views` and `read_source`. The Context compiler
+panel compiles a brief and opens its matching graph; the Brief and Graph tabs
+resolve evidence through the same catalog, and an evidence button loads the
+pinned callsite range with `read_source`.
+
+### Evaluation and supported resolution
+
+`test_context_eval` is the hand-labeled evaluation set. It covers onboarding,
+change impact, symbol review, and the Chronos bridge fixture. Golden JSON under
+`backend/tests/fixtures/context_eval/golden/` is byte-compared, and semantic
+assertions check required evidence retained, unresolved relationships, brief
+budgets, and source-free graph payloads. The report prints compiler/baseline
+token estimates (bytes / 4) for each task.
+
+Supported resolution is deliberately syntactic and deterministic:
+
+- Symbols match by exact repository-relative path and qualified name.
+- A call resolves only when its callee spelling has one indexed definition in
+  the caller's language.
+- Multiple definitions make the call ambiguous; no definition makes it
+  unresolved. Neither is guessed.
+- Imports, module aliases, overloads, dynamic dispatch, and function pointers
+  are not resolved.
+- Cross-language edges come only from the explicit Tauri/FFI bridge pattern:
+  a frontend `invoke` or wrapper string, a `generate_handler!` registration,
+  Rust `ffi::` dispatch, and a matching C symbol.
+- Unsupported or partial parse coverage is reported as incomplete coverage,
+  never as a resolved relationship.
+
 ## Adding a C function
 
 1. Declare it in `backend/include/avatar.h` and implement it in `backend/src/`. New `.c` files are picked up automatically.
@@ -189,9 +218,9 @@ budgets, omitted graph edges, and task-mode caller ranking.
 
 The FFI conventions are documented at the top of `avatar.h`:
 
-- Strings go into C as (pointer, length) pairs of UTF-8 bytes. Strings come back through caller-provided buffers: query the length first, then fill an exactly sized buffer, as with `snprintf`.
-- A negative return value is an error code, and `avatar_status_message()` describes it. Rust turns it into `BackendError { code, message }`, which rejects the promise on the JavaScript side.
-- C never allocates memory for the caller, so nothing has to be freed across the boundary.
+- Strings go into C as (pointer, length) pairs of UTF-8 bytes. Most strings come back through caller-provided buffers: query the length first, then fill an exactly sized buffer, as with `snprintf`.
+- Heap-returning APIs such as blame, git command output, compiled views, and source reads return a string that must be freed with `chronos_free_string()`.
+- A negative return value is an error code, and `chronos_last_error()` describes it. Rust turns it into `BackendError { code, message }`, which rejects the promise on the JavaScript side.
 
 ## Recommended IDE setup
 

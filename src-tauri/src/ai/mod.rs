@@ -50,7 +50,7 @@ pub mod service;
 pub mod types;
 
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
 

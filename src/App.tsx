@@ -98,6 +98,14 @@ function App() {
   function pick(hash: string | null) {
     setSelected(hash);
     setPanel(null);
+    if (!showEditor || !diffCompare || !hash || !graph) return;
+    const commit = graph.commits.find((c) => c.hash === hash);
+    if (!commit || commit.hash === graph.head) return;
+    setDiffCompare({
+      baseRev: commit.hash,
+      baseLabel: commit.shortHash,
+      headLabel: "working tree",
+    });
   }
 
   function openSideDiff(hash: string) {

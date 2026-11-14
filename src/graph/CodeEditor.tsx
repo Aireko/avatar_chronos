@@ -131,6 +131,7 @@ export function CodeEditor({
   const [saved, setSaved] = useState("");
   const [leftText, setLeftText] = useState<string | null>(null);
   const [rightText, setRightText] = useState<string | null>(null);
+  const [savedRight, setSavedRight] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -141,16 +142,20 @@ export function CodeEditor({
   const area = useRef<HTMLTextAreaElement>(null);
   const search = useRef<HTMLInputElement>(null);
   const leftPane = useRef<HTMLPreElement>(null);
-  const rightPane = useRef<HTMLPreElement>(null);
+  const rightPane = useRef<HTMLTextAreaElement>(null);
   const syncing = useRef<"left" | "right" | null>(null);
   const loaded = useRef<string | null>(null);
+  const diffFile = useRef<string | null>(null);
+  const dirtyRightRef = useRef(false);
   const diffing = !!compare;
 
   const selectedCommit = selected ? graph.commits.find((c) => c.hash === selected) : undefined;
   const canCompare = !!selectedCommit && selectedCommit.hash !== graph.head;
   const hint = selectedCommit?.filesChanged[0]?.path;
 
-  const dirty = source !== saved;
+  const dirtyRight = (rightText ?? "") !== savedRight;
+  dirtyRightRef.current = dirtyRight;
+  const dirty = diffing ? dirtyRight : source !== saved;
   const searching = !!query.trim();
   const treePaths = diffing ? changed.map((c) => c.path) : files;
   const visible = useMemo(() => matchFiles(treePaths, query), [treePaths, query]);
@@ -160,7 +165,6 @@ export function CodeEditor({
   const activeChange = changed.find((c) => c.path === active);
   const diffRows = useMemo(() => (diffing ? buildDiffRows(leftText, rightText) : []), [diffing, leftText, rightText]);
   const beforeLines = useMemo(() => rowsToSide(diffRows, "before"), [diffRows]);
-  const afterLines = useMemo(() => rowsToSide(diffRows, "after"), [diffRows]);
 
   useEffect(() => {
     let alive = true;
@@ -256,16 +260,19 @@ export function CodeEditor({
     };
   }, [repoPath, active, diffing]);
 
-  // Side-by-side blobs
+  // Side-by-side blobs: left is the selected commit; right is the working tree (editable).
   useEffect(() => {
     if (!diffing || !compare || !active) {
       setLeftText(null);
       setRightText(null);
+      setSavedRight("");
+      diffFile.current = null;
       return;
     }
     let alive = true;
     setLoading(true);
     setError("");
+    const fileChanged = diffFile.current !== active;
     const leftPath = activeChange?.oldPath || active;
     const rightPath = active;
     void Promise.all([
@@ -275,12 +282,22 @@ export function CodeEditor({
       .then(([left, right]) => {
         if (!alive) return;
         setLeftText(left);
-        setRightText(right);
+        // Keep in-progress working-tree edits when only the compared commit changes.
+        if (fileChanged || !dirtyRightRef.current) {
+          const next = right ?? "";
+          setRightText(right);
+          setSavedRight(next);
+          diffFile.current = active;
+        }
       })
       .catch((e) => {
         if (!alive) return;
         setLeftText(null);
-        setRightText(null);
+        if (fileChanged || !dirtyRightRef.current) {
+          setRightText(null);
+          setSavedRight("");
+          diffFile.current = active;
+        }
         setError(errorMessage(e));
       })
       .finally(() => alive && setLoading(false));
@@ -290,33 +307,43 @@ export function CodeEditor({
   }, [repoPath, active, compare, diffing, activeChange?.oldPath, activeChange?.status]);
 
   async function save() {
-    if (!active || !dirty || saving || diffing) return;
+    if (!active || !dirty || saving) return;
+    const content = diffing ? (rightText ?? "") : source;
     setSaving(true);
     setError("");
     try {
-      await writeRepoFile(repoPath, active, source);
-      loaded.current = active;
-      setSaved(source);
+      await writeRepoFile(repoPath, active, content);
+      if (diffing) {
+        setSavedRight(content);
+        setRightText(content);
+        diffFile.current = active;
+      } else {
+        loaded.current = active;
+        setSaved(content);
+        setSource(content);
+      }
       setNotice("Saved");
       setTimeout(() => setNotice(""), 1400);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
       setSaving(false);
-      area.current?.focus();
+      if (diffing) rightPane.current?.focus();
+      else area.current?.focus();
     }
   }
 
   async function openFile(path: string) {
     if (path === active) return;
-    if (!diffing && dirty && !window.confirm("Discard unsaved changes?")) return;
+    if (dirty && !window.confirm("Discard unsaved changes?")) return;
     setActive(path);
     if (!diffing) loaded.current = null;
+    else diffFile.current = null;
   }
 
   function startCompare() {
     if (!selectedCommit || selectedCommit.hash === graph.head) return;
-    if (dirty && !window.confirm("Discard unsaved changes?")) return;
+    if (!diffing && dirty && !window.confirm("Discard unsaved changes?")) return;
     loaded.current = null;
     onCompare({
       baseRev: selectedCommit.hash,
@@ -326,8 +353,10 @@ export function CodeEditor({
   }
 
   function stopCompare() {
+    if (dirtyRight && !window.confirm("Discard unsaved changes?")) return;
     onCompare(null);
     loaded.current = null;
+    diffFile.current = null;
   }
 
   function onEditorKey(e: KeyboardEvent<HTMLTextAreaElement>) {
@@ -349,7 +378,7 @@ export function CodeEditor({
     }
   }
 
-  function syncScroll(from: "left" | "right", e: UIEvent<HTMLPreElement>) {
+  function syncScroll(from: "left" | "right", e: UIEvent<HTMLElement>) {
     const other = from === "left" ? rightPane.current : leftPane.current;
     if (!other || syncing.current === (from === "left" ? "right" : "left")) return;
     syncing.current = from;
@@ -358,6 +387,13 @@ export function CodeEditor({
     requestAnimationFrame(() => {
       syncing.current = null;
     });
+  }
+
+  function onDiffEditorKey(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+      e.preventDefault();
+      void save();
+    }
   }
 
   function renderNodes(nodes: TreeNode[], depth: number): ReactNode {
@@ -476,6 +512,8 @@ export function CodeEditor({
             {diffing && compare ? (
               <>
                 Diff · {active ?? "—"} · {compare.baseLabel} → {compare.headLabel}
+                {dirty ? <span className="editor-dirty"> · edited</span> : null}
+                {notice ? <span className="editor-saved"> · {notice}</span> : null}
               </>
             ) : active ? (
               <>
@@ -488,9 +526,19 @@ export function CodeEditor({
             )}
           </span>
           {diffing ? (
-            <button type="button" className="btn editor-close" onClick={stopCompare}>
-              Edit file
-            </button>
+            <>
+              <button
+                type="button"
+                className="btn primary editor-close"
+                disabled={!dirty || saving || !active}
+                onClick={() => void save()}
+              >
+                {saving ? "Saving" : "Save"}
+              </button>
+              <button type="button" className="btn editor-close" onClick={stopCompare}>
+                Main view
+              </button>
+            </>
           ) : (
             <>
               <button
@@ -530,17 +578,28 @@ export function CodeEditor({
           ) : diffing && compare ? (
             <div className="side-diff" aria-label="Side by side diff">
               <DiffPane
-                title={`${compare.baseLabel}${activeChange?.oldPath ? ` · ${activeChange.oldPath}` : ""}`}
+                title={`${compare.baseLabel}${activeChange?.oldPath ? ` · ${activeChange.oldPath}` : ""} · read only`}
                 lines={beforeLines}
                 paneRef={leftPane}
                 onScroll={(e) => syncScroll("left", e)}
               />
-              <DiffPane
-                title={`${compare.headLabel}${active ? ` · ${active}` : ""}`}
-                lines={afterLines}
-                paneRef={rightPane}
-                onScroll={(e) => syncScroll("right", e)}
-              />
+              <div className="side-pane">
+                <div className="side-pane-head">
+                  {compare.headLabel}
+                  {active ? ` · ${active}` : ""} · editable
+                </div>
+                <textarea
+                  ref={rightPane}
+                  className="side-pane-code side-pane-edit"
+                  value={rightText ?? ""}
+                  spellCheck={false}
+                  wrap="off"
+                  aria-label={`${active ?? "file"} working tree`}
+                  onChange={(e) => setRightText(e.currentTarget.value)}
+                  onKeyDown={onDiffEditorKey}
+                  onScroll={(e) => syncScroll("right", e)}
+                />
+              </div>
             </div>
           ) : (
             <div className="code-edit">
@@ -579,7 +638,7 @@ function DiffPane({
   title: string;
   lines: SideLine[];
   paneRef: RefObject<HTMLPreElement | null>;
-  onScroll: (e: UIEvent<HTMLPreElement>) => void;
+  onScroll: (e: UIEvent<HTMLElement>) => void;
 }) {
   return (
     <div className="side-pane">

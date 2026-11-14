@@ -302,10 +302,6 @@ export function CommitDetails({
                 <strong>Rebase</strong>
                 <span>{rebaseNote}</span>
               </button>
-              <button className="key plain tall" disabled={busy !== null || isHead} onClick={showDiff}>
-                <strong>Diff</strong>
-                <span>{isHead ? "Nothing newer to compare" : `What ${target} changed since`}</span>
-              </button>
             </>
           )}
         </div>

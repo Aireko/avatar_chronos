@@ -16,6 +16,7 @@ import "./graph/graph.css";
 import "./tools/tools.css";
 import "./tools/toolbar.css";
 import "./graph/find.css";
+import "./noscroll.css";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";

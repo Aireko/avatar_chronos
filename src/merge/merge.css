@@ -172,3 +172,14 @@
 .merge-conflict > .btn { align-self: flex-start; min-width: 160px; }
 
 .merge-keys { line-height: 1.8; }
+
+.merge-zoom { position: relative; border: 2px solid var(--ink); border-radius: var(--sketch); overflow: hidden; background: var(--paper); }
+.merge-zoom-view { width: 100%; height: 100%; overflow: hidden; cursor: grab; touch-action: none; }
+.merge-zoom-view:active { cursor: grabbing; }
+.merge-zoom-inner { transform-origin: 0 0; width: 100%; }
+.merge-zoom-inner svg { width: 100%; height: auto; display: block; }
+.merge-zoom { user-select: none; }
+.merge-zoom-keys { position: absolute; right: 8px; bottom: 8px; display: flex; gap: 6px; }
+
+/* Calm the blast map's colours. This is a guess at the variables it uses. */
+.merge-blast { --highlight: var(--wash); --warn: var(--soft); }

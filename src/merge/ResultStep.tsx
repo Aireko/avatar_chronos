@@ -5,6 +5,7 @@ import { analyze, reviewBlast, type Blast, type Finding } from "../push/blast";
 import { BlastMap } from "../push/BlastMap";
 import "../push/push.css";
 import type { MergeResult } from "./types";
+import { ZoomPan } from "./ZoomPan";
 
 interface Props {
   repoPath: string;
@@ -111,7 +112,11 @@ export function ResultStep({ repoPath, result, onClose }: Props) {
 
       {blast && (
         <>
-          <BlastMap blast={blast} findings={findings} />
+          <div className="merge-blast">
+            <ZoomPan>
+              <BlastMap blast={blast} findings={findings} />
+            </ZoomPan>
+          </div>
           {!blast.hasCallGraph && (
             <div className="merge-note warn">Call graph unavailable for these files, so only the changed functions are shown.</div>
           )}

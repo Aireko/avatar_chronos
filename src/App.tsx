@@ -35,6 +35,8 @@ import { CallGraphView } from "./graph/CallGraphView";
 import { ScopeBar, type FunctionView } from "./graph/ScopeBar";
 import { BranchSwitcher } from "./push/BranchSwitcher";
 import { PushPanel } from "./push/PushPanel";
+import { MergeDoctor } from "./merge/MergeDoctor";
+import { MergeIcon } from "./merge/MergeIcon";
 import { PROJECT, scopeGraph, scopeKey, type Scope } from "./graph/scope";
 import ContextViewsPanel from "./context/ContextViewsPanel";
 import { useTheme, type Theme } from "./tools/theme";
@@ -100,6 +102,7 @@ function App() {
   const [diffCompare, setDiffCompare] = useState<DiffCompare | null>(null);
   const [showTerminal, setShowTerminal] = useState(false);
   const [showPush, setShowPush] = useState(false);
+  const [showMerge, setShowMerge] = useState(false);
   const [showContext, setShowContext] = useState(false);
   // At most one drawer is open on the right: a tool or the commit details.
   const [tool, setTool] = useState<ToolId | null>(null);
@@ -598,6 +601,16 @@ function App() {
         <button
           className="btn tool-btn"
           disabled={!graph || !desktop}
+          onClick={() => setShowMerge(true)}
+          title={desktop ? "Preview and resolve a merge, function by function" : "Only available in the desktop app"}
+        >
+          <MergeIcon />
+          <span className="tool-label">Merge</span>
+        </button>
+
+        <button
+          className="btn tool-btn"
+          disabled={!graph || !desktop}
           onClick={() => void showInExplorer()}
           title={desktop ? "Show the repository folder in the file explorer" : "Only available in the desktop app"}
         >
@@ -642,6 +655,26 @@ function App() {
           currentBranch={currentBranch}
           onGraphChange={applyGraph}
           onClose={() => setShowPush(false)}
+        />
+      )}
+
+      {graph && showMerge && (
+        <MergeDoctor
+          repoPath={graph.repoPath}
+          graph={graph}
+          currentBranch={currentBranch}
+          onGraphChange={applyGraph}
+          onClose={() => setShowMerge(false)}
+        />
+      )}
+
+      {graph && showMerge && (
+        <MergeDoctor
+          repoPath={graph.repoPath}
+          graph={graph}
+          currentBranch={currentBranch}
+          onGraphChange={applyGraph}
+          onClose={() => setShowMerge(false)}
         />
       )}
 

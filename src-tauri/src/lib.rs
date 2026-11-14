@@ -3,10 +3,9 @@ pub mod review;
 mod ffi;
 
 use ffi::BackendError;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use tauri::{Emitter, Manager};

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { parseStatusBranchLine, syncBubbleLabel, syncHintFor } from "./branchSync";
+import {
+  fetchDryRunHasUpdates,
+  parseStatusBranchLine,
+  readAutoFetch,
+  syncBubbleLabel,
+  syncHintFor,
+  writeAutoFetch,
+} from "./branchSync";
 
 describe("parseStatusBranchLine", () => {
   it("reads a branch with no upstream", () => {
@@ -57,20 +64,37 @@ describe("parseStatusBranchLine", () => {
   });
 });
 
+describe("fetchDryRunHasUpdates", () => {
+  it("detects tip moves and new branches", () => {
+    expect(
+      fetchDryRunHasUpdates("", "From github.com:org/repo\n   abcdef0..1234567  main       -> origin/main\n"),
+    ).toBe(true);
+    expect(fetchDryRunHasUpdates(" * [new branch]      feat -> origin/feat\n")).toBe(true);
+    expect(fetchDryRunHasUpdates("", "From github.com:org/repo\n")).toBe(false);
+  });
+});
+
 describe("syncHintFor", () => {
-  const tracked = { branch: "main", upstream: "origin/main", ahead: 0, behind: 0 };
+  const base = {
+    branch: "main",
+    upstream: "origin/main",
+    ahead: 0,
+    behind: 0,
+    hasOrigin: true,
+    fetchNeeded: false,
+  };
 
   it("offers Pull when behind", () => {
-    expect(syncHintFor({ ...tracked, behind: 3 }, true)).toEqual({ kind: "pull", behind: 3 });
+    expect(syncHintFor({ ...base, behind: 3 })).toEqual({ kind: "pull", behind: 3 });
   });
 
-  it("offers Fetch until the first fetch of the session", () => {
-    expect(syncHintFor(tracked, false)).toEqual({ kind: "fetch" });
-    expect(syncHintFor(tracked, true)).toBeNull();
+  it("offers Fetch only when a dry-run found updates", () => {
+    expect(syncHintFor(base)).toBeNull();
+    expect(syncHintFor({ ...base, fetchNeeded: true })).toEqual({ kind: "fetch" });
   });
 
-  it("stays quiet without an upstream", () => {
-    expect(syncHintFor({ branch: "local", upstream: null, ahead: 0, behind: 0 }, false)).toBeNull();
+  it("prefers Pull over Fetch", () => {
+    expect(syncHintFor({ ...base, behind: 2, fetchNeeded: true })).toEqual({ kind: "pull", behind: 2 });
   });
 });
 
@@ -79,5 +103,22 @@ describe("syncBubbleLabel", () => {
     expect(syncBubbleLabel({ kind: "fetch" })).toBe("Fetch");
     expect(syncBubbleLabel({ kind: "pull", behind: 1 })).toBe("Pull · 1 behind");
     expect(syncBubbleLabel({ kind: "pull", behind: 4 })).toBe("Pull · 4 behind");
+  });
+});
+
+describe("auto-fetch preference", () => {
+  it("defaults off and round-trips", () => {
+    const store = new Map<string, string>();
+    const storage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+    };
+    expect(readAutoFetch(storage)).toBe(false);
+    writeAutoFetch(true, storage);
+    expect(readAutoFetch(storage)).toBe(true);
+    writeAutoFetch(false, storage);
+    expect(readAutoFetch(storage)).toBe(false);
   });
 });

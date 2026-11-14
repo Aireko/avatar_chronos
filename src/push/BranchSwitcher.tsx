@@ -3,8 +3,8 @@
 // with "New branch…" at the bottom, which turns the menu into a name field in place.
 // Keys: Up/Down/Home/End walk the menu, Enter picks, Esc steps back out of the name
 // field and then closes the menu, handing the keyboard back to the branch key.
-// A speech bubble beside the key offers Fetch (until the first check) or Pull when the
-// branch is behind its upstream.
+// A speech bubble beside the key offers Fetch only when origin has updates we have not
+// stored yet, or Pull when the branch is behind origin. Background fetch is off by default.
 import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { errorMessage, type ChronosGraph } from "../backend";
 import { BranchIcon, ChevronIcon, PlusIcon } from "../tools/icons";
@@ -12,9 +12,12 @@ import { Presence } from "../tools/Presence";
 import { branchKeyLabel, branchMenuOrder, branchNameProblem, rovingIndex } from "../tools/toolbarKeys";
 import {
   fetchOrigin,
+  probeBranchSync,
+  readAutoFetch,
   readBranchSync,
   syncBubbleLabel,
   syncHintFor,
+  writeAutoFetch,
   type BranchSyncHint,
 } from "./branchSync";
 import { branchNames, createBranch, pullFrom, switchBranch } from "./git";
@@ -28,7 +31,7 @@ interface Props {
 
 /** Menu exit; matches pop-out (0.14s) in tools.css. */
 const EXIT_MS = 140;
-/** Quiet background fetch while the window is focused. */
+/** Quiet background fetch while Auto-fetch is on and the window is focused. */
 const FETCH_EVERY_MS = 90_000;
 
 export function BranchSwitcher({ graph, currentBranch, onGraphChange, onError }: Props) {
@@ -37,14 +40,15 @@ export function BranchSwitcher({ graph, currentBranch, onGraphChange, onError }:
   const [name, setName] = useState("");
   const [busy, setBusy] = useState<"switch" | "create" | "fetch" | "pull" | null>(null);
   const [hint, setHint] = useState<BranchSyncHint | null>(null);
+  const [autoFetch, setAutoFetch] = useState(() => readAutoFetch());
   const root = useRef<HTMLDivElement>(null);
   const key = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const field = useRef<HTMLInputElement>(null);
   const menuId = useId();
   const hintId = useId();
-  const syncBusy = useRef(false);
-  const fetchedRef = useRef(false);
+  const autoFetchRef = useRef(autoFetch);
+  autoFetchRef.current = autoFetch;
 
   const names = graph ? branchNames(graph) : [];
   const ordered = branchMenuOrder(names, currentBranch);
@@ -121,63 +125,66 @@ export function BranchSwitcher({ graph, currentBranch, onGraphChange, onError }:
     setCreating(false);
     setName("");
     setHint(null);
-    fetchedRef.current = false;
   }, [repo]);
 
-  // A different branch means a fresh Fetch nudge until the next check.
-  useEffect(() => {
-    fetchedRef.current = false;
-    setHint(null);
-  }, [currentBranch]);
-
-  // Read status (and periodically fetch) so the bubble can offer Fetch or Pull.
+  // Local behind → Pull. Dry-run (or a real fetch when Auto-fetch is on) → Fetch only
+  // when origin actually has updates. Otherwise the bubble stays hidden.
   useEffect(() => {
     if (!repo || !currentBranch) {
       setHint(null);
       return;
     }
-    let cancelled = false;
+    let gen = 0;
 
-    async function refresh(doFetch: boolean) {
-      if (syncBusy.current || cancelled) return;
-      syncBusy.current = true;
+    async function refresh(mode: "probe" | "fetch") {
+      const my = ++gen;
       try {
-        const status = doFetch ? await fetchOrigin(repo!) : await readBranchSync(repo!);
-        if (cancelled) return;
-        if (doFetch) fetchedRef.current = true;
-        setHint(syncHintFor(status, fetchedRef.current));
+        const status =
+          mode === "fetch" ? await fetchOrigin(repo!) : await probeBranchSync(repo!, true);
+        if (my === gen) setHint(syncHintFor(status));
       } catch {
-        // Offline / no origin on a background fetch: keep the last hint.
-        if (!cancelled && !doFetch) {
-          try {
-            const status = await readBranchSync(repo!);
-            if (!cancelled) setHint(syncHintFor(status, fetchedRef.current));
-          } catch {
-            if (!cancelled) setHint(null);
-          }
+        if (my !== gen) return;
+        try {
+          const status = await readBranchSync(repo!);
+          if (my === gen) setHint(syncHintFor(status));
+        } catch {
+          if (my === gen) setHint(null);
         }
-      } finally {
-        syncBusy.current = false;
       }
     }
 
-    void refresh(false);
-    // First quiet fetch shortly after open, then on focus / interval.
-    const first = window.setTimeout(() => void refresh(true), 1200);
-    const onFocus = () => void refresh(true);
+    void refresh("probe");
+    if (!autoFetch) {
+      return () => {
+        gen += 1;
+      };
+    }
+
+    const first = window.setTimeout(() => void refresh("fetch"), 1200);
+    const onFocus = () => {
+      if (autoFetchRef.current) void refresh("fetch");
+    };
     window.addEventListener("focus", onFocus);
     const tick = window.setInterval(() => {
-      if (document.visibilityState === "visible") void refresh(true);
+      if (autoFetchRef.current && document.visibilityState === "visible") void refresh("fetch");
     }, FETCH_EVERY_MS);
     return () => {
-      cancelled = true;
+      gen += 1;
       window.clearTimeout(first);
       window.removeEventListener("focus", onFocus);
       window.clearInterval(tick);
     };
-  }, [repo, currentBranch]);
+  }, [repo, currentBranch, autoFetch]);
 
   if (!graph || !repo) return null;
+
+  function toggleAutoFetch() {
+    setAutoFetch((on) => {
+      const next = !on;
+      writeAutoFetch(next);
+      return next;
+    });
+  }
 
   async function change(branch: string) {
     close();
@@ -200,13 +207,10 @@ export function BranchSwitcher({ graph, currentBranch, onGraphChange, onError }:
     try {
       onError("");
       if (action === "fetch") {
-        const status = await fetchOrigin(repo!);
-        fetchedRef.current = true;
-        setHint(syncHintFor(status, true));
+        setHint(syncHintFor(await fetchOrigin(repo!)));
       } else {
         onGraphChange(await pullFrom(repo!, currentBranch));
-        setHint(null);
-        fetchedRef.current = true;
+        setHint(syncHintFor(await readBranchSync(repo!)));
       }
     } catch (e) {
       onError(errorMessage(e));
@@ -275,6 +279,7 @@ export function BranchSwitcher({ graph, currentBranch, onGraphChange, onError }:
         </span>
       </button>
 
+      {/* In the toolbar row (not under it) so the map cannot cover the bubble. */}
       <Presence show={hint !== null && !open} className="branch-sync" exitMs={EXIT_MS}>
         {hint && bubbleText && (
           <button
@@ -358,6 +363,20 @@ export function BranchSwitcher({ graph, currentBranch, onGraphChange, onError }:
               <button type="button" className="branch-item branch-new" onClick={() => setCreating(true)}>
                 <PlusIcon />
                 New branch…
+              </button>
+              <button
+                type="button"
+                className={`branch-autofetch${autoFetch ? " is-on" : ""}`}
+                aria-pressed={autoFetch}
+                title={
+                  autoFetch
+                    ? "Quietly fetch from origin on focus and every few minutes"
+                    : "Only fetch when you click the speech bubble"
+                }
+                onClick={toggleAutoFetch}
+              >
+                <span className="branch-autofetch-switch" aria-hidden="true" />
+                Auto-fetch · {autoFetch ? "on" : "off"}
               </button>
             </div>
           )}

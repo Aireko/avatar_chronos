@@ -1,6 +1,7 @@
 /* ============ toolbar tools and the tool drawer (same hand-drawn family as graph.css) ============ */
 
-/* Tool buttons: a hand-drawn icon plus a label. Labels fold away on narrow windows. */
+/* Tool buttons: a hand-drawn icon plus a label (in the toolbar the three tools are
+   icon-only, with a tooltip: .icon-only and .tip in toolbar.css). */
 .tools { display: flex; align-items: center; gap: 6px; margin-left: auto; }
 .tool-btn {
   display: inline-flex;
@@ -11,21 +12,13 @@
 .tool-btn svg { flex: none; }
 .tool-btn[aria-pressed="true"] { background: var(--highlight); }
 .tool-btn[aria-pressed="true"]:hover:not(:disabled) { background: var(--highlight); opacity: 0.9; }
-.toolbar-sep { width: 0; height: 26px; border-left: 2px dashed var(--soft); margin: 0 2px; }
 
-/* The toolbar also holds the history scope switcher, so the path form gives up width first. */
-.toolbar .open-form { min-width: 150px; }
+/* The toolbar holds the history scope switcher; its chip shortens on narrower windows
+   (the rest of the bar's sizes are in toolbar.css). */
 .toolbar .scope { flex: none; }
 .toolbar .scope-chip { max-width: 200px; }
 
-@media (max-width: 1699px) {
-  .tool-btn { padding: 0 9px; }
-  .tool-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-}
-
-/* On narrower windows Reload and the theme switch fold to icons too, and the scope
-   chip shortens. Otherwise, with a file or function chosen, the path field shrank to
-   a sliver (about 40px at 1150px on paper, whose switch reads "Blackboard"). */
+/* Small labels (the map's Find key) fold to their icons on narrower windows. */
 @media (max-width: 1349px) {
   .toolbar .scope-chip { max-width: 160px; }
   .tool-label-sm { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

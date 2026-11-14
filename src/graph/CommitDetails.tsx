@@ -96,6 +96,9 @@ export function CommitDetails({
   const [diff, setDiff] = useState<GitCommandResult | null>(null);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  // "Explain this commit" was pressed: the key presses in and washes highlighter-yellow
+  // (details.css) while the ticket makes way for the Local AI drawer.
+  const [asked, setAsked] = useState(false);
   const copiedTimer = useRef<number | undefined>(undefined);
   const cancelKey = useRef<HTMLButtonElement>(null);
   const rebaseKey = useRef<HTMLButtonElement>(null);
@@ -407,7 +410,14 @@ export function CommitDetails({
                 <span>{rebaseNote}</span>
               </button>
               {onExplain && (
-                <button className="key plain tall explain-key" disabled={busy !== null} onClick={onExplain}>
+                <button
+                  className={`key plain tall explain-key${asked ? " is-asked" : ""}`}
+                  disabled={busy !== null}
+                  onClick={() => {
+                    setAsked(true);
+                    onExplain();
+                  }}
+                >
                   <strong>Explain this commit</strong>
                   <span>A plain-language summary from the local AI</span>
                 </button>

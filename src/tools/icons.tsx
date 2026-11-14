@@ -110,6 +110,40 @@ export function ChevronIcon() {
   );
 }
 
+/** A branch peeling off a line, for the branch key in the toolbar. */
+export function BranchIcon() {
+  return (
+    <svg {...common} width={18} height={18}>
+      <circle cx="6.4" cy="5.6" r="2.2" />
+      <circle cx="6.3" cy="18.4" r="2.2" />
+      <circle cx="17.6" cy="7.8" r="2.2" />
+      <path d="M6.4 7.9v8.2" />
+      <path d="M17.5 10.1c-.2 3.6-2.6 4.9-6.2 5.3-2.3.3-3.9.9-4.6 1.4" />
+    </svg>
+  );
+}
+
+/** An arrow lifting off a line: the work going up to the remote. */
+export function PushIcon() {
+  return (
+    <svg {...common} width={18} height={18}>
+      <path d="M12.1 15.6c-.1-3.6 0-7.2-.1-10.8" />
+      <path d="M7.6 8.8c1.6-1.6 3-3 4.4-4.4 1.5 1.5 2.9 2.9 4.4 4.5" />
+      <path d="M4.2 19.6c5.2-.3 10.4-.3 15.6.1" />
+    </svg>
+  );
+}
+
+/** A small plus, drawn like the rest (for "New branch…"). */
+export function PlusIcon() {
+  return (
+    <svg {...common} width={16} height={16}>
+      <path d="M12.1 5.2c-.1 4.6 0 9.1-.2 13.7" />
+      <path d="M5.2 12.2c4.6-.2 9.1-.1 13.6 0" />
+    </svg>
+  );
+}
+
 /** A hand-drawn warning sign for the error banner. */
 export function WarnIcon() {
   return (

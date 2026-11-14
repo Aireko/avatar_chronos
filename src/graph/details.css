@@ -51,7 +51,8 @@
   margin: 0 -4px;
   border: 0;
   border-radius: 6px;
-  background: transparent;
+  /* The highlighter stroke waits at zero width, so switching it on sweeps it left to right. */
+  background: linear-gradient(transparent 52%, var(--highlight) 52%, var(--highlight) 92%, transparent 92%) no-repeat 0 0 / 0% 100%;
   color: var(--ink);
   font: inherit;
   text-align: left;
@@ -60,18 +61,26 @@
   text-underline-offset: 4px;
   overflow-wrap: anywhere;
   cursor: pointer;
-  transition: background-color 0.15s ease;
+  transition: background-size 0.24s ease-out, text-decoration-color 0.15s ease, transform 0.08s;
 }
 .ticket .author-link:hover { text-decoration-color: var(--ink); }
-/* While highlighted, the name carries the same highlighter stroke as the map's chip. */
-.ticket .author-link.is-on {
-  background: linear-gradient(transparent 52%, var(--highlight) 52%, var(--highlight) 92%, transparent 92%);
-  text-decoration: none;
+.ticket .author-link:active { transform: translateY(1px) rotate(-0.4deg); }
+/* While highlighted, the name carries the same highlighter stroke as the map's chip; the
+   wavy underline fades out as the stroke goes on (and back as it comes off). */
+.ticket .author-link.is-on,
+.ticket .author-link.is-on:hover {
+  background-size: 100% 100%;
+  text-decoration-color: transparent;
 }
 .ticket .author-link:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: 2px; }
 
 /* "Explain this commit" spans the row under the two keys. */
 .ticket .explain-key { grid-column: 1 / -1; }
+/* Pressed: the key presses in and washes highlighter-yellow, the same press for the mouse
+   and the keyboard, quick enough to read before the ticket makes way for the Local AI
+   drawer (ticket-out, 180ms), which shows the waiting from there. */
+.ticket .explain-key.is-asked { animation: explain-press 0.16s ease-out, details-flash 0.3s ease-out; }
+@keyframes explain-press { 40% { transform: translateY(2px) rotate(-0.5deg) scale(0.985); } }
 
 /* The rebase question unfolds where the two keys were. */
 .ticket .confirm { animation: details-drop 0.18s ease-out backwards; }
@@ -452,6 +461,7 @@
   .ticket .ticket-scroll,
   .ticket .files li,
   .ticket .copy-stamp,
+  .ticket .explain-key.is-asked,
   .ticket .confirm,
   .ticket-body > .working,
   .ticket-body > .notice,
@@ -493,7 +503,8 @@
   .ctx-chip { transition: none; }
   .mini-map .mini-map-fold:active,
   .file-tree .tree-row:active,
-  .ticket button.file-row:active:not(:disabled) { transform: none; }
+  .ticket button.file-row:active:not(:disabled),
+  .ticket .author-link:active { transform: none; }
   /* Without the fade, the jumped-to change still holds a plain highlight while it is marked. */
   .side-pane-code .side-line.is-jump { background-color: var(--highlight); }
 }

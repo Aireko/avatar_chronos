@@ -129,3 +129,69 @@ export async function reviewBlast(blast: Blast): Promise<Finding[]> {
   const parsed = JSON.parse(res.content) as { findings?: Finding[] };
   return (parsed.findings ?? []).map((f) => ({ ...f, affects: f.affects ?? [] }));
 }
+
+/* ---------- draw-in timing for the blast radius map (pure; see BlastMap and push.css) ----------
+   The map draws itself in like the main map: the functions you changed land first, then
+   the pen draws each call line out from them, and each neighbour lands once its line has
+   reached it. Delays are staggered but capped, so a big map still finishes quickly. */
+/** Gap between two changed functions landing. */
+export const NODE_STEP = 50;
+/** Gap between two call lines starting. */
+export const EDGE_STEP = 30;
+/** How long a call line takes to draw (keep in sync with .push-edge in push.css). */
+export const EDGE_MS = 300;
+/** Pause between the last changed function landing and the first line starting. */
+export const EDGE_LEAD = 120;
+/** Only this many items per group are staggered; the rest share the last slot. */
+export const MAX_STAGGER = 6;
+/** Nothing waits longer than this before it starts. */
+export const MAX_DELAY = 700;
+
+export interface DrawDelays {
+  /** Delay (ms) for each node, by id. */
+  nodes: Record<string, number>;
+  /** Delay (ms) for each edge, in the order given. */
+  edges: number[];
+}
+
+const cap = (ms: number) => Math.min(Math.round(ms), MAX_DELAY);
+
+export function drawDelays(
+  nodes: readonly Pick<BNode, "id" | "role">[],
+  edges: readonly { from: string; to: string }[],
+): DrawDelays {
+  const out: DrawDelays = { nodes: {}, edges: [] };
+  const changed = nodes.filter((n) => n.role === "changed");
+  changed.forEach((n, i) => {
+    out.nodes[n.id] = cap(Math.min(i, MAX_STAGGER) * NODE_STEP);
+  });
+
+  const lastChanged = changed.length ? Math.min(changed.length - 1, MAX_STAGGER) * NODE_STEP : 0;
+  const edgeStart = (changed.length ? lastChanged : 0) + EDGE_LEAD;
+  // A neighbour lands as the first line into it is nearly drawn.
+  const arrival = new Map<string, number>();
+  edges.forEach((e, i) => {
+    // Lines start early enough that the neighbour they reach still lands within MAX_DELAY,
+    // so a capped neighbour never pops in ahead of its own line.
+    const d = Math.min(cap(edgeStart + Math.min(i, MAX_STAGGER) * EDGE_STEP), Math.floor(MAX_DELAY - EDGE_MS * 0.7));
+    out.edges.push(d);
+    for (const id of [e.from, e.to]) {
+      const at = d + EDGE_MS * 0.7;
+      if (!arrival.has(id) || at < arrival.get(id)!) arrival.set(id, at);
+    }
+  });
+
+  // Callers and callees with no line (rare) land in turn after the changed ones.
+  let loose = 0;
+  for (const n of nodes) {
+    if (n.role === "changed") continue;
+    const at = arrival.get(n.id) ?? edgeStart + Math.min(loose++, MAX_STAGGER) * NODE_STEP;
+    out.nodes[n.id] = cap(at);
+  }
+  return out;
+}
+
+/** Delay (ms) for the i-th item of a list easing in, e.g. the review's findings. */
+export function listDelay(i: number, step = 50, max = MAX_STAGGER): number {
+  return Math.max(0, Math.min(i, max)) * step;
+}

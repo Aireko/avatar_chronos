@@ -14,6 +14,7 @@ import "@fontsource/patrick-hand/400.css";
 // components below) can refine shared classes like .field and .btn.
 import "./graph/graph.css";
 import "./tools/tools.css";
+import "./tools/toolbar.css";
 import "./graph/find.css";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -50,11 +51,10 @@ import { useTheme, type Theme } from "./tools/theme";
 import { crossFade } from "./tools/crossFade";
 import {
   EmptyScopeDoodle,
-  ExplorerIcon,
   FolderIcon,
   HistoryDoodle,
   PeopleIcon,
-  ReloadIcon,
+  PushIcon,
   ReviewIcon,
   SearchIcon,
   SparkIcon,
@@ -63,6 +63,9 @@ import {
 } from "./tools/icons";
 import { PathField } from "./tools/PathField";
 import { Presence } from "./tools/Presence";
+import { RepoTicket } from "./tools/RepoTicket";
+import { Tip } from "./tools/Tip";
+import { isRepoShortcut } from "./tools/toolbarKeys";
 import { addRecentRepo, loadRecentRepos, nativeRepoPath, removeRecentRepo, saveRecentRepos } from "./tools/recentRepos";
 import { ToolDrawer, type ToolId } from "./tools/ToolDrawer";
 import { historyChanged, isToolSwap } from "./tools/appLogic";
@@ -113,9 +116,18 @@ function selectedNodeEl(): Element | null {
   return document.querySelector(".stage .node.selected");
 }
 
-/** The repository path field in the toolbar (inside PathField, which keeps its own ref). */
-function pathInputEl(): HTMLInputElement | null {
-  return document.querySelector<HTMLInputElement>(".toolbar .open-form .path-input");
+/**
+ * Where the keyboard lands when nothing better is left: the toolbar's path field before a
+ * repository is open (or in the open repository pop-up), otherwise the repository ticket.
+ */
+function pathInputEl(): HTMLElement | null {
+  return (
+    // Not the field of a pop-up that is still playing its exit (it is inert by then).
+    document.querySelector<HTMLInputElement>(
+      ".toolbar .open-form .path-input:not(:disabled), .toolbar .repo-pop:not(.is-leaving) .path-input:not(:disabled)",
+    ) ??
+    document.querySelector<HTMLButtonElement>(".toolbar .repo-ticket")
+  );
 }
 
 /** What a reload found, in a few words for the status bar. */
@@ -222,6 +234,10 @@ function App() {
   const ids = useRef(new Map<string, string>());
   // Repositories that opened successfully, newest first.
   const [recent, setRecent] = useState(() => loadRecentRepos(browserStorage));
+  // The repository pop-up under the toolbar's ticket (Ctrl+O / Ctrl+L), and a counter
+  // bumped to put the keyboard back in its path field.
+  const [repoPop, setRepoPop] = useState(false);
+  const [repoFocus, setRepoFocus] = useState(0);
   // Find a commit (Ctrl+F). The query survives closing the bar.
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
@@ -243,6 +259,8 @@ function App() {
   // Read by callbacks that outlive a render (a terminal command finishing later, say).
   const graphRef = useRef(graph);
   graphRef.current = graph;
+  const errorRef = useRef(error);
+  errorRef.current = error;
   const showEditorRef = useRef(showEditor);
   showEditorRef.current = showEditor;
   const dirtyRef = useRef(false);
@@ -557,7 +575,12 @@ function App() {
       const { graph: next } = await exportGraph(repo);
       if (seq !== loadSeq.current) return;
       // The repository root the backend resolved, so subfolders and other spellings share one entry.
-      const remember = () => setRecent((list) => addRecentRepo(list, nativeRepoPath(next.repoPath)));
+      // The field shows that root too, ready for the repository pop-up next time.
+      const remember = () => {
+        const root = nativeRepoPath(next.repoPath);
+        setRecent((list) => addRecentRepo(list, root));
+        setPath(root);
+      };
       const current = graphRef.current;
 
       if (current && next.repoPath === current.repoPath) {
@@ -600,6 +623,28 @@ function App() {
     } finally {
       if (seq === loadSeq.current) setLoading(false);
     }
+  }
+
+  /**
+   * Opens or closes the repository pop-up. Opening fills the field with the open
+   * repository, unless the last open failed: then the typed path stays, to be fixed.
+   */
+  const showRepoPop = useCallback((next: boolean) => {
+    const current = graphRef.current;
+    if (next && current && !errorRef.current) setPath(nativeRepoPath(current.repoPath));
+    setRepoPop(next);
+  }, []);
+
+  /** Ctrl+O / Ctrl+L: the repository pop-up, or the toolbar's path field before one is open. */
+  function openRepoPicker() {
+    if (graphRef.current) {
+      if (!repoPop) showRepoPop(true);
+      setRepoFocus((n) => n + 1);
+      return;
+    }
+    const field = document.querySelector<HTMLInputElement>(".toolbar .open-form .path-input");
+    field?.focus();
+    field?.select();
   }
 
   function changeScope(next: Scope) {
@@ -841,6 +886,17 @@ function App() {
         return;
       }
 
+      // Ctrl+O / Ctrl+L (Cmd on a Mac) open the repository pop-up from anywhere but the
+      // code editor and the terminal, which keep their own keys (Ctrl+L selects a line).
+      if (isRepoShortcut(e)) {
+        const inEditorOrTerminal =
+          target instanceof HTMLElement && target.closest(".editor-layer, .dock-panel") !== null;
+        if (inEditorOrTerminal) return;
+        e.preventDefault();
+        openRepoPicker();
+        return;
+      }
+
       if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f") {
         // Never the webview's own find bar while the app has focus. Ctrl+F opens the find
         // bar from anywhere, toolbar fields included (in its own field it selects the query
@@ -930,8 +986,8 @@ function App() {
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-    // openFind / closeFind, toggleEditor, toggleTerminal and the close helpers only read
-    // `graph`, the editor state and the rest of the state listed here.
+    // openFind / closeFind, openRepoPicker, toggleEditor, toggleTerminal and the close
+    // helpers only read `graph`, the editor state and the rest of the state listed here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     graph,
@@ -949,6 +1005,7 @@ function App() {
     leave,
     diffCompare,
     showPush,
+    repoPop,
   ]);
 
   function toggleEditor() {
@@ -1071,76 +1128,81 @@ function App() {
     <div className="app" data-theme={theme}>
       {/* While the unsaved-edits question is up, the rest of the window waits. */}
       <div className="app-body" inert={leave ? true : undefined}>
-      <header className="toolbar">
+      <header className={`toolbar${graph ? " has-repo" : ""}`}>
         <span className="app-name">Chronos</span>
 
-        <form
-          className="open-form"
-          aria-busy={loading || undefined}
-          onSubmit={(e) => {
-            e.preventDefault();
-            void load(path);
-          }}
-        >
-          <PathField
-            value={path}
-            onChange={setPath}
+        {/* Before a repository is open: just the path (the start screen offers Browse).
+            Once one is open, the form folds into a ticket with the repository's name. */}
+        {graph ? (
+          <RepoTicket
+            name={repoLabel}
+            repoPath={graph.repoPath}
+            open={repoPop}
+            onOpenChange={showRepoPop}
+            focusKey={repoFocus}
+            path={path}
+            onPathChange={setPath}
             recent={recent}
-            onPick={(picked) => {
-              setPath(picked);
-              void load(picked);
+            onRemoveRecent={(gone) => setRecent((list) => removeRecentRepo(list, gone))}
+            onOpenPath={(target) => {
+              setPath(target);
+              void load(target);
             }}
-            onRemove={(gone) => setRecent((list) => removeRecentRepo(list, gone))}
-            disabled={loading}
+            onBrowse={() => void browse()}
+            onExplorer={() => void showInExplorer()}
+            onReload={() => void load(graph.repoPath)}
+            loading={loading}
+            desktop={desktop}
           />
-
-          <button
-            className="btn tool-btn"
-            type="button"
-            onClick={() => void browse()}
-            disabled={loading || !desktop}
-            title={desktop ? "Choose the repository folder" : "Only available in the desktop app"}
+        ) : (
+          <form
+            className="open-form"
+            aria-busy={loading || undefined}
+            onSubmit={(e) => {
+              e.preventDefault();
+              void load(path);
+            }}
           >
-            <FolderIcon />
-            <span className="tool-label">Browse…</span>
-          </button>
+            <PathField
+              value={path}
+              onChange={setPath}
+              recent={recent}
+              onPick={(picked) => {
+                setPath(picked);
+                void load(picked);
+              }}
+              onRemove={(gone) => setRecent((list) => removeRecentRepo(list, gone))}
+              disabled={loading}
+            />
+            <button className="btn primary" type="submit" disabled={loading || !path.trim()}>
+              Open
+            </button>
+          </form>
+        )}
 
-          <button className="btn primary" type="submit" disabled={loading || !path.trim()}>
-            Open
-          </button>
-        </form>
-        <ScopeBar graph={graph} scope={scope} onChange={changeScope} />
+        {graph && <ScopeBar graph={graph} scope={scope} onChange={changeScope} />}
 
-        <button
-          className={`btn tool-btn${loading && graph ? " is-busy" : ""}`}
-          disabled={loading || !graph}
-          onClick={() => graph && void load(graph.repoPath)}
-          title="Reload the repository's history"
-        >
-          <ReloadIcon />
-          <span className="tool-label-sm">Reload</span>
-        </button>
-
-        <BranchSwitcher
-          graph={graph}
-          currentBranch={currentBranch}
-          onGraphChange={applyGraph}
-          onError={setError}
-        />
-
-        <button className="btn primary" disabled={!graph} onClick={() => setShowPush(true)}>
-          Push to Git
-        </button>
-
-        <button
-          className="btn tool-btn"
-          disabled={!graph || !desktop}
-          onClick={() => void showInExplorer()}
-          title={desktop ? "Show the repository folder in the file explorer" : "Only available in the desktop app"}
-        >
-          <ExplorerIcon />
-          <span className="tool-label">Explorer</span>
-        </button>
+        {/* The branch and Push share one cluster: both are about where the work goes. */}
+        {graph && (
+          <div className="git-cluster" role="group" aria-label="Git">
+            <BranchSwitcher
+              graph={graph}
+              currentBranch={currentBranch}
+              onGraphChange={applyGraph}
+              onError={setError}
+            />
+            <button
+              type="button"
+              className="btn primary tool-btn push-key"
+              onClick={() => setShowPush(true)}
+              aria-label="Push to Git"
+              title="Commit and push to Git"
+            >
+              <PushIcon />
+              <span className="push-key-label">Push</span>
+            </button>
+          </div>
+        )}
 
         <div className="tools" role="group" aria-label="Tools">
           {TOOLS.map(({ id, label, hint, icon: Icon }) => {
@@ -1153,30 +1215,22 @@ function App() {
                   if (el) toolKeys.current.set(id, el);
                   else toolKeys.current.delete(id);
                 }}
-                className={`btn tool-btn${working ? " is-working" : ""}`}
+                type="button"
+                className={`btn tool-btn icon-only${working ? " is-working" : ""}`}
                 aria-pressed={tool === id}
-                aria-label={working ? `${label} (working)` : undefined}
+                aria-label={working ? `${label} (working)` : label}
                 onClick={() => toggleTool(id)}
-                title={working ? `${hint}. Still working…` : hint}
               >
                 <Icon />
-                <span className="tool-label">{label}</span>
+                {/* Near the window's right edge, so the tip lines up with the key's right side. */}
+                <Tip align="end">
+                  <strong className="tip-title">{label}</strong>
+                  <span className="tip-text">{working ? `${hint}. Still working…` : hint}</span>
+                </Tip>
                 {working && <span className="tool-busy-dot" aria-hidden="true" />}
               </button>
             );
           })}
-          <span className="toolbar-sep" aria-hidden />
-          <button
-            className="btn tool-btn theme-switch"
-            onClick={() => switchTheme(theme === "paper" ? "board" : "paper")}
-            title={theme === "paper" ? "Switch to the blackboard theme" : "Switch to the paper theme"}
-          >
-            {/* Keyed so the new icon turns into place when the theme flips. */}
-            <span key={theme} className={`theme-glyph${themeFlipped ? " is-turning" : ""}`}>
-              <ThemeIcon to={theme === "paper" ? "board" : "paper"} />
-            </span>
-            <span className="tool-label-sm">{theme === "paper" ? "Blackboard" : "Paper"}</span>
-          </button>
         </div>
 
         {loading && <div className="progress" role="progressbar" aria-label="Opening the repository" />}
@@ -1605,6 +1659,23 @@ function App() {
           <span className="status-dot" aria-hidden />
           {connected === false ? "Backend not connected" : connected ? version : "Connecting…"}
         </span>
+
+        {/* Paper or blackboard: a quiet corner key, out of the toolbar's way. */}
+        <button
+          type="button"
+          className="status-theme"
+          onClick={() => switchTheme(theme === "paper" ? "board" : "paper")}
+          aria-label={theme === "paper" ? "Switch to the blackboard theme" : "Switch to the paper theme"}
+        >
+          {/* Keyed so the new icon turns into place when the theme flips. */}
+          <span key={theme} className={`theme-glyph${themeFlipped ? " is-turning" : ""}`}>
+            <ThemeIcon to={theme === "paper" ? "board" : "paper"} />
+          </span>
+          <span className="status-theme-label">{theme === "paper" ? "Blackboard" : "Paper"}</span>
+          <Tip side="above" align="end">
+            {theme === "paper" ? "Switch to the blackboard theme" : "Switch to the paper theme"}
+          </Tip>
+        </button>
       </footer>
       </div>
 

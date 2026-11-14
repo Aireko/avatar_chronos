@@ -337,7 +337,7 @@ function App() {
           disabled={loading || !graph}
           onClick={() => graph && void load(graph.repoPath)}
         >
-          Reload
+          <ReloadIcon /> Reload
         </button>
 
         <BranchSwitcher

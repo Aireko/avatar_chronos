@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   closeViews,
   errorMessage,
@@ -15,7 +15,9 @@ import {
   type ContextSourceDocument,
   type ContextTarget,
 } from "../backend";
+import { Presence } from "../tools/Presence";
 import "../graph/details.css";
+import "./context.css";
 
 type ViewTab = "brief" | "graph";
 type FlowMode = "onboarding" | "task";
@@ -36,6 +38,8 @@ interface PageState {
   evidenceNextOffset: number;
   nodeCoverage: ContextCoverage;
   edgeCoverage: ContextCoverage;
+  /** Index of the first edge from the latest "Load more edges", where the row stagger restarts. */
+  edgeStaggerFrom: number;
 }
 
 interface PageRequest {
@@ -65,6 +69,64 @@ function pageKindForNode(node: ContextPageNode): ContextPageKind {
     default:
       return "root";
   }
+}
+
+/** Gap between neighbours in a staggered entrance, and how many steps it may take. */
+export const STAGGER_STEP_MS = 24;
+export const STAGGER_MAX_STEPS = 8;
+
+/**
+ * The entrance delay for the `index`-th item of a staggered list: one small step per
+ * item, capped so a long list never keeps its last rows waiting (the 9th item onwards
+ * all arrive together, at most STAGGER_STEP_MS * STAGGER_MAX_STEPS in).
+ */
+export function staggerDelayMs(
+  index: number,
+  stepMs = STAGGER_STEP_MS,
+  maxSteps = STAGGER_MAX_STEPS,
+): number {
+  if (!Number.isFinite(index) || index <= 0) return 0;
+  return Math.min(Math.floor(index), Math.max(0, maxSteps)) * Math.max(0, stepMs);
+}
+
+/**
+ * Where each brief section's items start in one running order, so the stagger flows
+ * through the whole brief instead of restarting under every heading.
+ */
+export function sectionStarts(itemCounts: readonly number[]): number[] {
+  const starts: number[] = [];
+  let next = 0;
+  for (const count of itemCounts) {
+    starts.push(next);
+    next += Math.max(0, count);
+  }
+  return starts;
+}
+
+/** Inline style handing a stagger delay to the CSS (`animation-delay: var(--d)`). */
+function stagger(index: number): CSSProperties {
+  return { "--d": `${staggerDelayMs(index)}ms` } as CSSProperties;
+}
+
+/** How long a tree level or the task targets take to roll back up (context.css). */
+const ROLL_EXIT_MS = 160;
+
+/**
+ * A calm pencil scribble that draws itself along and lifts off again while something
+ * is really being worked on, with the words beside it.
+ */
+function Scribble({ children }: { children: ReactNode }) {
+  return (
+    <p className="ctx-working" role="status">
+      <svg className="ctx-scribble" viewBox="0 0 64 14" width="48" height="12" aria-hidden="true">
+        <path
+          pathLength={1}
+          d="M2 9 C 6 3, 10 2, 13 7 S 19 13, 23 8 S 30 2, 34 7 S 41 13, 45 8 S 52 2, 56 7 S 60 10, 62 6"
+        />
+      </svg>
+      <span>{children}</span>
+    </p>
+  );
 }
 
 function shortenId(id: string, max = 48): string {
@@ -206,6 +268,13 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
               : document.evidence.nextOffset,
           nodeCoverage: document.nodes.status,
           edgeCoverage: document.edges.status,
+          // Appended rows stagger from their own first row, not from the cap.
+          edgeStaggerFrom:
+            edgesMode === "append"
+              ? (existing?.edges.length ?? 0)
+              : edgesMode === "keep"
+                ? (existing?.edgeStaggerFrom ?? 0)
+                : 0,
         },
       };
     });
@@ -373,6 +442,10 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
     return `${evidence.location.filePath}:${evidence.location.range.startLine}`;
   }
 
+  function chipClass(id: string): string {
+    return id === selectedEvidenceId ? "ctx-chip is-on" : "ctx-chip";
+  }
+
   function renderRelationships(page: PageState): ReactNode {
     const loading = loadingScopes.has(page.key);
     return (
@@ -383,7 +456,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
             {page.nodeCoverage !== "complete" ? ` · ${page.nodeCoverage} nodes` : ""}
           </small>
         </p>
-        <table>
+        <table className="ctx-table">
           <thead>
             <tr>
               <th>from</th>
@@ -394,8 +467,12 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
             </tr>
           </thead>
           <tbody>
-            {page.edges.map((edge) => (
-              <tr key={edge.id}>
+            {page.edges.map((edge, index) => (
+              <tr
+                key={edge.id}
+                className="ctx-edge"
+                style={stagger(index - page.edgeStaggerFrom)}
+              >
                 <td>{edgeTarget(edge, "from")}</td>
                 <td>{edge.kind}</td>
                 <td>{edgeTarget(edge, "to")}</td>
@@ -403,7 +480,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
                 <td>
                   <button
                     type="button"
-                    className="ctx-chip"
+                    className={chipClass(edge.evidenceId)}
                     onClick={() => void openEvidence(edge.evidenceId)}
                   >
                     {evidenceLabel(edge.evidenceId)}
@@ -438,13 +515,15 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
         {canExpand ? (
           <button
             type="button"
-            className="ctx-toggle"
+            className={loading ? "ctx-toggle is-loading" : "ctx-toggle"}
             onClick={() => void toggleScope(node)}
             disabled={loading}
             aria-expanded={open}
             aria-label={`${open ? "Collapse" : "Expand"} ${node.label}`}
           >
-            {loading ? "…" : open ? "−" : "+"}
+            {/* A pen-drawn plus whose upright turns down into a minus when open
+                (it breathes while the level is loading). */}
+            <span className="ctx-pm" aria-hidden="true" />
           </button>
         ) : null}
         <button
@@ -460,38 +539,44 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
           {node.edgeCount > 0 ? ` · ${node.edgeCount} calls` : ""}
           {node.coverage !== "complete" ? ` · ${node.coverage}` : ""}
         </small>
-        {open &&
-          (isSymbol ? (
-            page ? (
-              renderRelationships(page)
-            ) : (
-              <p>
-                <small className="quiet">
-                  {loading ? "Loading calls…" : "No call data loaded."}
-                </small>
-              </p>
-            )
-          ) : page ? (
-            <ul className="ctx-panel">
-              {page.nodes.map(renderScope)}
-              {page.nodeNextOffset < page.nodeTotal && (
-                <li>
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => void loadMoreNodes(page)}
-                    disabled={loading}
-                  >
-                    Load more ({page.nodeTotal - page.nodeNextOffset} remaining)
-                  </button>
-                </li>
-              )}
-            </ul>
-          ) : (
-            <p>
-              <small className="quiet">{loading ? "Loading…" : "Not loaded."}</small>
-            </p>
-          ))}
+        {/* The level rolls open once its page has loaded, and back up on collapse. */}
+        <Presence show={open && page !== undefined} className="ctx-roll" exitMs={ROLL_EXIT_MS}>
+          <div className="ctx-roll-clip">
+            {page &&
+              (isSymbol ? (
+                renderRelationships(page)
+              ) : (
+                <ul className="ctx-tree">
+                  {page.nodes.map(renderScope)}
+                  {page.nodeNextOffset < page.nodeTotal && (
+                    <li>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => void loadMoreNodes(page)}
+                        disabled={loading}
+                      >
+                        Load more ({page.nodeTotal - page.nodeNextOffset} remaining)
+                      </button>
+                    </li>
+                  )}
+                </ul>
+              ))}
+          </div>
+        </Presence>
+        {open && !page && (
+          <p className="ctx-pending">
+            <small className="quiet">
+              {isSymbol
+                ? loading
+                  ? "Loading calls…"
+                  : "No call data loaded."
+                : loading
+                  ? "Loading…"
+                  : "Not loaded."}
+            </small>
+          </p>
+        )}
       </li>
     );
   }
@@ -499,6 +584,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
   const selectedEvidence = selectedEvidenceId
     ? evidenceById.get(selectedEvidenceId)
     : undefined;
+  const briefStarts = sectionStarts(brief?.sections.map((section) => section.items.length) ?? []);
   const focusLabel =
     focusScope === ROOT_KEY
       ? "project root"
@@ -559,10 +645,10 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
         </label>
       </div>
 
-      {mode === "task" && (
-        <div>
+      <Presence show={mode === "task"} className="ctx-roll" exitMs={ROLL_EXIT_MS}>
+        <div className="ctx-roll-clip">
           {targets.map((target, index) => (
-            <div className="ctx-row ctx-panel" key={index}>
+            <div className="ctx-row ctx-target" key={index}>
               <input
                 className="field"
                 value={target.path}
@@ -607,16 +693,11 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
             </small>
           </div>
         </div>
-      )}
+      </Presence>
 
-      {busy && (
-        <p className="working" role="status">
-          <span className="working-dot" />
-          Working…
-        </p>
-      )}
+      {busy && <Scribble>Compiling views…</Scribble>}
       {error && (
-        <p className="notice bad" role="alert">
+        <p key={error} className="notice bad ctx-notice" role="alert">
           {error}
         </p>
       )}
@@ -624,10 +705,12 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
       {session && brief && (
         <>
           <div className="ctx-row">
-            <div className="ctx-tabs" role="group" aria-label="View">
+            <div className="ctx-tabs" role="group" aria-label="View" data-tab={tab}>
+              {/* One block of ink glides under the chosen tab, like the scope tabs. */}
+              <span className="ctx-tabs-ink" aria-hidden="true" />
               <button
                 type="button"
-                className="btn"
+                className="ctx-tab"
                 aria-pressed={tab === "brief"}
                 onClick={() => setTab("brief")}
               >
@@ -635,7 +718,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
               </button>
               <button
                 type="button"
-                className="btn"
+                className="ctx-tab"
                 aria-pressed={tab === "graph"}
                 onClick={() => setTab("graph")}
               >
@@ -653,19 +736,23 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
           </div>
 
           {tab === "brief" && (
-            <div key="brief" className="ctx-panel">
+            <div key="brief" className="ctx-view">
               <h3 className="section-title">Agent brief</h3>
               <p>
                 <small className="quiet">
                   coverage {brief.coverage}, source budget used {brief.budget.usedSourceBytes} bytes
                 </small>
               </p>
-              {brief.sections.map((section) => (
+              {brief.sections.map((section, sectionIndex) => (
                 <div key={section.id}>
                   <h4>{section.title}</h4>
                   <ul>
                     {section.items.map((item, index) => (
-                      <li key={`${section.id}-${index}`}>
+                      <li
+                        key={`${section.id}-${index}`}
+                        className="ctx-brief-item"
+                        style={stagger(briefStarts[sectionIndex] + index)}
+                      >
                         <span>{item.text}</span>{" "}
                         <small className="quiet">({item.state})</small>
                         {item.evidenceIds.length > 0 && (
@@ -673,7 +760,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
                             {item.evidenceIds.map((id) => (
                               <button
                                 type="button"
-                                className="ctx-chip"
+                                className={chipClass(id)}
                                 key={id}
                                 onClick={() => void openEvidence(id)}
                                 title={id}
@@ -689,7 +776,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
                 </div>
               ))}
               {brief.omittedEvidenceIds.length > 0 && (
-                <details>
+                <details className="ctx-omitted">
                   <summary>
                     {brief.omittedEvidenceIds.length} evidence IDs omitted by budget
                   </summary>
@@ -706,7 +793,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
           )}
 
           {tab === "graph" && (
-            <div key="graph" className="ctx-panel">
+            <div key="graph" className="ctx-view">
               <h3 className="section-title">UI graph</h3>
               <p>
                 <small className="quiet">
@@ -714,8 +801,8 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
                   not embedded in this payload.
                 </small>
               </p>
-              <div className="ctx-row" style={{ alignItems: "flex-start" }}>
-                <div style={{ flex: 1, minWidth: 280 }}>
+              <div className="ctx-row ctx-graph-cols">
+                <div className="ctx-scopes">
                   <h4>Scopes</h4>
                   <p>
                     <small className="quiet">
@@ -724,7 +811,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
                     </small>
                   </p>
                   {rootPage ? (
-                    <ul>
+                    <ul className="ctx-tree">
                       {rootPage.nodes.map(renderScope)}
                       {rootPage.nodeNextOffset < rootPage.nodeTotal && (
                         <li>
@@ -748,9 +835,9 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
                     </p>
                   )}
                 </div>
-                <div style={{ flex: 2, minWidth: 360 }}>
-                  <div className="ctx-row" style={{ alignItems: "center", marginTop: 0 }}>
-                    <h4 style={{ margin: 0 }}>Relationships</h4>
+                <div className="ctx-rels">
+                  <div className="ctx-row ctx-rels-head">
+                    <h4>Relationships</h4>
                     <small className="quiet">{focusLabel}</small>
                     {focusScope !== ROOT_KEY && (
                       <button
@@ -763,7 +850,10 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
                     )}
                   </div>
                   {focusedPage ? (
-                    renderRelationships(focusedPage)
+                    // A newly focused scope swaps its table in, like a tool pane.
+                    <div key={focusScope} className="ctx-view">
+                      {renderRelationships(focusedPage)}
+                    </div>
                   ) : (
                     <p>
                       <small className="quiet">
@@ -779,7 +869,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
           )}
 
           {selectedEvidenceId && (
-            <div key={selectedEvidenceId} className="ctx-panel">
+            <div key={selectedEvidenceId} className="ctx-evidence">
               <h3 className="section-title">Evidence</h3>
               <p>
                 <code>{selectedEvidenceId}</code>
@@ -794,12 +884,9 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
                 </small>
               </p>
               {sourceBusy ? (
-                <p className="working" role="status">
-                  <span className="working-dot" />
-                  Loading source…
-                </p>
+                <Scribble>Loading source…</Scribble>
               ) : source?.status === "present" && source.source !== null ? (
-                <>
+                <div className="ctx-source">
                   <p>
                     <small className="quiet">
                       {source.location?.filePath} [{source.location?.range.startByte},{" "}
@@ -808,9 +895,9 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
                     </small>
                   </p>
                   <pre>{source.source}</pre>
-                </>
+                </div>
               ) : (
-                <p className="quiet">
+                <p className="quiet ctx-source">
                   No source is available for this evidence
                   {source ? ` (${source.status})` : ""}.
                 </p>

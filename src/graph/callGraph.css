@@ -1,4 +1,11 @@
-/* The call map. Same paper, ink and marker-pen palette as the commit map, so it flips with the theme. */
+/* The call map. Same paper, ink and marker-pen palette as the commit map, so it flips with the theme.
+   Motion borrows the app's shared keyframes rather than inventing new ones:
+     sheet-in, swap-in, roll-down/up, banner-nudge  (tools/tools.css)
+     rise, fade-in                                  (graph/graph.css)
+   plus the draw-in below (as the main map's and the blast map's: boxes land, the pen draws
+   the lines). Every animation and transition stops under prefers-reduced-motion at the end. */
+
+/* Laid over the stage like the editor's sheet and the context view. */
 .calls {
   flex: 1;
   min-width: 0;
@@ -8,6 +15,8 @@
   background: var(--paper);
   color: var(--ink);
   text-align: left;
+  transform-origin: 50% 0;
+  animation: sheet-in 0.24s ease-out backwards;
 }
 
 .calls-bar {
@@ -26,6 +35,9 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The title (keyed by the function) and the counts tick in when the map moves on. */
+.calls-title,
+.calls-summary { animation: swap-in 0.2s ease-out backwards; }
 .calls-rev {
   padding: 1px 8px;
   border: 2px dashed var(--pen-2);
@@ -59,12 +71,14 @@
   margin-left: auto;
 }
 
+/* Notes about the map settle in under the bar once it has started drawing. */
 .calls-notes p {
   margin: 0;
   padding: 6px 16px;
-  border-bottom: 1px solid var(--grid-strong);
+  border-bottom: 1.5px dashed var(--grid-strong);
   background: var(--wash);
   font-size: 15px;
+  animation: rise 0.22s ease-out 0.12s backwards;
 }
 .calls-notes:empty {
   display: none;
@@ -74,10 +88,16 @@
   flex: 1 1 60%;
   min-height: 180px;
   overflow: auto;
+  /* Room to scroll the lowest boxes clear of the dock keys in the stage's bottom-left
+     corner (three 36px keys, two 8px gaps and the 16px inset), as the editor's file tree
+     makes (tools.css). */
+  padding-bottom: 140px;
   background-image:
     linear-gradient(var(--grid) 1px, transparent 1px),
     linear-gradient(90deg, var(--grid) 1px, transparent 1px);
   background-size: 28px 28px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--soft) transparent;
 }
 .calls-svg {
   display: block;
@@ -96,10 +116,35 @@
   cursor: pointer;
   outline: none;
 }
+/* The outer group is placed by its transform attribute; .calls-body inside it is what
+   lands, lifts under the pointer and tilts when chosen, like a card picked up. */
+.calls-body {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 0.16s ease-out;
+}
+/* An unseen pad where the box rests, so lifting the box out from under a pointer near its
+   lower edge doesn't drop the hover and set it bobbing. */
+.calls-pad {
+  fill: transparent;
+  stroke: none;
+}
+.calls-node:hover .calls-body,
+.calls-ghost:hover .calls-body,
+.calls-node:focus-visible .calls-body,
+.calls-ghost:focus-visible .calls-body {
+  transform: translateY(-2px) rotate(-0.5deg);
+}
+.calls-node.picked .calls-body,
+.calls-ghost.picked .calls-body {
+  transform: translateY(-1px) rotate(-0.9deg);
+}
 .calls-box {
   fill: var(--paper);
   stroke: var(--ink);
   stroke-width: 2;
+  stroke-linejoin: round;
+  transition: fill 0.15s ease, stroke 0.15s ease, stroke-width 0.15s ease;
 }
 .calls-node.root .calls-box {
   fill: var(--highlight);
@@ -166,6 +211,7 @@
   stroke: var(--ink);
   stroke-width: 2;
   stroke-linecap: round;
+  transition: stroke 0.15s ease, stroke-width 0.15s ease;
 }
 .calls-edge.back .calls-line,
 .calls-edge.ghost .calls-line {
@@ -210,6 +256,34 @@
   fill: var(--pen-2);
 }
 
+/* ---------- the draw-in ----------
+   Only what callDrawPlan (callTree.ts) gives a time gets .draw, with its delay as --d.
+   The chosen function lands first; the pen draws each line out from the box it grows
+   from (a caller's line runs caller -> callee, so it is uncovered from its arrow end:
+   .is-inward); each box lands as its line reaches it, so the map unrolls level by level.
+   A line back to a box already drawn just fades in. The 0.26s is CALLS_EDGE_MS. */
+.calls-head.draw { animation: fade-in 0.26s ease-out backwards; }
+.calls-node.draw .calls-body,
+.calls-ghost.draw .calls-body {
+  animation: calls-land 0.28s cubic-bezier(0.2, 0.9, 0.25, 1.25) var(--d, 0ms) backwards;
+}
+.calls-node.draw .calls-more { animation: fade-in 0.2s ease-out calc(var(--d, 0ms) + 200ms) backwards; }
+@keyframes calls-land { from { opacity: 0; transform: scale(0.7) rotate(-4deg); } }
+/* The arrowhead belongs to the line, so the line is uncovered (a clip, as the blast map's
+   lines are) rather than dashed in, which would leave the arrowhead waiting at the end. */
+.calls-edge.draw .calls-line { animation: calls-pen 0.26s ease-out var(--d, 0ms) backwards; }
+.calls-edge.draw.is-inward .calls-line { animation-name: calls-pen-back; }
+.calls-edge.back.draw .calls-line { animation: fade-in 0.3s ease-out var(--d, 0ms) backwards; }
+.calls-edge.draw .calls-count { animation: fade-in 0.2s ease-out calc(var(--d, 0ms) + 260ms) backwards; }
+@keyframes calls-pen {
+  from { clip-path: inset(-10px 100% -10px -10px); }
+  to { clip-path: inset(-10px -10px -10px -10px); }
+}
+@keyframes calls-pen-back {
+  from { clip-path: inset(-10px -10px -10px 100%); }
+  to { clip-path: inset(-10px -10px -10px -10px); }
+}
+
 /* ---------- states ---------- */
 .calls-state {
   display: flex;
@@ -220,6 +294,7 @@
   margin: 0;
   padding: 24px;
   font-size: 18px;
+  animation: swap-in 0.2s ease-out backwards;
 }
 .calls-state p {
   margin: 0;
@@ -227,23 +302,35 @@
 .calls-bad {
   color: var(--bad);
 }
+.calls-error { animation: banner-nudge 0.26s ease-out backwards; }
 .calls-quiet {
   color: var(--soft);
   font-size: 15px;
 }
-.calls-dot {
-  display: inline-block;
-  width: 10px;
-  height: 10px;
-  margin-right: 8px;
-  border-radius: 50%;
-  background: var(--pen-2);
-  animation: calls-pulse 1s ease-in-out infinite;
+/* Reading the calls: a pencil scribble draws itself along beside the words, as in the
+   context view. It waits a beat, so a quick read never flashes it. */
+.calls-working {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  color: var(--soft);
+  animation: fade-in 0.2s ease-out 0.18s backwards;
 }
-@keyframes calls-pulse {
-  50% {
-    opacity: 0.3;
-  }
+.calls-scribble { flex: none; overflow: visible; }
+.calls-scribble path {
+  fill: none;
+  stroke: var(--pen-1);
+  stroke-width: 2.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  /* pathLength=1, so a dash of 1 is the whole stroke. */
+  stroke-dasharray: 1;
+  animation: calls-scribble 2.2s ease-in-out infinite;
+}
+@keyframes calls-scribble {
+  0% { stroke-dashoffset: 1; }
+  45%, 55% { stroke-dashoffset: 0; }
+  100% { stroke-dashoffset: -1; }
 }
 .calls-choices {
   margin: 0;
@@ -258,20 +345,34 @@
   font-size: 0.9em;
 }
 
-/* ---------- selection details ---------- */
-.calls-detail {
+/* ---------- selection details ----------
+   They roll down under the map and back up (the legend's roll: a one-row grid going
+   between 0fr and 1fr); exitMs 160 in CallGraphView matches roll-up. */
+.calls-detail-roll {
   flex: 0 1 auto;
+  min-height: 0;
   max-height: 42%;
+  display: grid;
+  grid-template-rows: 1fr;
+}
+.calls-detail-roll.is-entering { animation: roll-down 0.22s ease-out backwards; }
+.calls-detail-roll.is-leaving { pointer-events: none; animation: roll-up 0.16s ease-in forwards; }
+.calls-detail {
+  min-height: 0;
   overflow: auto;
   padding: 10px 16px 14px;
   border-top: 2.5px solid var(--ink);
   background: var(--paper);
+  scrollbar-width: thin;
+  scrollbar-color: var(--soft) transparent;
 }
+/* Keyed by what is picked, so choosing another box or line swaps the heading in. */
 .calls-detail-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 12px;
+  animation: swap-in 0.2s ease-out backwards;
 }
 .calls-close {
   margin-left: auto;
@@ -283,14 +384,19 @@
   margin: 10px 0 0;
   padding: 8px 0;
   overflow: auto;
-  border: 2px solid var(--grid-strong);
-  border-radius: 8px;
+  border: 2px dashed var(--grid-strong);
+  border-radius: var(--sketch);
   background: var(--wash);
   font-family: var(--mono);
   font-size: 13px;
   line-height: 1.5;
   tab-size: 4;
+  scrollbar-width: thin;
+  scrollbar-color: var(--soft) transparent;
+  animation: swap-in 0.2s ease-out backwards;
 }
+/* "Loading source…" waits a beat, so a quick read never flashes it. */
+.calls-source-wait { animation: fade-in 0.2s ease-out 0.18s backwards; }
 .calls-line-row {
   display: block;
   padding-right: 12px;
@@ -310,7 +416,36 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .calls-dot {
-    animation: none;
-  }
+  .calls,
+  .calls-title,
+  .calls-summary,
+  .calls-notes p,
+  .calls-head.draw,
+  .calls-node.draw .calls-body,
+  .calls-ghost.draw .calls-body,
+  .calls-node.draw .calls-more,
+  .calls-edge.draw .calls-line,
+  .calls-edge.draw.is-inward .calls-line,
+  .calls-edge.back.draw .calls-line,
+  .calls-edge.draw .calls-count,
+  .calls-state,
+  .calls-error,
+  .calls-working,
+  .calls-scribble path,
+  .calls-detail-roll.is-entering,
+  .calls-detail-roll.is-leaving,
+  .calls-detail-head,
+  .calls-source,
+  .calls-source-wait { animation: none; }
+  /* Without the loop the scribble rests fully drawn. */
+  .calls-scribble path { stroke-dashoffset: 0; }
+  .calls-body,
+  .calls-box,
+  .calls-line { transition: none; }
+  .calls-node:hover .calls-body,
+  .calls-ghost:hover .calls-body,
+  .calls-node:focus-visible .calls-body,
+  .calls-ghost:focus-visible .calls-body,
+  .calls-node.picked .calls-body,
+  .calls-ghost.picked .calls-body { transform: none; }
 }

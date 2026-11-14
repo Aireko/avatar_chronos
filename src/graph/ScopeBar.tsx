@@ -1,25 +1,20 @@
 import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from "react";
 import { Presence } from "../tools/Presence";
 import { blameFile, errorMessage, listFiles, type ChronosGraph } from "../backend";
-import { supportsCallGraph } from "./callTree";
+import { useSlidingInk } from "./slidingInk";
 import { PROJECT, functionChoices, scopeTarget, type FunctionChoice, type Scope } from "./scope";
 import "./scope.css";
-
-export type FunctionView = "history" | "calls";
 
 interface Props {
   graph: ChronosGraph | undefined;
   scope: Scope;
   onChange: (scope: Scope) => void;
-  /** With a function in scope: whether the map shows its commits or its calls. */
-  view?: FunctionView;
-  onViewChange?: (view: FunctionView) => void;
 }
 
 type Picking = { kind: "file" } | { kind: "function"; path: string | null };
 const MAX_SHOWN = 200;
 
-export function ScopeBar({ graph, scope, onChange, view = "history", onViewChange }: Props) {
+export function ScopeBar({ graph, scope, onChange }: Props) {
   const [picking, setPicking] = useState<Picking | null>(null);
   const [query, setQuery] = useState("");
   const [files, setFiles] = useState<string[]>([]);
@@ -29,10 +24,13 @@ export function ScopeBar({ graph, scope, onChange, view = "history", onViewChang
   const root = useRef<HTMLDivElement>(null);
   const filter = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLUListElement>(null);
+  const tabs = useRef<HTMLDivElement>(null);
+  const ink = useRef<HTMLSpanElement>(null);
 
   const repoPath = graph?.repoPath;
   const functionPath = picking?.kind === "function" ? picking.path : null;
   const wantFiles = picking !== null && (picking.kind === "file" || picking.path === null);
+  const step = wantFiles ? "files" : `fn:${functionPath}`;
 
   useEffect(() => {
     if (!repoPath || !wantFiles) return;
@@ -86,17 +84,21 @@ export function ScopeBar({ graph, scope, onChange, view = "history", onViewChang
     const down = (e: MouseEvent) => {
       if (root.current && !root.current.contains(e.target as Node)) setPicking(null);
     };
+    // Escape closes the picker and nothing else: it is the top layer (z-index 60), so the key
+    // is caught on the way down and kept from App's handler, which would otherwise also close
+    // the commit panel or a tool, or drop the chosen commit, in the same press.
     const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && !e.isComposing) {
+        e.stopPropagation();
         returnFocus();
         setPicking(null);
       }
     };
     window.addEventListener("mousedown", down);
-    window.addEventListener("keydown", key);
+    window.addEventListener("keydown", key, true);
     return () => {
       window.removeEventListener("mousedown", down);
-      window.removeEventListener("keydown", key);
+      window.removeEventListener("keydown", key, true);
     };
   }, [picking]);
 
@@ -174,22 +176,24 @@ export function ScopeBar({ graph, scope, onChange, view = "history", onViewChang
   }
 
   const active = picking ? picking.kind : scope.kind;
+  useSlidingInk(tabs, ink, active);
   const q = query.trim().toLowerCase();
   const isCurrent = (name: string) => scope.kind === "function" && scope.path === functionPath && scope.name === name;
-  const callsOff =
-    scope.kind !== "function"
-      ? null
-      : !graph?.head
-        ? "The repository has no commits yet"
-        : !supportsCallGraph(scope.path)
-          ? "Call maps read C, Rust, JavaScript and TypeScript files"
-          : null;
   const fileMatches = files.filter((f) => f.toLowerCase().includes(q));
   const functionMatches = functions.filter((f) => f.name.toLowerCase().includes(q));
 
   return (
-    <div className="scope" ref={root}>
-      <div className="scope-tabs" role="group" aria-label="History view">
+    <div
+      className="scope"
+      ref={root}
+      onBlur={(e) => {
+        // Tabbing out of the picker closes it, as clicking elsewhere does. (Focus that simply
+        // vanishes, such as a list redrawn between steps, has no relatedTarget.)
+        const to = e.relatedTarget;
+        if (picking && to instanceof Node && !e.currentTarget.contains(to)) setPicking(null);
+      }}
+    >
+      <div ref={tabs} className={`scope-tabs${graph ? "" : " is-off"}`} role="group" aria-label="History view">
         <button
           className={`scope-tab${active === "project" ? " on" : ""}`}
           aria-pressed={active === "project"}
@@ -204,6 +208,7 @@ export function ScopeBar({ graph, scope, onChange, view = "history", onViewChang
         <button
           className={`scope-tab${active === "file" ? " on" : ""}`}
           aria-pressed={active === "file"}
+          aria-expanded={picking?.kind === "file"}
           disabled={!graph}
           onClick={() => open({ kind: "file" })}
         >
@@ -212,11 +217,14 @@ export function ScopeBar({ graph, scope, onChange, view = "history", onViewChang
         <button
           className={`scope-tab${active === "function" ? " on" : ""}`}
           aria-pressed={active === "function"}
+          aria-expanded={picking?.kind === "function"}
           disabled={!graph}
           onClick={() => open({ kind: "function", path: null })}
         >
           Function
         </button>
+        {/* Last, so `.scope-tab:first-child` still finds the first tab. */}
+        <span ref={ink} className="scope-ink" aria-hidden hidden />
       </div>
 
       {scope.kind !== "project" && !picking && (
@@ -225,32 +233,12 @@ export function ScopeBar({ graph, scope, onChange, view = "history", onViewChang
         </span>
       )}
 
-      {scope.kind === "function" && !picking && onViewChange && (
-        <div className="scope-tabs scope-view" role="group" aria-label="What to show for this function">
-          <button
-            className={`scope-tab${view === "history" ? " on" : ""}`}
-            aria-pressed={view === "history"}
-            onClick={() => onViewChange("history")}
-          >
-            History
-          </button>
-          <button
-            className={`scope-tab${view === "calls" ? " on" : ""}`}
-            aria-pressed={view === "calls"}
-            disabled={callsOff !== null}
-            title={callsOff ?? "Show what calls this function and what it calls, as of the latest commit"}
-            onClick={() => onViewChange("calls")}
-          >
-            Calls
-          </button>
-        </div>
-      )}
-
       <Presence show={picking !== null} className="scope-pop" exitMs={140}>
         {picking && (
           <>
-            {/* Keyed by the step (files, then a file's functions), so moving between steps slides the new one in. */}
-            <div key={wantFiles ? "files" : `fn:${functionPath}`} className="scope-title scope-step">
+            {/* Keyed by the step (files, then a file's functions), so moving between steps slides the new one in.
+                The title and the list are siblings, so their keys need different prefixes. */}
+            <div key={`title:${step}`} className="scope-title scope-step">
               {picking.kind === "file" && "Choose a file"}
               {picking.kind === "function" && picking.path === null && "Choose the file the function is in"}
               {picking.kind === "function" && picking.path !== null && (
@@ -276,7 +264,7 @@ export function ScopeBar({ graph, scope, onChange, view = "history", onViewChang
             {loading && <p className="quiet scope-note scope-loading">Loading…</p>}
             {error && <p className="scope-note scope-bad" role="alert">{error}</p>}
             <ul
-              key={wantFiles ? "files" : `fn:${functionPath}`}
+              key={`list:${step}`}
               ref={list}
               className="scope-list scope-step"
               onKeyDown={onListKey}

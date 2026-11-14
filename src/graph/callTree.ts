@@ -61,6 +61,9 @@ export interface LaidEdge {
   /** Every edge this line stands for (a "more" box stands for several). */
   edgeIds: string[];
   kind: LaidEdgeKind;
+  /** The box the line leaves (the caller) and the box it reaches (a node, or a ghost's id). */
+  from: string;
+  to: string;
   path: string;
   /** Where the call-count label sits. */
   mid: { x: number; y: number };
@@ -218,6 +221,8 @@ export function layoutCallTree(tree: CallTreeOk): CallTreeLayout {
       id: edge.id,
       edgeIds: [edge.id],
       kind: isTree ? "tree" : "back",
+      from: edge.from,
+      to: edge.to,
       path,
       mid,
       callCount: edge.callCount,
@@ -228,7 +233,17 @@ export function layoutCallTree(tree: CallTreeOk): CallTreeLayout {
     const from = at.get(ghost.fromId);
     if (!from) continue;
     const { path, mid } = curve(from.cx, from.cy, ghost.cx, ghost.cy, false);
-    edges.push({ id: ghost.id, edgeIds: ghost.edgeIds, kind: "ghost", path, mid, callCount: ghost.callCount, loops: false });
+    edges.push({
+      id: ghost.id,
+      edgeIds: ghost.edgeIds,
+      kind: "ghost",
+      from: ghost.fromId,
+      to: ghost.id,
+      path,
+      mid,
+      callCount: ghost.callCount,
+      loops: false,
+    });
   }
 
   const rootAt = at.get(root.id);
@@ -288,6 +303,95 @@ function curve(
     mid: { x: (sx + ex) / 2, y: (y1 + y2) / 2 },
     loops: !forward,
   };
+}
+
+/* ---------- draw-in timing (pure; see CallGraphView and callGraph.css) ----------
+   The call map draws itself in like the main map and the blast map: the chosen function
+   lands, the pen draws each call line out from it, and each box lands as its line reaches
+   it, so the map unrolls level by level. When Reach goes up, the levels already on the
+   page stay put and only the new ones unroll. Delays are staggered but capped. */
+/** How long a call line takes to draw (keep in sync with .calls-edge.draw in callGraph.css). */
+export const CALLS_EDGE_MS = 260;
+/** Pause between a box landing and the lines out of it starting. */
+export const CALLS_LEAD = 60;
+/** Gap between two lines of the same level starting. */
+export const CALLS_STEP = 24;
+/** Only this many lines per level are staggered; the rest share the last slot. */
+export const CALLS_MAX_STAGGER = 6;
+/** Nothing waits longer than this before it starts. */
+export const CALLS_MAX_DELAY = 900;
+/** A box lands once its line is this far drawn. */
+const LAND_AT = 0.7;
+
+export interface CallDrawPlan {
+  /** Delay (ms) before each box lands, by node or ghost id. Absent: already on the page. */
+  boxes: Map<string, number>;
+  /** Each line's delay (ms), and whether the pen starts at its arrow end. Absent: already drawn. */
+  lines: Map<string, { delay: number; inward: boolean }>;
+}
+
+/**
+ * When each box and line of a call map draws in. `settledDepth` is how many levels were
+ * already on the page (the same function at a smaller Reach); those don't draw in again.
+ * -1 (the default) draws everything.
+ */
+export function callDrawPlan(layout: CallTreeLayout, settledDepth = -1): CallDrawPlan {
+  const depth = new Map<string, number>();
+  for (const { node } of layout.nodes) depth.set(node.id, node.depth);
+  for (const ghost of layout.ghosts) depth.set(ghost.id, (depth.get(ghost.fromId) ?? 0) + 1);
+  const levelOf = (id: string) => depth.get(id) ?? 0;
+  const settled = (id: string) => levelOf(id) <= settledDepth;
+
+  // A box on the page already counts as landed just early enough that the lines out of
+  // it start at once.
+  const arrival = new Map<string, number>();
+  for (const id of depth.keys()) {
+    if (settled(id)) arrival.set(id, -CALLS_LEAD);
+    else if (levelOf(id) === 0) arrival.set(id, 0);
+  }
+
+  const plan: CallDrawPlan = { boxes: new Map(), lines: new Map() };
+  const latestStart = CALLS_MAX_DELAY - CALLS_EDGE_MS * LAND_AT;
+
+  // Lines that grow the tree, nearest level first, so each starts from a box that has a time.
+  const growing = layout.edges
+    .filter((line) => line.kind !== "back")
+    .map((line) => {
+      const fromFirst = levelOf(line.from) <= levelOf(line.to);
+      return { line, near: fromFirst ? line.from : line.to, far: fromFirst ? line.to : line.from };
+    })
+    .sort((a, b) => levelOf(a.far) - levelOf(b.far));
+  const perLevel = new Map<number, number>();
+  for (const { line, near, far } of growing) {
+    if (settled(far)) continue;
+    const level = levelOf(far);
+    const i = perLevel.get(level) ?? 0;
+    perLevel.set(level, i + 1);
+    const base = arrival.get(near) ?? 0;
+    const start = Math.round(
+      Math.min(Math.max(0, base + CALLS_LEAD + Math.min(i, CALLS_MAX_STAGGER) * CALLS_STEP), latestStart),
+    );
+    plan.lines.set(line.id, { delay: start, inward: near === line.to });
+    const lands = Math.round(start + CALLS_EDGE_MS * LAND_AT);
+    const known = arrival.get(far);
+    if (known === undefined || lands < known) arrival.set(far, lands);
+  }
+
+  // A box no line grows into (reached by a line back from a box already drawn) lands
+  // when its level would have.
+  for (const id of depth.keys()) {
+    if (settled(id)) continue;
+    const at = arrival.get(id) ?? Math.min(levelOf(id) * (CALLS_LEAD + CALLS_EDGE_MS * LAND_AT), CALLS_MAX_DELAY);
+    plan.boxes.set(id, Math.min(Math.max(0, Math.round(at)), CALLS_MAX_DELAY));
+  }
+
+  // Lines back to a box already drawn fade in once both their ends are there.
+  for (const line of layout.edges) {
+    if (line.kind !== "back" || (settled(line.from) && settled(line.to))) continue;
+    const ends = Math.max(plan.boxes.get(line.from) ?? 0, plan.boxes.get(line.to) ?? 0);
+    plan.lines.set(line.id, { delay: Math.min(ends + CALLS_LEAD * 2, CALLS_MAX_DELAY), inward: false });
+  }
+  return plan;
 }
 
 /** Counts for the heading and screen readers. */

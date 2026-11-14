@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { Presence } from "../tools/Presence";
 import {
   callTree,
   errorMessage,
@@ -13,6 +14,7 @@ import {
   NODE_H,
   NODE_W,
   baseName,
+  callDrawPlan,
   exactName,
   fit,
   layoutCallTree,
@@ -55,6 +57,25 @@ const MAX_SHOWN_SITES = 8;
 
 const short = (sha: string) => (/^[0-9a-f]{40}$/i.test(sha) ? sha.slice(0, 7) : sha);
 
+/** How long the details take to roll back up (.calls-detail-roll.is-leaving in callGraph.css). */
+const DETAIL_EXIT_MS = 160;
+
+/** Hands a draw-in delay to the CSS (`animation-delay: var(--d)`). */
+const drawDelay = (ms: number | undefined): CSSProperties | undefined =>
+  ms === undefined ? undefined : ({ "--d": `${ms}ms` } as CSSProperties);
+
+/** A calm pencil scribble that draws itself along while the calls are read (as the context view's). */
+function Scribble() {
+  return (
+    <svg className="calls-scribble" viewBox="0 0 64 14" width="48" height="12" aria-hidden="true">
+      <path
+        pathLength={1}
+        d="M2 9 C 6 3, 10 2, 13 7 S 19 13, 23 8 S 30 2, 34 7 S 41 13, 45 8 S 52 2, 56 7 S 60 10, 62 6"
+      />
+    </svg>
+  );
+}
+
 export function CallGraphView({ repoPath, revision, path, name, onClose }: Props) {
   const [target, setTarget] = useState<Target>({ path, name });
   const [trail, setTrail] = useState<Target[]>([]);
@@ -88,6 +109,22 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
   const layout = useMemo(() => (tree ? layoutCallTree(tree) : null), [tree]);
   const nodes = useMemo(() => new Map((tree?.nodes ?? []).map((n) => [n.id, n])), [tree]);
   const edges = useMemo(() => new Map((tree?.edges ?? []).map((e) => [e.id, e])), [tree]);
+
+  // The draw-in. Levels already on the page (the same function at a smaller Reach) stay
+  // put, so raising Reach only unrolls the new levels.
+  const drawKey = `${revision}\n${target.path}\n${target.name}`;
+  const drawn = useRef<{ key: string; depth: number } | null>(null);
+  const plan = useMemo(() => {
+    if (!layout || !tree) return null;
+    const before = drawn.current;
+    return callDrawPlan(layout, before && before.key === drawKey ? Math.min(before.depth, tree.maxDepth) : -1);
+    // `drawn` is read for the map being laid out now, and written once it is on the page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layout]);
+  useEffect(() => {
+    if (tree && layout) drawn.current = { key: drawKey, depth: tree.maxDepth };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layout]);
 
   // Bring the chosen function into view whenever a new map arrives.
   useEffect(() => {
@@ -172,7 +209,8 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
       <button type="button" className="btn" onClick={back} disabled={trail.length === 0}>
         ‹ Back
       </button>
-      <strong className="calls-title" title={`${target.path} at ${revision}`}>
+      {/* Keyed by the function, so moving the map to another one ticks the title over. */}
+      <strong key={`${target.path}:${target.name}`} className="calls-title" title={`${target.path} at ${revision}`}>
         {title}
       </strong>
       <span className="calls-rev" title="The map is built from this commit. Uncommitted edits are not in it.">
@@ -197,9 +235,9 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
     return (
       <section className="calls" aria-label="Call map">
         {bar}
-        <p className="calls-state" role="status">
-          <span className="calls-dot" aria-hidden="true" />
-          Reading the calls…
+        <p className="calls-state calls-working" role="status">
+          <Scribble />
+          <span>Reading the calls…</span>
         </p>
       </section>
     );
@@ -209,7 +247,7 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
     return (
       <section className="calls" aria-label="Call map">
         {bar}
-        <div className="calls-state calls-bad" role="alert">
+        <div className="calls-state calls-bad calls-error" role="alert">
           <p>{load.message}</p>
           <button type="button" className="btn" onClick={() => setAttempt((n) => n + 1)}>
             Try again
@@ -267,7 +305,7 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
     );
   }
 
-  if (!tree || !layout) return null;
+  if (!tree || !layout || !plan) return null;
 
   const empty = !layout.hasCallers && !layout.hasCallees;
   const pickedEdges = pick?.kind === "edges" ? pick.ids : [];
@@ -278,6 +316,9 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
   function pickGhost(ghost: LaidGhost) {
     setPick({ kind: "edges", ids: ghost.edgeIds });
   }
+
+  // The column headings ink in with the chosen function, unless it was already there.
+  const freshMap = plan.boxes.has(tree.root);
 
   return (
     <section className="calls" aria-label="Call map">
@@ -321,12 +362,12 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
           </defs>
 
           {layout.callerHeadX !== null && (
-            <text className="calls-head" x={layout.callerHeadX} y={30} textAnchor="middle">
+            <text className={`calls-head${freshMap ? " draw" : ""}`} x={layout.callerHeadX} y={30} textAnchor="middle">
               Called by
             </text>
           )}
           {layout.calleeHeadX !== null && (
-            <text className="calls-head" x={layout.calleeHeadX} y={30} textAnchor="middle">
+            <text className={`calls-head${freshMap ? " draw" : ""}`} x={layout.calleeHeadX} y={30} textAnchor="middle">
               Calls
             </text>
           )}
@@ -339,10 +380,12 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
               ? `${nodes.get(first.from)?.name ?? "?"} calls ${first.to ? (nodes.get(first.to)?.name ?? "?") : first.calleeText}`
               : "call";
             const select = () => setPick({ kind: "edges", ids: line.edgeIds });
+            const draw = plan.lines.get(line.id);
             return (
               <g
                 key={line.id}
-                className={`calls-edge ${line.kind}${selected ? " picked" : ""}`}
+                className={`calls-edge ${line.kind}${selected ? " picked" : ""}${draw ? " draw" : ""}${draw?.inward ? " is-inward" : ""}`}
+                style={drawDelay(draw?.delay)}
                 role="button"
                 tabIndex={0}
                 aria-label={`${label}${line.callCount > 1 ? `, ${line.callCount} calls` : ""}. Show the call site`}
@@ -371,7 +414,8 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
             return (
               <g
                 key={ghost.id}
-                className={`calls-ghost${selected ? " picked" : ""}`}
+                className={`calls-ghost${selected ? " picked" : ""}${plan.boxes.has(ghost.id) ? " draw" : ""}`}
+                style={drawDelay(plan.boxes.get(ghost.id))}
                 transform={`translate(${ghost.cx - NODE_W / 2} ${ghost.cy - NODE_H / 2})`}
                 role="button"
                 tabIndex={0}
@@ -380,14 +424,18 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
                 onKeyDown={activate(() => pickGhost(ghost))}
               >
                 <title>{`${ghost.label}: the indexer could not tie this call to one function (${tag})`}</title>
-                <rect className="calls-box" width={NODE_W} height={NODE_H} rx={10} />
-                <text className="calls-ghost-name" x={12} y={21}>
-                  {fit(ghost.label, 24)}
-                  {ghost.callCount > 1 ? ` ×${ghost.callCount}` : ""}
-                </text>
-                <text className="calls-file" x={12} y={39}>
-                  {tag}
-                </text>
+                <rect className="calls-pad" width={NODE_W} height={NODE_H} rx={10} />
+                {/* The box lands and tilts in here: the outer group's transform places it. */}
+                <g className="calls-body">
+                  <rect className="calls-box" width={NODE_W} height={NODE_H} rx={10} />
+                  <text className="calls-ghost-name" x={12} y={21}>
+                    {fit(ghost.label, 24)}
+                    {ghost.callCount > 1 ? ` ×${ghost.callCount}` : ""}
+                  </text>
+                  <text className="calls-file" x={12} y={39}>
+                    {tag}
+                  </text>
+                </g>
               </g>
             );
           })}
@@ -400,7 +448,8 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
             return (
               <g
                 key={node.id}
-                className={`calls-node ${node.side}${selected ? " picked" : ""}`}
+                className={`calls-node ${node.side}${selected ? " picked" : ""}${plan.boxes.has(node.id) ? " draw" : ""}`}
+                style={drawDelay(plan.boxes.get(node.id))}
                 transform={`translate(${cx - NODE_W / 2} ${cy - NODE_H / 2})`}
                 role="button"
                 tabIndex={0}
@@ -413,36 +462,43 @@ export function CallGraphView({ repoPath, revision, path, name, onClose }: Props
                 onKeyDown={activate(choose)}
               >
                 <title>{`${node.qualifiedName} (${node.filePath}:${node.startLine})`}</title>
-                <rect className="calls-box" width={NODE_W} height={NODE_H} rx={10} />
-                <text className="calls-name" x={12} y={21}>
-                  {fit(node.qualifiedName, 24)}
-                </text>
-                <text className="calls-file" x={12} y={39}>
-                  {fit(`${baseName(node.filePath)}:${node.startLine}`, 30)}
-                </text>
-                {node.hasMore && (
-                  <g className="calls-more" transform={`translate(${outerX} ${NODE_H / 2})`}>
-                    <circle r={10} />
-                    <text textAnchor="middle" y={4}>
-                      …
-                    </text>
-                  </g>
-                )}
+                <rect className="calls-pad" width={NODE_W} height={NODE_H} rx={10} />
+                {/* The box lands and tilts in here: the outer group's transform places it. */}
+                <g className="calls-body">
+                  <rect className="calls-box" width={NODE_W} height={NODE_H} rx={10} />
+                  <text className="calls-name" x={12} y={21}>
+                    {fit(node.qualifiedName, 24)}
+                  </text>
+                  <text className="calls-file" x={12} y={39}>
+                    {fit(`${baseName(node.filePath)}:${node.startLine}`, 30)}
+                  </text>
+                  {node.hasMore && (
+                    <g className="calls-more" transform={`translate(${outerX} ${NODE_H / 2})`}>
+                      <circle r={10} />
+                      <text textAnchor="middle" y={4}>
+                        …
+                      </text>
+                    </g>
+                  )}
+                </g>
               </g>
             );
           })}
         </svg>
       </div>
 
-      {pick && (
-        <Detail
-          tree={tree}
-          pick={pick}
-          shown={shown}
-          onCentre={(symbol) => centre(symbol)}
-          onClear={() => setPick(null)}
-        />
-      )}
+      {/* The details roll down under the map and back up (roll-down / roll-up). */}
+      <Presence show={pick !== null} className="calls-detail-roll" exitMs={DETAIL_EXIT_MS}>
+        {pick && (
+          <Detail
+            tree={tree}
+            pick={pick}
+            shown={shown}
+            onCentre={(symbol) => centre(symbol)}
+            onClear={() => setPick(null)}
+          />
+        )}
+      </Presence>
     </section>
   );
 }
@@ -477,7 +533,8 @@ function Detail({
 
   return (
     <div className="calls-detail" aria-live="polite">
-      <div className="calls-detail-head">
+      {/* Keyed by what is picked, so choosing another box or line swaps the heading in. */}
+      <div key={pick.kind === "node" ? `n:${pick.id}` : `e:${pick.ids.join(",")}`} className="calls-detail-head">
         {node && (
           <>
             <strong>{node.qualifiedName}</strong>
@@ -554,7 +611,7 @@ function Detail({
         );
       })}
 
-      {shown.phase === "loading" && <p className="calls-quiet">Loading source…</p>}
+      {shown.phase === "loading" && <p className="calls-quiet calls-source-wait">Loading source…</p>}
       {shown.phase === "error" && <p className="calls-bad">{shown.message}</p>}
       {shown.phase === "ready" && (
         <pre className="calls-source" aria-label={`Source of ${subject?.qualifiedName ?? "the function"}`}>

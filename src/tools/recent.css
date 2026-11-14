@@ -1,7 +1,8 @@
 /* ============ the path field and its recent-repositories dropdown ============
    Same hand-drawn family as graph.css: ink borders, the uneven --sketch box, the
    highlighter for the active row. Opens with the scope picker's pop-in/pop-out
-   (tools.css); exitMs 140 in PathField.tsx matches pop-out. */
+   (tools.css); exitMs 140 in PathField.tsx matches pop-out. In the repository pop-up
+   (RepoTicket.tsx) the same list is shown inline, under the field. */
 
 .path-combo { position: relative; flex: 1; min-width: 0; display: flex; }
 .path-input { width: 100%; }
@@ -74,6 +75,8 @@
   transition: background-color 0.12s ease;
 }
 .recent-row.is-active { background: var(--highlight); }
+/* Rows drop in one after another (--row is the row's place, capped in PathField.tsx). */
+.recent-row { animation: swap-in 0.18s ease-out backwards; animation-delay: calc(var(--row, 0) * 16ms); }
 /* The repository already in the field gets the scope picker's marker stroke. */
 .recent-row.is-current { box-shadow: inset 4px 0 0 var(--pen-2); }
 .recent-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
@@ -108,6 +111,16 @@
 .recent-row.is-active .recent-remove { opacity: 1; }
 .recent-remove:hover { border-color: var(--ink); color: var(--ink); transform: rotate(8deg); }
 
+/* Inline (in the repository pop-up): the field and Open on one row, the list below it,
+   always in view. */
+.path-combo.is-inline { flex-direction: column; }
+.path-row { display: flex; gap: 8px; min-width: 0; }
+.path-row .path-input { flex: 1; min-width: 0; }
+.recent-inline { margin-top: 10px; }
+.recent-inline .recent-head { margin-top: 0; }
+.recent-inline .recent-list { max-height: min(40vh, 300px); }
+.recent-row[aria-disabled="true"] { cursor: default; opacity: 0.6; }
+
 .recent-sr-only {
   position: absolute;
   width: 1px;
@@ -122,7 +135,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .recent-pop.is-entering,
-  .recent-pop.is-leaving { animation: none; }
+  .recent-pop.is-leaving,
+  .recent-row { animation: none; }
   .path-chevron,
   .path-chevron-glyph,
   .recent-row,

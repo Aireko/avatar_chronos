@@ -14,6 +14,7 @@ import {
 import { functionDiffText } from "./functionDiff";
 import { scopeNoun, scopeTarget, type Scope } from "./scope";
 import { formatAge, truncate, type GraphLayout, type Lane } from "./layout";
+import { OpenFileIcon } from "../tools/icons";
 import "./details.css";
 
 interface Props {
@@ -27,9 +28,17 @@ interface Props {
   pathAtCommit?: string;
   removed?: boolean;
   currentBranch: string | null;
+  /** A rebase is paused on a conflict (App shows the way out in a note). */
+  rebasePaused?: boolean;
+  /** A merge is paused on a conflict; git won't rebase until it is finished or aborted. */
+  mergePaused?: boolean;
+  /** Take keyboard focus when the ticket opens (not when arrow keys walk the map). */
+  autoFocus?: boolean;
   onGraphChange: (graph: ChronosGraph) => void;
   onSelect: (hash: string) => void;
   onOpenSideDiff: () => void;
+  /** Open one of this commit's files in the editor (side by side with the working tree, or plain at HEAD). */
+  onOpenFile: (path: string) => void;
   onClose: () => void;
   /** The author whose commits the map is highlighting, if any. */
   highlightedAuthor?: string | null;
@@ -69,9 +78,13 @@ export function CommitDetails({
   pathAtCommit,
   removed,
   currentBranch,
+  rebasePaused = false,
+  mergePaused = false,
+  autoFocus = false,
   onGraphChange,
   onSelect,
   onOpenSideDiff,
+  onOpenFile,
   onClose,
   highlightedAuthor = null,
   onHighlightAuthor,
@@ -83,10 +96,21 @@ export function CommitDetails({
   const [diff, setDiff] = useState<GitCommandResult | null>(null);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  // "Explain this commit" was pressed: the key presses in and washes highlighter-yellow
+  // (details.css) while the ticket makes way for the Local AI drawer.
+  const [asked, setAsked] = useState(false);
   const copiedTimer = useRef<number | undefined>(undefined);
   const cancelKey = useRef<HTMLButtonElement>(null);
   const rebaseKey = useRef<HTMLButtonElement>(null);
   const refocusRebase = useRef(false);
+  const sheet = useRef<HTMLElement>(null);
+
+  // Opened from the commit's action bar (which has just gone away), so the keyboard
+  // carries on here instead of falling back to the top of the page.
+  useEffect(() => {
+    if (autoFocus) sheet.current?.focus({ preventScroll: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Keyboard focus follows the rebase question: onto Cancel when it opens (the safe
   // choice), and back to the Rebase key when it is cancelled.
@@ -108,7 +132,7 @@ export function CommitDetails({
   const noun = scopeNoun(scope);
   const target = scoped ? scopeTarget(scope) : branchLabel;
   const pathThen = pathAtCommit ?? (scope.kind === "project" ? "" : scope.path);
-  const canRebase = scoped ? !isHead && !removed : !!currentBranch && !isHead;
+  const canRebase = !mergePaused && (scoped ? !isHead && !removed : !!currentBranch && !isHead);
   const otherBranches = graph.branches.filter((b) => b.commitHash === commit.hash && b.name !== lane.name);
   const tags = commit.refs.filter((r) => r.startsWith("tag: ")).map((r) => r.slice(5));
   const children = layout.childrenOf.get(commit.hash) ?? [];
@@ -226,16 +250,22 @@ export function CommitDetails({
     ? scoped
       ? "This is already the latest version"
       : `${branchLabel} is already here`
-    : scoped
+    : mergePaused
+      ? "Finish or abort the paused merge first"
+      : scoped
       ? removed
         ? "It was deleted here"
         : `Put ${target} back to this commit`
       : currentBranch
         ? `Move ${currentBranch} onto this commit`
-        : "Check out a branch first";
+        : rebasePaused
+          ? "Finish or abort the paused rebase first"
+          : "Check out a branch first";
 
   return (
     <aside
+      ref={sheet}
+      tabIndex={-1}
       className="ticket"
       style={{ "--line": lane.color, "--on": lane.on } as CSSProperties}
       aria-label="Commit details"
@@ -380,7 +410,14 @@ export function CommitDetails({
                 <span>{rebaseNote}</span>
               </button>
               {onExplain && (
-                <button className="key plain tall explain-key" disabled={busy !== null} onClick={onExplain}>
+                <button
+                  className={`key plain tall explain-key${asked ? " is-asked" : ""}`}
+                  disabled={busy !== null}
+                  onClick={() => {
+                    setAsked(true);
+                    onExplain();
+                  }}
+                >
                   <strong>Explain this commit</strong>
                   <span>A plain-language summary from the local AI</span>
                 </button>
@@ -412,6 +449,12 @@ export function CommitDetails({
               {outcome.result.error && <p>{outcome.result.error}</p>}
               {output && <pre>{output}</pre>}
               {stuck && (
+                <p className="quiet">
+                  Fix the conflicts and continue in the terminal, or abort here. The note at the top of the window
+                  keeps both ways out after this ticket closes.
+                </p>
+              )}
+              {stuck && (
                 <button
                   className="key plain"
                   disabled={busy !== null}
@@ -434,35 +477,65 @@ export function CommitDetails({
             </h3>
             {commit.filesChanged.length === 0 && <p className="quiet">This commit changes no files.</p>}
             <ul className="files">
-              {commit.filesChanged.map((f, i) => (
-                <li key={f.path} style={{ "--i": i } as CSSProperties}>
-                  <span className={`status status-${f.status}`} title={STATUS_NAME[f.status] ?? f.status}>
-                    {f.status}
-                  </span>
-                  <div className="file-main">
-                    <div className="file-path">
-                      {f.oldPath && <span className="quiet">{f.oldPath} to </span>}
-                      {f.path}
-                    </div>
-                    {f.symbolsTouched.length > 0 && (
-                      <div className="symbols">
-                        {f.symbolsTouched.map((s) => (
-                          <span
-                            key={s.name}
-                            className={`symbol symbol-${s.changeType.toLowerCase()}`}
-                            title={`${s.kind}, ${s.changeType.toLowerCase()}, lines ${s.startLine} to ${s.endLine}`}
-                          >
-                            {s.name}
-                          </span>
-                        ))}
+              {commit.filesChanged.map((f, i) => {
+                const row = (
+                  <>
+                    <span className={`status status-${f.status}`} title={STATUS_NAME[f.status] ?? f.status}>
+                      {f.status}
+                    </span>
+                    <span className="file-main">
+                      <span className="file-path">
+                        {f.oldPath && <span className="quiet">{f.oldPath} to </span>}
+                        {f.path}
+                      </span>
+                      {f.symbolsTouched.length > 0 && (
+                        <span className="symbols">
+                          {f.symbolsTouched.map((s) => (
+                            <span
+                              key={s.name}
+                              className={`symbol symbol-${s.changeType.toLowerCase()}`}
+                              title={`${s.kind}, ${s.changeType.toLowerCase()}, lines ${s.startLine} to ${s.endLine}`}
+                            >
+                              {s.name}
+                            </span>
+                          ))}
+                        </span>
+                      )}
+                    </span>
+                    <span className="counts">
+                      <span className="add">+{f.additions}</span> <span className="del">−{f.deletions}</span>
+                    </span>
+                  </>
+                );
+                // A file this commit deleted has nothing to show at this commit.
+                return (
+                  <li key={f.path} style={{ "--i": i } as CSSProperties}>
+                    {f.status === "D" ? (
+                      <div className="file-row" title="Deleted in this commit">
+                        {row}
                       </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="file-row"
+                        disabled={busy !== null}
+                        title={
+                          isHead
+                            ? `Open ${f.path} in the code editor`
+                            : `Open ${f.path} side by side: this commit next to the working tree`
+                        }
+                        onClick={() => onOpenFile(f.path)}
+                      >
+                        {row}
+                        <span className="file-open has-icon" aria-hidden="true">
+                          <OpenFileIcon />
+                        </span>
+                        <span className="details-sr-only">, open in the editor</span>
+                      </button>
                     )}
-                  </div>
-                  <span className="counts">
-                    <span className="add">+{f.additions}</span> <span className="del">−{f.deletions}</span>
-                  </span>
-                </li>
-              ))}
+                  </li>
+                );
+              })}
             </ul>
           </section>
         </div>

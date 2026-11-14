@@ -49,11 +49,49 @@
   text-align: center;
   white-space: nowrap;
 }
-.find-count-tick { display: inline-block; animation: find-tick 0.2s ease-out backwards; }
+.find-count { transition: color 0.15s ease; }
 .find-count.is-none { color: var(--bad); }
+/* The count ticks over like the status bar figures: up from below after a step forward
+   (and for any new count), down from above after a step back (FindBar's stepCue). */
+.find-count-tick { display: inline-block; animation: find-tick 0.2s ease-out backwards; }
+.find-count-tick.is-prev { animation-name: find-tick-back; }
 @keyframes find-tick { from { opacity: 0; transform: translateY(4px); } }
+@keyframes find-tick-back { from { opacity: 0; transform: translateY(-4px); } }
 .find-step { flex: none; width: 34px; height: 32px; padding: 0; font-size: 18px; line-height: 1; }
+/* Each arrow leans the way it goes. */
+.find-arrow { display: inline-block; transition: transform 0.14s cubic-bezier(0.2, 0.9, 0.25, 1.3); }
+@media (prefers-reduced-motion: no-preference) {
+  .find-prev:hover:not(:disabled) .find-arrow,
+  .find-prev:focus-visible .find-arrow { transform: translateY(-2px); }
+  .find-next:hover:not(:disabled) .find-arrow,
+  .find-next:focus-visible .find-arrow { transform: translateY(2px); }
+}
 .find-close { flex: none; }
+
+/* No matches: the ink smudges red (field edge, glyph, a wavy line under the count) and
+   the bar gives a small "no" shake. FindBar alternates two class names so a later miss
+   (or Enter with nothing to go to) shakes it again. The beat of delay lets a count that
+   lags the typing by a frame (the matching is deferred) clear before anything moves. */
+.find-glyph { transition: color 0.15s ease; }
+.find-bar.is-none .find-glyph { color: var(--bad); }
+.find-bar.is-none .find-input { border-color: var(--bad); }
+.find-count.is-none .find-count-tick {
+  text-decoration: underline wavy var(--bad);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+}
+.find-bar.is-miss-a { animation: find-miss-a 0.26s ease-out 0.09s; }
+.find-bar.is-miss-b { animation: find-miss-b 0.26s ease-out 0.09s; }
+@keyframes find-miss-a {
+  20% { transform: translateX(-4px) rotate(-0.5deg); }
+  45% { transform: translateX(3px) rotate(0.4deg); }
+  70% { transform: translateX(-2px); }
+}
+@keyframes find-miss-b {
+  20% { transform: translateX(-4px) rotate(-0.5deg); }
+  45% { transform: translateX(3px) rotate(0.4deg); }
+  70% { transform: translateX(-2px); }
+}
 
 /* ---------- find marks on the map ----------
    A highlighter blob under each matching commit (CommitGraph draws them as one overlay
@@ -62,7 +100,7 @@
    chalk ring as well, to stay visible against the dark board. */
 .find-marks { pointer-events: none; }
 .find-mark {
-  fill: var(--highlight);
+  fill: var(--halo); /* no lettering on it, so the bolder map blob colour (graph.css) */
   opacity: 0.45;
   transition: transform 0.8s cubic-bezier(0.45, 0, 0.2, 1), opacity 0.18s ease;
   animation: find-mark-in 0.2s ease-out backwards;
@@ -76,6 +114,16 @@
   stroke-linejoin: round;
 }
 @keyframes find-mark-in { from { opacity: 0; } }
+
+/* Stepping to a match: while the find marks are on the map, the newly selected commit's
+   highlighter blob throws a marker ring that spreads and fades, on top of its usual
+   scribble-in (graph.css), so the eye catches which match is current. The ring lives in
+   the halo's stroke, so nothing in the drawing moves. */
+.map-svg:has(.find-marks) .node.selected .halo { animation: find-ring 0.34s ease-out 0.06s backwards; }
+@keyframes find-ring {
+  from { stroke: var(--pen-2); stroke-width: 3; stroke-opacity: 0.9; }
+  to { stroke: var(--pen-2); stroke-width: 16; stroke-opacity: 0; }
+}
 
 /* ---------- "Highlighting <name>" ---------- */
 .chip-pop.is-entering { animation: highlight-chip-in 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards; }
@@ -96,7 +144,13 @@
 }
 .highlight-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The name gets a highlighter stroke, like the halo on the map. */
-.highlight-name { padding: 0 2px; background: linear-gradient(transparent 52%, var(--highlight) 52%, var(--highlight) 92%, transparent 92%); }
+.highlight-name {
+  padding: 0 2px;
+  background: linear-gradient(transparent 52%, var(--highlight) 52%, var(--highlight) 92%, transparent 92%) no-repeat 0 0 / 100% 100%;
+}
+/* ...swept on left to right once the chip has landed. */
+.chip-pop.is-entering .highlight-name { animation: highlight-sweep 0.24s ease-out 0.12s backwards; }
+@keyframes highlight-sweep { from { background-size: 0% 100%; } }
 .highlight-clear {
   width: 26px;
   height: 26px;
@@ -119,10 +173,18 @@
   .find-pop.is-entering,
   .find-pop.is-leaving,
   .find-count-tick,
+  .find-count-tick.is-prev,
+  .find-bar.is-miss-a,
+  .find-bar.is-miss-b,
   .find-mark,
+  .map-svg:has(.find-marks) .node.selected .halo,
   .chip-pop.is-entering,
-  .chip-pop.is-leaving { animation: none; }
+  .chip-pop.is-leaving,
+  .chip-pop.is-entering .highlight-name { animation: none; }
   .find-input,
+  .find-count,
+  .find-glyph,
+  .find-arrow,
   .find-mark,
   .highlight-clear { transition: none; }
   .highlight-clear:hover { transform: none; }

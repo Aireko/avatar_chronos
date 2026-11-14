@@ -21,12 +21,16 @@ const FLAG_FONT = '400 19px "Patrick Hand", "Comic Sans MS", cursive';
 
 /* ---------- pen colours: defined per theme in graph.css ---------- */
 export interface LineStyle {
+  /** The pen the line, its rings and its swatch are drawn with. */
   color: string;
+  /** The same pen for lettering (a branch's name): a shade deeper where the pen is too faint as text. */
+  text: string;
   on: string;
 }
 
 export const LINES: LineStyle[] = Array.from({ length: 8 }, (_, i) => ({
   color: `var(--pen-${i})`,
+  text: `var(--pen-${i}-text)`,
   on: "var(--paper)",
 }));
 export const lineStyle = (index: number) => LINES[index % LINES.length];
@@ -36,8 +40,12 @@ export interface Lane {
   index: number;
   name: string;
   color: string;
+  /** The lane's pen for lettering (its name in the ticket band), e.g. as --line-text. */
+  text: string;
   on: string;
   isHead: boolean;
+  /** A line a branch still points at (or head). Lines inferred from merged, deleted branches are not. */
+  named: boolean;
   y: number;
   tip: string; // hash of the line's newest commit
 }
@@ -48,7 +56,8 @@ export interface Flag {
   name: string;
   w: number;
   dy: number;
-  color: string;
+  color: string; // the pen for its underline
+  text: string; // the pen for its lettering
   isCurrent: boolean; // the checked-out branch
 }
 
@@ -75,6 +84,8 @@ export interface GraphEdge {
   ghost: boolean; // leads to history older than what is loaded
   order: number; // column of the newer end, used to time the draw-in
   lane: number; // the branch line whose colour it carries
+  from: number; // the columns it spans, so the map can skip lines that are off screen
+  to: number;
 }
 
 /** Where a vertical line passes over a row line that belongs to another branch. */
@@ -85,6 +96,7 @@ export interface Bridge {
   color: string;
   order: number;
   lane: number;
+  col: number; // the column just left of it, for skipping it when off screen
 }
 
 export interface GraphLayout {
@@ -154,15 +166,56 @@ function textWidth(text: string, font: string): number {
   return measureCtx.measureText(text).width;
 }
 
-function fitText(text: string, font: string, maxWidth: number): string {
-  if (textWidth(text, font) <= maxWidth) return text;
-  let cut = text;
-  while (cut.length > 1 && textWidth(`${cut}…`, font) > maxWidth) cut = cut.slice(0, -1);
-  return `${cut.trimEnd()}…`;
+/** Shortens `text` with an ellipsis until it fits, finding the longest fitting cut by binary search. */
+export function fitText(
+  text: string,
+  font: string,
+  maxWidth: number,
+  measure: (text: string, font: string) => number = textWidth,
+): string {
+  if (measure(text, font) <= maxWidth) return text;
+  // The longest prefix (at least one character) that still fits with "…" after it.
+  let lo = 1;
+  let hi = text.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (measure(`${text.slice(0, mid)}…`, font) <= maxWidth) lo = mid;
+    else hi = mid - 1;
+  }
+  return `${text.slice(0, Math.max(1, lo)).trimEnd()}…`;
+}
+
+/*
+ * Per-commit drawing work that depends only on the commit, kept between layouts so a reload,
+ * rebase or git command (which lays out the whole history again) mostly reuses it. Bounded:
+ * a cache that grows past CACHE_MAX simply starts afresh.
+ */
+const CACHE_MAX = 60000;
+const shapeCache = new Map<string, { shape: string; halo: string }>();
+const labelCache = new Map<string, string[]>();
+
+function remember<V>(cache: Map<string, V>, key: string, make: () => V, keep = true): V {
+  const hit = cache.get(key);
+  if (hit !== undefined) return hit;
+  const value = make();
+  if (!keep) return value;
+  if (cache.size >= CACHE_MAX) cache.clear();
+  cache.set(key, value);
+  return value;
+}
+
+/** Labels measured before the hand font has loaded would keep the fallback font's widths. */
+function fontsSettled(): boolean {
+  if (typeof document === "undefined" || !document.fonts) return true;
+  return document.fonts.status === "loaded";
 }
 
 /** Wraps a commit message onto at most two lines that fit inside its column. */
 function wrapLabel(text: string, maxLines = 2): string[] {
+  return remember(labelCache, text, () => wrapLabelNow(text, maxLines), fontsSettled());
+}
+
+function wrapLabelNow(text: string, maxLines: number): string[] {
   const lines: string[] = [];
   let current = "";
   for (const word of text.trim().split(/\s+/)) {
@@ -324,6 +377,47 @@ function elbow(p: GraphNode, c: GraphNode, xv: number, rnd: () => number): strin
   ].join(" ");
 }
 
+/* ---------- row packing ---------- */
+/**
+ * The spans (in half-columns) already taken on each row. A span fits on a row when it keeps a
+ * gap of at least 2 from every span there. Each row's spans are kept sorted and apart, so only
+ * the two neighbours of where the new span would go need checking: O(log n), not O(n).
+ */
+export class RowPacker {
+  private rows: [number, number][][] = [];
+
+  get count(): number {
+    return this.rows.length;
+  }
+
+  /** Index of the first span on `row` that starts after `s`. */
+  private after(list: [number, number][], s: number): number {
+    let lo = 0;
+    let hi = list.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (list[mid][0] > s) hi = mid;
+      else lo = mid + 1;
+    }
+    return lo;
+  }
+
+  fits(row: number, s: number, e: number): boolean {
+    const list = this.rows[row];
+    if (!list || list.length === 0) return true;
+    const i = this.after(list, s);
+    const before = list[i - 1];
+    const next = list[i];
+    return (!before || s - before[1] >= 2) && (!next || next[0] - e >= 2);
+  }
+
+  add(row: number, s: number, e: number): void {
+    while (this.rows.length <= row) this.rows.push([]);
+    const list = this.rows[row];
+    list.splice(this.after(list, s), 0, [s, e]);
+  }
+}
+
 /* ---------- main entry ---------- */
 export function layoutGraph(
   commits: Commit[],
@@ -355,6 +449,7 @@ export function layoutGraph(
 
   const ordered = sortBranches(branches);
   ordered.forEach((b) => claim(b.commitHash, b.name, b.isHead));
+  const branchChains = chains.length; // chains before this start at a commit a branch points at
   const mergedBy = new Map<string, string>();
   for (const c of commits) c.parents.slice(1).forEach((p) => mergedBy.set(p, c.message));
   for (const c of commits) if (!chainOf.has(c.hash)) claim(c.hash, inferLineName(c, mergedBy.get(c.hash)), false);
@@ -384,12 +479,10 @@ export function layoutGraph(
   }
 
   /* 4. Pack lines into rows: nearest free row to where the line branched from; rows are reused. */
-  const rowSpans: [number, number][][] = [];
-  const fits = (row: number, s: number, e: number) =>
-    (rowSpans[row] ?? []).every(([a, b]) => s - b >= 2 || a - e >= 2);
+  const rows = new RowPacker();
+  const fits = (row: number, s: number, e: number) => rows.fits(row, s, e);
   const place = (chain: Chain, row: number) => {
-    if (!rowSpans[row]) rowSpans[row] = [];
-    rowSpans[row].push([chain.start2, chain.end2]);
+    rows.add(row, chain.start2, chain.end2);
     chain.row = row;
   };
   const queue = [...chains].sort((a, b) => a.start2 - b.start2 || a.index - b.index);
@@ -409,7 +502,7 @@ export function layoutGraph(
     }
     place(chain, chosen);
   }
-  const rowCount = Math.max(1, rowSpans.length);
+  const rowCount = Math.max(1, rows.count);
 
   /* 5. Commit circles. */
   const nodes: GraphNode[] = [...commits].reverse().map((commit, column) => {
@@ -428,8 +521,10 @@ export function layoutGraph(
       y: PAD_T + row * LANE_H,
       color: lineStyle(lane).color,
       kind,
-      shape: blob(STATION_R, rng(`circle:${id}`)),
-      halo: blob(STATION_R + 11, rng(`halo:${id}`), 7),
+      ...remember(shapeCache, id, () => ({
+        shape: blob(STATION_R, rng(`circle:${id}`)),
+        halo: blob(STATION_R + 11, rng(`halo:${id}`), 7),
+      })),
       label: wrapLabel(commit.message),
       flags: [],
     };
@@ -452,6 +547,8 @@ export function layoutGraph(
           ghost: true,
           order: child.col,
           lane: child.lane,
+          from: Math.max(0, child.col - 1),
+          to: child.col,
         });
         return;
       }
@@ -493,8 +590,14 @@ export function layoutGraph(
 
   // How far each branch line reaches along its row, so crossings can be found.
   const extent: [number, number][] = chains.map((chain) => {
-    const xs = chain.hashes.map((h) => byHash.get(h)?.x ?? 0);
-    return [Math.min(...xs), Math.max(...xs)];
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const h of chain.hashes) {
+      const x = byHash.get(h)?.x ?? 0;
+      if (x < lo) lo = x;
+      if (x > hi) hi = x;
+    }
+    return [lo, hi];
   });
   for (const s of specs) {
     if (s.kind === "along") continue;
@@ -522,6 +625,8 @@ export function layoutGraph(
         ghost: false,
         order: s.child.col,
         lane: s.lane,
+        from: Math.min(s.parent.col, s.child.col),
+        to: Math.max(s.parent.col, s.child.col),
       });
       continue;
     }
@@ -532,7 +637,10 @@ export function layoutGraph(
       ghost: false,
       order: s.child.col,
       lane: s.lane,
+      from: Math.min(s.parent.col, s.child.col),
+      to: Math.max(s.parent.col, s.child.col),
     });
+    const bridgeCol = Math.floor((s.xv - PAD_L) / COL_W);
     const lo = Math.min(s.parent.row, s.child.row) + 1;
     const hi = Math.max(s.parent.row, s.child.row) - 1;
     for (let row = lo; row <= hi; row++) {
@@ -544,6 +652,7 @@ export function layoutGraph(
           color: s.color,
           order: s.child.col,
           lane: s.lane,
+          col: bridgeCol,
         });
       }
     }
@@ -552,25 +661,27 @@ export function layoutGraph(
   const edges = [...ghosts, ...crossing, ...along];
 
   /* 7. Names: above a line's first commit, and above the commit each branch points at. */
-  const pending = new Map<string, { name: string; color: string; isCurrent: boolean }[]>();
-  const addFlag = (hash: string, name: string, color: string, isCurrent: boolean) => {
+  const pending = new Map<string, { name: string; style: LineStyle; isCurrent: boolean }[]>();
+  const addFlag = (hash: string, name: string, style: LineStyle, isCurrent: boolean) => {
     const list = pending.get(hash) ?? [];
     const existing = list.find((f) => f.name === name);
     if (existing) {
       existing.isCurrent = existing.isCurrent || isCurrent;
     } else {
-      list.push({ name, color, isCurrent });
+      list.push({ name, style, isCurrent });
     }
     pending.set(hash, list);
   };
+  const chainNamed = new Map<string, Chain>();
+  for (const chain of chains) if (!chainNamed.has(chain.name)) chainNamed.set(chain.name, chain);
   for (const b of ordered) {
     const node = byHash.get(b.commitHash);
     if (!node) continue;
-    const own = chains.find((c) => c.name === b.name);
-    addFlag(b.commitHash, b.name, lineStyle(own ? own.index : node.lane).color, b.isHead);
+    const own = chainNamed.get(b.name);
+    addFlag(b.commitHash, b.name, lineStyle(own ? own.index : node.lane), b.isHead);
   }
   for (const chain of chains) {
-    addFlag(chain.hashes[chain.hashes.length - 1], chain.name, lineStyle(chain.index).color, false);
+    addFlag(chain.hashes[chain.hashes.length - 1], chain.name, lineStyle(chain.index), false);
   }
   for (const node of nodes) {
     const isHeadNode = node.commit.hash === head;
@@ -581,7 +692,8 @@ export function layoutGraph(
         name,
         w: textWidth(name, FLAG_FONT),
         dy: -(STATION_R + 16) - lift - k * 25,
-        color: f.color,
+        color: f.style.color,
+        text: f.style.text,
         isCurrent: f.isCurrent,
       };
     });
@@ -593,8 +705,10 @@ export function layoutGraph(
       index: chain.index,
       name: chain.name,
       color: style.color,
+      text: style.text,
       on: style.on,
       isHead: chain.isHead,
+      named: chain.index < branchChains || chain.isHead || chain.hashes[0] === head,
       y: PAD_T + chain.row * LANE_H,
       tip: chain.hashes[0],
     };
@@ -642,4 +756,274 @@ export function drawInWindow(focusCol: number, lastCol: number, viewWidth: numbe
 export function drawDelay(win: DrawWindow, col: number): number | null {
   if (col < win.from || col > win.to) return null;
   return (col - win.from) * win.step;
+}
+
+/** How far past its start a draw-in can still be joined part way (the longest one runs 0.55s). */
+export const DRAW_TAIL_MS = 600;
+
+/**
+ * The animation delay for something whose draw-in was due to start at `start` (ms, on the same
+ * clock as `now`), or null when it has none or it finished long ago. A negative delay joins a
+ * draw-in already under way, so a line that is culled and redrawn mid-intro does not restart.
+ */
+export function drawDelayAt(start: number | undefined, now: number, lag = 0): number | null {
+  if (start === undefined) return null;
+  const delay = Math.round(start + lag - now);
+  return delay < -DRAW_TAIL_MS ? null : delay;
+}
+
+/** How a drawn element enters: with the .draw class after `delay`, or not at all. */
+export interface DrawAttr {
+  cls: string;
+  delay?: string;
+}
+export const NO_DRAW: DrawAttr = { cls: "" };
+
+/**
+ * Books how each element drawn this time enters. Call the result with each drawn key (and its
+ * lag); `kept` then holds those keys only. A key booked last time keeps its entry unchanged, so
+ * a running animation's delay never changes under it; a new key gets its delay from `born`
+ * (see drawDelayAt), or no draw-in at all.
+ */
+export function entrances(
+  old: Map<string, DrawAttr>,
+  born: Map<string, number> | undefined,
+  now: number = performance.now(),
+): ((key: string, lag?: number) => DrawAttr) & { kept: Map<string, DrawAttr> } {
+  const kept = new Map<string, DrawAttr>();
+  const take = (key: string, lag = 0): DrawAttr => {
+    let at = kept.get(key) ?? old.get(key);
+    if (!at) {
+      const delay = drawDelayAt(born?.get(key), now, lag);
+      at = delay === null ? NO_DRAW : { cls: " draw", delay: `${delay}ms` };
+    }
+    kept.set(key, at);
+    return at;
+  };
+  return Object.assign(take, { kept });
+}
+
+/* ---------- branch legend ---------- */
+/** Up to this many lines, the legend lists them all; past it, merged lines fold away. */
+export const LEGEND_ALL = 12;
+
+/**
+ * The legend rows to show: every line on a small map; on a big one, the lines branches still
+ * point at, then the first `shownMerged` lines inferred from merged, deleted branches.
+ */
+export function legendRows(lanes: Lane[], shownMerged: number): { rows: Lane[]; hidden: number } {
+  if (lanes.length <= LEGEND_ALL) return { rows: lanes, hidden: 0 };
+  const named = lanes.filter((l) => l.named);
+  const merged = lanes.filter((l) => !l.named);
+  const shown = Math.max(0, Math.min(merged.length, shownMerged));
+  return { rows: [...named, ...merged.slice(0, shown)], hidden: merged.length - shown };
+}
+
+/* ---------- drawing only what is on screen ---------- */
+/** A run of columns, inclusive at both ends. `to < from` is empty. */
+export interface ColumnRange {
+  from: number;
+  to: number;
+}
+
+/** Columns per block: the drawn range moves a block at a time, not on every frame of a pan. */
+export const CULL_BLOCK = 16;
+
+/**
+ * The columns worth drawing when the map is scrolled `left` px across a `viewW`-px view at
+ * `zoom`, with `pad` px of empty sheet before the drawing. The on-screen columns (plus one
+ * either side, for lettering and turns that reach past them) are rounded out to whole blocks
+ * and one more block is kept on each side, so a pan redraws only every few hundred pixels.
+ */
+export function visibleColumns(
+  left: number,
+  viewW: number,
+  zoom: number,
+  pad: number,
+  lastCol: number,
+  block = CULL_BLOCK,
+): ColumnRange {
+  if (lastCol < 0) return { from: 0, to: -1 };
+  const z = Math.max(0.01, zoom);
+  const first = Math.floor((left / z - pad - PAD_L) / COL_W) - 1;
+  const last = Math.ceil(((left + Math.max(0, viewW)) / z - pad - PAD_L) / COL_W) + 1;
+  // Scrolled out past either end of the history, this still keeps a column or so in range.
+  const from = Math.min(lastCol, Math.max(0, (Math.floor(first / block) - 1) * block));
+  const to = Math.max(from, Math.min(lastCol, (Math.floor(last / block) + 2) * block - 1));
+  return { from, to };
+}
+
+export const sameRange = (a: ColumnRange, b: ColumnRange) => a.from === b.from && a.to === b.to;
+
+/** The part of a layout inside `range`: nodes there, and lines and hops that reach into it. */
+export function cullLayout(
+  layout: Pick<GraphLayout, "nodes" | "edges" | "bridges">,
+  range: ColumnRange,
+): { nodes: GraphNode[]; edges: GraphEdge[]; bridges: Bridge[] } {
+  if (range.to < range.from) return { nodes: [], edges: [], bridges: [] };
+  // Nodes are in column order (node i is in column i), so they are a straight slice.
+  const nodes = layout.nodes.slice(Math.max(0, range.from), range.to + 1);
+  const edges = layout.edges.filter((e) => e.to >= range.from && e.from <= range.to);
+  const bridges = layout.bridges.filter((b) => b.col + 1 >= range.from && b.col <= range.to);
+  return { nodes, edges, bridges };
+}
+
+/**
+ * The commits to draw: the culled run `inRange` (the nodes of `range`, in column order) plus
+ * any `pinned` commits outside it (the chosen one, the one holding keyboard focus), each once,
+ * placed in column order either side of the run. Keeping the order means React never has to
+ * move a focused element in the DOM (which would blur it) as it scrolls into or out of range.
+ */
+export function withPinned<N extends { col: number }>(
+  inRange: N[],
+  range: ColumnRange,
+  pinned: (N | undefined)[],
+): { nodes: N[]; outside: N[] } {
+  const outside = pinned.filter(
+    (n, i, all): n is N => !!n && all.indexOf(n) === i && (n.col < range.from || n.col > range.to),
+  );
+  if (outside.length === 0) return { nodes: inRange, outside };
+  outside.sort((a, b) => a.col - b.col);
+  return {
+    nodes: [...outside.filter((n) => n.col < range.from), ...inRange, ...outside.filter((n) => n.col > range.to)],
+    outside,
+  };
+}
+
+/* ---------- landing mark ---------- */
+/**
+ * A loop scribbled round a commit with a marker: a little more than one turn, opening
+ * outwards, so the pen's start and end overlap like a real hand-drawn circle.
+ */
+export function scribbleLoop(radius: number, seed: string, turns = 1.18): string {
+  const rnd = rng(`loop:${seed}`);
+  const count = Math.max(6, Math.round(12 * turns));
+  const start = -Math.PI * 0.62;
+  const pts: [number, number][] = [];
+  for (let i = 0; i <= count; i++) {
+    const angle = start + (i / count) * turns * Math.PI * 2 + rnd() * 0.12;
+    const r = radius * (0.95 + (i / count) * 0.14 + rnd() * 0.08);
+    pts.push([Math.cos(angle) * r, Math.sin(angle) * r * 0.92]);
+  }
+  const p = (q: [number, number]) => `${n1(q[0])} ${n1(q[1])}`;
+  const mid = (a: [number, number], b: [number, number]) => `${n1((a[0] + b[0]) / 2)} ${n1((a[1] + b[1]) / 2)}`;
+  let d = `M ${p(pts[0])}`;
+  for (let i = 1; i < pts.length - 1; i++) d += ` Q ${p(pts[i])} ${mid(pts[i], pts[i + 1])}`;
+  return `${d} L ${p(pts[pts.length - 1])}`;
+}
+
+/* ---------- camera ---------- */
+/** Where the map looks: content point (x, y), in unzoomed sheet pixels, seen at `zoom`. */
+export interface CameraShot {
+  zoom: number;
+  x: number;
+  y: number;
+}
+
+/** Cubic ease-out over 0..1 (clamped, since a frame's timestamp can fall just outside). */
+export function easeOut(t: number): number {
+  const c = Math.min(1, Math.max(0, t));
+  return 1 - (1 - c) ** 3;
+}
+
+/**
+ * The camera part way (`t`, 0..1) through a glide. Zoom changes geometrically, so each
+ * moment of the glide feels like the same amount of zoom whether going in or out.
+ */
+export function cameraAt(from: CameraShot, to: CameraShot, t: number): CameraShot {
+  const e = easeOut(t);
+  const zoom = from.zoom > 0 && to.zoom > 0 ? from.zoom * (to.zoom / from.zoom) ** e : to.zoom;
+  return {
+    zoom,
+    x: from.x + (to.x - from.x) * e,
+    y: from.y + (to.y - from.y) * e,
+  };
+}
+
+/** How long a glide takes: a zoom or short hop takes `base` ms, longer pans up to `max`. */
+export function glideMs(from: CameraShot, to: CameraShot, base = 200, max = 280): number {
+  const screenDistance = Math.hypot(to.x - from.x, to.y - from.y) * to.zoom;
+  return Math.round(Math.min(max, base + screenDistance * 0.05));
+}
+
+/**
+ * The zoom at which a `w`×`h` drawing fits a `viewW`×`viewH` view with `margin` px clear
+ * on every side, rounded down to a whole percent and kept within [min, max].
+ */
+export function fitZoom(
+  w: number,
+  h: number,
+  viewW: number,
+  viewH: number,
+  margin: number,
+  min: number,
+  max: number,
+): number {
+  const z = Math.min((viewW - 2 * margin) / Math.max(1, w), (viewH - 2 * margin) / Math.max(1, h));
+  if (!Number.isFinite(z)) return min;
+  return Math.min(max, Math.max(min, Math.floor(z * 100) / 100));
+}
+
+/**
+ * Where to centre one axis when fitting [from, to] into `view` px at `zoom`: the middle when it
+ * fits, otherwise as close to `current` as possible while still filling the view.
+ */
+export function fitAxis(from: number, to: number, view: number, margin: number, zoom: number, current: number): number {
+  const half = Math.max(0, view / 2 - margin) / zoom;
+  if (to - from <= half * 2) return (from + to) / 2;
+  return Math.min(to - half, Math.max(from + half, current));
+}
+
+/**
+ * The zoom factor for one Ctrl+wheel event. A mouse notch (about 100px) is a step of about
+ * 12%, like the zoom keys; a trackpad pinch sends many small deltas that add up smoothly.
+ */
+export function wheelZoomFactor(deltaY: number, deltaMode = 0): number {
+  const px = deltaMode === 1 ? deltaY * 16 : deltaMode === 2 ? deltaY * 400 : deltaY;
+  const capped = Math.max(-240, Math.min(240, px));
+  return Math.exp(-capped * 0.00115);
+}
+
+/* ---------- minimap overview ---------- */
+/** One branch line squeezed to a single stroke, for the minimap's whole-history strip. */
+export interface LaneSpan {
+  key: string;
+  color: string;
+  x1: number;
+  x2: number;
+  y: number;
+}
+
+/** The stretch of each branch line on each row, oldest to newest commit. */
+export function laneSpans(nodes: Pick<GraphNode, "lane" | "row" | "x" | "y" | "color">[]): LaneSpan[] {
+  const spans = new Map<string, LaneSpan>();
+  for (const node of nodes) {
+    const key = `${node.lane}:${node.row}`;
+    const span = spans.get(key);
+    if (!span)
+      spans.set(key, {
+        key,
+        color: node.color,
+        x1: node.x,
+        x2: node.x,
+        y: node.y,
+      });
+    else {
+      span.x1 = Math.min(span.x1, node.x);
+      span.x2 = Math.max(span.x2, node.x);
+    }
+  }
+  return [...spans.values()];
+}
+
+/** The on-screen part of a scrolled axis, as fractions (0..1) of its whole length. */
+export function visibleWindow(scroll: number, view: number, content: number): { start: number; size: number } {
+  if (content <= 0 || view >= content) return { start: 0, size: 1 };
+  const size = view / content;
+  return { start: Math.min(1 - size, Math.max(0, scroll / content)), size };
+}
+
+/** The scroll position that puts the start of the on-screen window at fraction `start`. */
+export function scrollForWindow(start: number, view: number, content: number): number {
+  return Math.min(Math.max(0, content - view), Math.max(0, start * content));
 }

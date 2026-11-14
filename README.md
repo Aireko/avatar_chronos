@@ -74,7 +74,7 @@ On Windows, run the C test script in WSL with a Linux C compiler.
 `index_build_revision` reads a pinned Git revision. The tree contains the project
 root, tracked source directories, supported files, and parsed symbols with their
 lexical parents. Supported extensions cover C, Rust, JavaScript, TypeScript, TSX,
-and Python. Working-tree edits are outside the selected commit.
+Python, and Java. Working-tree edits are outside the selected commit.
 
 `index_map_calls` projects direct callsites between any two scopes. Resolution
 uses unique syntactic names in the indexed language. Python module-level imports

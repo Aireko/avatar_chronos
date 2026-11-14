@@ -187,12 +187,15 @@ typedef struct {
     const char *reason; /* E.g. a naming convention or annotation. */
 } ParsedTestCandidate;
 
-/* Statically observed, unconditional module-level Python imports.
- * module is NULL for "import name", otherwise the from-module spelling. */
+/* Statically observed, unconditional module-level imports.
+ * module is NULL for a bare import, otherwise the imported module or class.
+ * Java uses is_static and is_wildcard for static and on-demand imports. */
 typedef struct {
     const char *module;
     const char *name;
     const char *alias;
+    int is_static;
+    int is_wildcard;
 } ParsedImport;
 
 typedef struct {
@@ -212,6 +215,7 @@ typedef struct {
     size_t diagnostic_count;
     const ParsedImport *imports;
     size_t import_count;
+    const char *package_name; /* Java package, or NULL. */
 } ParsedFile;
 
 /* Parses borrowed bytes. Partial syntax results may include diagnostics.

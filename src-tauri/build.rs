@@ -52,6 +52,7 @@ fn build_c_backend() {
         ("c", "tree-sitter-c/src"),
         ("rust", "tree-sitter-rust/src"),
         ("python", "tree-sitter-python/src"),
+        ("java", "tree-sitter-java/src"),
         ("javascript", "tree-sitter-javascript/src"),
         ("typescript", "tree-sitter-typescript/typescript/src"),
         ("tsx", "tree-sitter-typescript/tsx/src"),

@@ -24,6 +24,7 @@ GRAMMAR_DIRS := \
   $(NODE_MODULES)/tree-sitter-c/src \
   $(NODE_MODULES)/tree-sitter-rust/src \
   $(NODE_MODULES)/tree-sitter-python/src \
+  $(NODE_MODULES)/tree-sitter-java/src \
   $(NODE_MODULES)/tree-sitter-javascript/src \
   $(NODE_MODULES)/tree-sitter-typescript/typescript/src \
   $(NODE_MODULES)/tree-sitter-typescript/tsx/src

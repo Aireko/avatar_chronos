@@ -40,11 +40,11 @@ git commit -qm mixed
 
 "$coverage_binary" "$repo" HEAD >"$work/mixed.json"
 test "$(grep -o '"sourceFiles":[0-9]*' "$work/mixed.json" | cut -d: -f2)" -eq 6
-test "$(grep -o '"supportedFiles":[0-9]*' "$work/mixed.json" | cut -d: -f2)" -eq 4
-test "$(grep -o '"unsupportedFiles":[0-9]*' "$work/mixed.json" | cut -d: -f2)" -eq 2
+test "$(grep -o '"supportedFiles":[0-9]*' "$work/mixed.json" | cut -d: -f2)" -eq 5
+test "$(grep -o '"unsupportedFiles":[0-9]*' "$work/mixed.json" | cut -d: -f2)" -eq 1
 grep -Fq '"code":"language-coverage"' "$work/mixed.json"
 grep -Fq '"severity":"info"' "$work/mixed.json"
-grep -Fq 'Indexed 4 of 6 source files (66.7%); 2 unsupported.' "$work/mixed.json"
+grep -Fq 'Indexed 5 of 6 source files (83.3%); 1 unsupported.' "$work/mixed.json"
 
 repo=$work/unsupported
 make_repo "$repo"

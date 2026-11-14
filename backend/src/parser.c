@@ -741,6 +741,7 @@ int chronos_parse_commit_header(const char* line, commit_t* c)
 const TSLanguage *tree_sitter_c(void);
 const TSLanguage *tree_sitter_rust(void);
 const TSLanguage *tree_sitter_python(void);
+const TSLanguage *tree_sitter_java(void);
 const TSLanguage *tree_sitter_typescript(void);
 const TSLanguage *tree_sitter_tsx(void);
 const TSLanguage *tree_sitter_javascript(void);
@@ -757,6 +758,7 @@ static const Language *find_language(const char *path)
         {".c", "c", tree_sitter_c}, {".h", "c", tree_sitter_c},
         {".rs", "rust", tree_sitter_rust}, {".ts", "typescript", tree_sitter_typescript},
         {".py", "python", tree_sitter_python}, {".pyi", "python", tree_sitter_python},
+        {".java", "java", tree_sitter_java},
         {".tsx", "typescript", tree_sitter_tsx}, {".js", "javascript", tree_sitter_javascript},
         {".jsx", "javascript", tree_sitter_javascript}, {".mjs", "javascript", tree_sitter_javascript},
         {".cjs", "javascript", tree_sitter_javascript}
@@ -908,18 +910,44 @@ static TSNode c_function_name(TSNode declarator)
     return (TSNode){0};
 }
 
-static int add_call(ParseState *state, TSNode node, TSNode callee, size_t caller)
+static int add_call_text(ParseState *state, TSNode node, char *text, size_t caller)
 {
-    if (ts_node_is_null(callee)) return CHRONOS_OK;
+    if (text == NULL) return CHRONOS_OUT_OF_MEMORY;
     ParsedFile *file = state->file;
     ParsedCall *items = reserve_items((void *)file->calls, file->call_count,
                                       &state->call_capacity, sizeof *items);
-    if (!items) return CHRONOS_OUT_OF_MEMORY;
+    if (!items) {
+        free(text);
+        return CHRONOS_OUT_OF_MEMORY;
+    }
     file->calls = items;
-    char *text = node_text(state, callee);
-    if (!text) return CHRONOS_OUT_OF_MEMORY;
     items[file->call_count++] = (ParsedCall){caller, text, node_range(node)};
     return CHRONOS_OK;
+}
+
+static int add_call(ParseState *state, TSNode node, TSNode callee, size_t caller)
+{
+    if (ts_node_is_null(callee)) return CHRONOS_OK;
+    return add_call_text(state, node, node_text(state, callee), caller);
+}
+
+static char *receiver_text(ParseState *state, TSNode object, TSNode name)
+{
+    uint32_t object_start = ts_node_start_byte(object);
+    uint32_t object_end = ts_node_end_byte(object);
+    uint32_t name_start = ts_node_start_byte(name);
+    uint32_t name_end = ts_node_end_byte(name);
+    if (object_end < object_start || name_end < name_start) return NULL;
+    size_t object_length = (size_t)(object_end - object_start);
+    size_t name_length = (size_t)(name_end - name_start);
+    if (object_length > SIZE_MAX - name_length - 2) return NULL;
+    char *text = malloc(object_length + name_length + 2);
+    if (text == NULL) return NULL;
+    memcpy(text, state->source + object_start, object_length);
+    text[object_length] = '.';
+    memcpy(text + object_length + 1, state->source + name_start, name_length);
+    text[object_length + name_length + 1] = '\0';
+    return text;
 }
 
 static int observe_import(ParseState *state, TSNode node)
@@ -942,13 +970,82 @@ static int observe_import(ParseState *state, TSNode node)
         file->imports = items;
         ParsedImport *item = &items[file->import_count++];
         *item = (ParsedImport){
-            ts_node_is_null(module) ? NULL : node_text(state, module),
-            node_text(state, name),
-            ts_node_is_null(alias) ? NULL : node_text(state, alias)
+            .module = ts_node_is_null(module) ? NULL : node_text(state, module),
+            .name = node_text(state, name),
+            .alias = ts_node_is_null(alias) ? NULL : node_text(state, alias)
         };
         if (!item->name || (!ts_node_is_null(module) && !item->module) ||
             (!ts_node_is_null(alias) && !item->alias)) return CHRONOS_OUT_OF_MEMORY;
     }
+    return CHRONOS_OK;
+}
+
+static int observe_package(ParseState *state, TSNode node)
+{
+    for (uint32_t i = 0; i < ts_node_named_child_count(node); ++i) {
+        TSNode child = ts_node_named_child(node, i);
+        if (!is_type(child, "identifier") && !is_type(child, "scoped_identifier")) continue;
+        char *package_name = node_text(state, child);
+        if (package_name == NULL) return CHRONOS_OUT_OF_MEMORY;
+        free((void *)state->file->package_name);
+        state->file->package_name = package_name;
+        return CHRONOS_OK;
+    }
+    return CHRONOS_OK;
+}
+
+static int observe_java_import(ParseState *state, TSNode node)
+{
+    TSNode qualified = {0};
+    int is_static = 0;
+    int is_wildcard = 0;
+    for (uint32_t i = 0; i < ts_node_child_count(node); ++i) {
+        TSNode child = ts_node_child(node, i);
+        const char *type = ts_node_type(child);
+        if (strcmp(type, "static") == 0) is_static = 1;
+        if (strcmp(type, "asterisk") == 0) is_wildcard = 1;
+        if ((strcmp(type, "identifier") == 0 || strcmp(type, "scoped_identifier") == 0) &&
+            ts_node_is_null(qualified))
+            qualified = child;
+    }
+    if (ts_node_is_null(qualified)) return CHRONOS_OK;
+
+    char *full = node_text(state, qualified);
+    if (full == NULL) return CHRONOS_OUT_OF_MEMORY;
+    char *module = NULL;
+    char *name = NULL;
+    if (is_wildcard) {
+        module = full;
+        name = copy_bytes("*", 1);
+    } else {
+        char *dot = strrchr(full, '.');
+        if (dot != NULL) {
+            module = copy_bytes(full, (size_t)(dot - full));
+            name = copy_bytes(dot + 1, strlen(dot + 1));
+            free(full);
+        } else {
+            name = full;
+        }
+    }
+    if (name == NULL || (is_wildcard && module == NULL) ||
+        (module == NULL && !is_wildcard && strchr(name, '.') != NULL)) {
+        free(module);
+        free(name);
+        return CHRONOS_OUT_OF_MEMORY;
+    }
+
+    ParsedFile *file = state->file;
+    ParsedImport *items = reserve_items((void *)file->imports, file->import_count,
+                                        &state->import_capacity, sizeof *items);
+    if (items == NULL) {
+        free(module);
+        free(name);
+        return CHRONOS_OUT_OF_MEMORY;
+    }
+    file->imports = items;
+    items[file->import_count++] = (ParsedImport){
+        module, name, NULL, is_static, is_wildcard
+    };
     return CHRONOS_OK;
 }
 
@@ -958,6 +1055,10 @@ static int observe_node(ParseState *state, TSNode node, size_t *parent)
     ParserSymbolKind kind = PARSER_FUNCTION;
     ParserSymbolForm form = PARSER_DEFINITION;
     const char *type = ts_node_type(node);
+    if (strcmp(state->file->language, "java") == 0) {
+        if (strcmp(type, "package_declaration") == 0) return observe_package(state, node);
+        if (strcmp(type, "import_declaration") == 0) return observe_java_import(state, node);
+    }
     if ((strcmp(type, "import_statement") == 0 || strcmp(type, "import_from_statement") == 0) &&
         is_type(ts_node_parent(node), "module")) return observe_import(state, node);
     if (state->is_c && strcmp(type, "function_definition") == 0) {
@@ -984,6 +1085,10 @@ static int observe_node(ParseState *state, TSNode node, size_t *parent)
     } else if (strcmp(type, "class_declaration") == 0 ||
                strcmp(type, "class_definition") == 0 ||
                strcmp(type, "abstract_class_declaration") == 0 ||
+               strcmp(type, "interface_declaration") == 0 ||
+               strcmp(type, "enum_declaration") == 0 ||
+               strcmp(type, "record_declaration") == 0 ||
+               strcmp(type, "annotation_type_declaration") == 0 ||
                strcmp(type, "struct_item") == 0 || strcmp(type, "enum_item") == 0 ||
                strcmp(type, "trait_item") == 0 || strcmp(type, "impl_item") == 0 ||
                strcmp(type, "mod_item") == 0) {
@@ -994,9 +1099,16 @@ static int observe_node(ParseState *state, TSNode node, size_t *parent)
                strcmp(type, "generator_function_declaration") == 0 ||
                strcmp(type, "function_item") == 0 || strcmp(type, "function_signature_item") == 0 ||
                strcmp(type, "function_signature") == 0 || strcmp(type, "method_definition") == 0 ||
-               strcmp(type, "method_signature") == 0) {
+               strcmp(type, "method_signature") == 0 ||
+               strcmp(type, "method_declaration") == 0 ||
+               strcmp(type, "constructor_declaration") == 0 ||
+               strcmp(type, "compact_constructor_declaration") == 0 ||
+               strcmp(type, "annotation_type_element_declaration") == 0) {
         name = field(node, "name");
-        if (strncmp(type, "method_", 7) == 0 ||
+        int java_member = strcmp(type, "constructor_declaration") == 0 ||
+                          strcmp(type, "compact_constructor_declaration") == 0 ||
+                          strcmp(type, "annotation_type_element_declaration") == 0;
+        if (java_member || strncmp(type, "method_", 7) == 0 ||
             (*parent && state->file->symbols[*parent - 1].kind == PARSER_CLASS &&
              strcmp(type, "function_item") == 0 &&
              !is_type(ts_node_parent(ts_node_parent(node)), "mod_item"))) kind = PARSER_METHOD;
@@ -1010,6 +1122,13 @@ static int observe_node(ParseState *state, TSNode node, size_t *parent)
         }
     } else if (strcmp(type, "call_expression") == 0 || strcmp(type, "call") == 0) {
         return add_call(state, node, field(node, "function"), *parent);
+    } else if (strcmp(type, "method_invocation") == 0) {
+        TSNode callee = field(node, "name");
+        if (ts_node_is_null(callee)) return CHRONOS_OK;
+        TSNode object = field(node, "object");
+        if (!ts_node_is_null(object))
+            return add_call_text(state, node, receiver_text(state, object, callee), *parent);
+        return add_call(state, node, callee, *parent);
     }
     if (!ts_node_is_null(name) && !ts_node_is_missing(name))
         return add_symbol(state, node, name, *parent, kind, form, parent);
@@ -1066,6 +1185,7 @@ void parser_free(ParsedFile *file)
         free((void *)file->imports[i].alias);
     }
     free((void *)file->imports);
+    free((void *)file->package_name);
     free((void *)file->diagnostics);
     free((void *)file->file_path);
     free((void *)file->revision.repository_id);

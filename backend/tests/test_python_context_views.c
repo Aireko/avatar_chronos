@@ -9,23 +9,34 @@ static const char main_source[] = "from workers.core import work as execute\n\n"
                                   "def bootstrap():\n    return execute()\n";
 static const char worker_source[] = "def work():\n    return 42\n";
 static const char decoy_source[] = "def work():\n    return 0\n";
+static const char test_source[] = "from workers.core import work\n\n"
+                                  "def test_work():\n    assert work() == 42\n\n"
+                                  "def helper():\n    return work()\n";
+static const char utility_source[] = "from workers.core import work\n\n"
+                                     "def inspect_worker():\n    return work()\n";
 
 static RepositoryIndex *build_fixture(void)
 {
-    const char *paths[] = {"app/__main__.py", "workers/core.py", "other/core.py"};
-    const char *sources[] = {main_source, worker_source, decoy_source};
-    ParsedFile parsed[3] = {0};
-    GitBlob blobs[3];
-    IndexFileInput inputs[3];
-    for (size_t i = 0; i < 3; ++i) {
+    enum { file_count = 5 };
+    const char *paths[file_count] = {
+        "app/__main__.py", "workers/core.py", "other/core.py", "tests/worker_test.py",
+        "app/inspect.py"
+    };
+    const char *sources[file_count] = {
+        main_source, worker_source, decoy_source, test_source, utility_source
+    };
+    ParsedFile parsed[file_count] = {0};
+    GitBlob blobs[file_count];
+    IndexFileInput inputs[file_count];
+    for (size_t i = 0; i < file_count; ++i) {
         const size_t length = strlen(sources[i]);
         assert(parser_parse(paths[i], &revision, sources[i], length, &parsed[i]) == CHRONOS_OK);
         blobs[i] = (GitBlob){revision, paths[i], (const unsigned char *)sources[i], length};
         inputs[i] = (IndexFileInput){&parsed[i], &blobs[i]};
     }
     RepositoryIndex *index = NULL;
-    assert(index_build(&revision, inputs, 3, CHRONOS_COMPLETE, &index) == CHRONOS_OK);
-    for (size_t i = 0; i < 3; ++i) parser_free(&parsed[i]);
+    assert(index_build(&revision, inputs, file_count, CHRONOS_COMPLETE, &index) == CHRONOS_OK);
+    for (size_t i = 0; i < file_count; ++i) parser_free(&parsed[i]);
     return index;
 }
 
@@ -83,6 +94,10 @@ int main(void)
     assert(find_item(&views.brief, "edit-locations",
                      "Likely edit location: bootstrap in app/__main__.py."));
     assert(!find_item(&views.brief, "edit-locations", "other/core.py"));
+    assert(find_item(&views.brief, "test-locations",
+                     "Likely test location: test_work in tests/worker_test.py."));
+    assert(!find_item(&views.brief, "test-locations", "helper"));
+    assert(!find_item(&views.brief, "test-locations", "inspect_worker"));
     assert(views.brief.used_source_bytes <= request.budget.max_source_bytes);
     context_views_free(&views);
     index_free(index);

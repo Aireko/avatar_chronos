@@ -47,4 +47,5 @@ The report prints an approximate token count using `(bytes + 3) / 4`:
 
 The baseline is intentionally conservative: it includes every relevant file
 in full. The compiler is expected to use fewer tokens while retaining all
-labeled evidence.
+labeled evidence. CI also asserts that each compiler token estimate is below
+its baseline and that retained/unresolved counts match the labels.

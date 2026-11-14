@@ -423,6 +423,8 @@ int main(int argc, char **argv)
         "app/main.c", "app/core.c", "lib/remote.c", "app/util.c", "tests/test_main.c"
     };
     size_t onboarding_baseline = baseline_bytes(index, all_files, 5);
+    assert(estimate_tokens(brief_prompt_bytes(&views.brief)) <
+           estimate_tokens(onboarding_baseline + TASK_PROMPT_BYTES));
     printf("eval onboarding: compiler=%zu tokens baseline=%zu tokens retained=%zu/3 unresolved=%zu\n",
            estimate_tokens(brief_prompt_bytes(&views.brief)),
            estimate_tokens(onboarding_baseline + TASK_PROMPT_BYTES),
@@ -462,6 +464,8 @@ int main(int argc, char **argv)
     assert(unresolved_edges(&change_views.graph) == 1);
     const char *change_files[] = {"lib/remote.c", "app/core.c", "app/util.c"};
     size_t change_baseline = baseline_bytes(index, change_files, 3);
+    assert(estimate_tokens(brief_prompt_bytes(&change_views.brief)) <
+           estimate_tokens(change_baseline + TASK_PROMPT_BYTES));
     printf("eval change-impact: compiler=%zu tokens baseline=%zu tokens retained=%zu/4 unresolved=%zu\n",
            estimate_tokens(brief_prompt_bytes(&change_views.brief)),
            estimate_tokens(change_baseline + TASK_PROMPT_BYTES),
@@ -502,6 +506,8 @@ int main(int argc, char **argv)
                                            sizeof multi_required / sizeof multi_required[0]);
     assert(multi_retained == 3);
     assert(unresolved_edges(&multi_views.graph) == 1);
+    assert(estimate_tokens(brief_prompt_bytes(&multi_views.brief)) <
+           estimate_tokens(onboarding_baseline + TASK_PROMPT_BYTES));
     printf("eval multi-symbol: compiler=%zu tokens baseline=%zu tokens retained=%zu/3 unresolved=%zu targets=2\n",
            estimate_tokens(brief_prompt_bytes(&multi_views.brief)),
            estimate_tokens(onboarding_baseline + TASK_PROMPT_BYTES),
@@ -548,6 +554,8 @@ int main(int argc, char **argv)
         free(id);
     }
     assert(review_retained == 3);
+    assert(estimate_tokens(strlen(review_json)) <
+           estimate_tokens(change_baseline + TASK_PROMPT_BYTES));
     printf("eval symbol-review: compiler=%zu tokens baseline=%zu tokens retained=%zu/3 unresolved=0\n",
            estimate_tokens(strlen(review_json)),
            estimate_tokens(change_baseline + TASK_PROMPT_BYTES),

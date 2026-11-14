@@ -152,6 +152,10 @@ int main(void)
     assert(strstr(page_json, "\"kind\":\"symbol\"") != NULL);
     assert(strstr(page_json, "\"total\":1") != NULL);
     assert(strstr(page_json, "\"source\":") == NULL);
+    assert(strstr(page_json, "\"call\":") == NULL);
+    assert(strstr(page_json, "\"calleeText\":\"alpha\"") != NULL);
+    assert(strstr(page_json, "\"symbol\":{\"id\":") != NULL);
+    assert(strstr(page_json, "\"location\":{\"filePath\":") != NULL);
     free(page_json);
 
     int source_length = context_source_write_json(&source, NULL, 0);

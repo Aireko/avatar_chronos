@@ -252,19 +252,6 @@ static void write_revision(PageBuffer *buffer, const RevisionRef *revision)
     buffer_char(buffer, '}');
 }
 
-static void write_ref(PageBuffer *buffer, const SymbolVersionRef *ref)
-{
-    if (ref == NULL) {
-        buffer_text(buffer, "null");
-        return;
-    }
-    buffer_text(buffer, "{\"revision\":");
-    write_revision(buffer, &ref->revision);
-    buffer_text(buffer, ",\"id\":");
-    buffer_required_string(buffer, ref->id);
-    buffer_char(buffer, '}');
-}
-
 static void write_location(PageBuffer *buffer, const SourceLocation *location)
 {
     if (location == NULL) {
@@ -286,29 +273,34 @@ static void write_location(PageBuffer *buffer, const SourceLocation *location)
     buffer_text(buffer, "}}");
 }
 
-static void write_call(PageBuffer *buffer, const GraphCall *call)
+static void write_page_ref(PageBuffer *buffer, const SymbolVersionRef *ref)
 {
-    static const char *const resolutions[] = {"resolved", "unresolved", "ambiguous"};
-    buffer_text(buffer, "{\"caller\":");
-    write_ref(buffer, &call->caller);
-    buffer_text(buffer, ",\"calleeText\":");
-    buffer_required_string(buffer, call->callee_text);
-    buffer_text(buffer, ",\"callSite\":");
-    write_location(buffer, &call->call_site);
-    buffer_text(buffer, ",\"resolution\":");
-    if ((unsigned)call->resolution >= sizeof resolutions / sizeof resolutions[0]) {
-        buffer->status = CHRONOS_INVALID_ARGUMENT;
+    if (ref == NULL) {
+        buffer_text(buffer, "null");
         return;
     }
-    buffer_string(buffer, resolutions[call->resolution]);
-    buffer_text(buffer, ",\"callee\":");
-    write_ref(buffer, call->callee);
-    buffer_text(buffer, ",\"candidates\":[");
-    for (size_t i = 0; i < call->candidate_count; ++i) {
-        if (i != 0) buffer_char(buffer, ',');
-        write_ref(buffer, &call->candidates[i]);
+    buffer_text(buffer, "{\"id\":");
+    buffer_required_string(buffer, ref->id);
+    buffer_char(buffer, '}');
+}
+
+static void write_page_location(PageBuffer *buffer, const SourceLocation *location)
+{
+    if (location == NULL) {
+        buffer_text(buffer, "null");
+        return;
     }
-    buffer_text(buffer, "]}");
+    buffer_text(buffer, "{\"filePath\":");
+    buffer_required_string(buffer, location->file_path);
+    buffer_text(buffer, ",\"range\":{\"startByte\":");
+    buffer_integer(buffer, location->range.start_byte);
+    buffer_text(buffer, ",\"endByte\":");
+    buffer_integer(buffer, location->range.end_byte);
+    buffer_text(buffer, ",\"startLine\":");
+    buffer_integer(buffer, location->range.start_line);
+    buffer_text(buffer, ",\"endLine\":");
+    buffer_integer(buffer, location->range.end_line);
+    buffer_text(buffer, "}}");
 }
 
 static void write_diagnostic(PageBuffer *buffer, const ChronosDiagnostic *diagnostic)
@@ -325,7 +317,7 @@ static void write_diagnostic(PageBuffer *buffer, const ChronosDiagnostic *diagno
     buffer_text(buffer, ",\"message\":");
     buffer_required_string(buffer, diagnostic->message);
     buffer_text(buffer, ",\"location\":");
-    write_location(buffer, diagnostic->location);
+    write_page_location(buffer, diagnostic->location);
     buffer_char(buffer, '}');
 }
 
@@ -350,10 +342,7 @@ static void write_evidence(PageBuffer *buffer, const ContextEvidence *evidence)
     }
     buffer_string(buffer, states[evidence->state]);
     buffer_text(buffer, ",\"location\":");
-    write_location(buffer, evidence->location);
-    buffer_text(buffer, ",\"call\":");
-    if (evidence->call == NULL) buffer_text(buffer, "null");
-    else write_call(buffer, evidence->call);
+    write_page_location(buffer, evidence->location);
     buffer_char(buffer, '}');
 }
 
@@ -376,7 +365,7 @@ static void write_page_node(PageBuffer *buffer, const ContextPageNode *node)
     buffer_text(buffer, ",\"label\":");
     buffer_required_string(buffer, node->label);
     buffer_text(buffer, ",\"symbol\":");
-    write_ref(buffer, node->symbol);
+    write_page_ref(buffer, node->symbol);
     buffer_text(buffer, ",\"coverage\":");
     buffer_string(buffer, node->coverage == CHRONOS_COMPLETE ? "complete" :
                           node->coverage == CHRONOS_INCOMPLETE ? "incomplete" : "unavailable");
@@ -419,9 +408,8 @@ static void write_page_edge(PageBuffer *buffer, const ContextGraphEdge *edge)
     buffer_string(buffer, states[edge->state]);
     buffer_text(buffer, ",\"evidenceId\":");
     buffer_required_string(buffer, edge->evidence_id);
-    buffer_text(buffer, ",\"call\":");
-    if (edge->call == NULL) buffer_text(buffer, "null");
-    else write_call(buffer, edge->call);
+    buffer_text(buffer, ",\"calleeText\":");
+    buffer_string(buffer, edge->call == NULL ? NULL : edge->call->callee_text);
     buffer_char(buffer, '}');
 }
 

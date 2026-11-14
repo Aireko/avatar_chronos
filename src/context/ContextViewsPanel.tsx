@@ -7,9 +7,9 @@ import {
   readSessionSource,
   type ContextBriefDocument,
   type ContextCoverage,
-  type ContextEvidence,
   type ContextPageDocument,
   type ContextPageEdge,
+  type ContextPageEvidence,
   type ContextPageKind,
   type ContextPageNode,
   type ContextSourceDocument,
@@ -88,7 +88,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
   const [expandedScopes, setExpandedScopes] = useState<Set<string>>(new Set());
   const [loadingScopes, setLoadingScopes] = useState<Set<string>>(new Set());
   const [focusScope, setFocusScope] = useState<string>(ROOT_KEY);
-  const [evidenceById, setEvidenceById] = useState<Map<string, ContextEvidence>>(new Map());
+  const [evidenceById, setEvidenceById] = useState<Map<string, ContextPageEvidence>>(new Map());
   const [selectedEvidenceId, setSelectedEvidenceId] = useState<string>();
   const [source, setSource] = useState<ContextSourceDocument>();
   const [tab, setTab] = useState<ViewTab>("brief");
@@ -281,7 +281,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
       });
       sessionIdRef.current = opened.sessionId;
       setSession({ id: opened.sessionId, brief: opened.brief });
-      const evidence = new Map<string, ContextEvidence>();
+      const evidence = new Map<string, ContextPageEvidence>();
       for (const item of opened.brief.evidence.items ?? []) evidence.set(item.id, item);
       setEvidenceById(evidence);
       setTab("brief");
@@ -369,7 +369,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
   function edgeTarget(edge: ContextPageEdge, side: "from" | "to"): string {
     const id = side === "from" ? edge.from : edge.to;
     if (id) return nodeLabel(id);
-    if (edge.call) return `${edge.call.calleeText} (${edge.call.resolution})`;
+    if (edge.calleeText) return `${edge.calleeText} (${edge.state})`;
     return "(unresolved)";
   }
 

@@ -497,12 +497,25 @@ export async function compileViews(
 
 export type ContextPageKind = "root" | "module" | "file" | "symbol";
 
+/** Page locations omit the revision; the page envelope is already pinned. */
+export interface ContextPageLocation {
+  filePath: string;
+  range: ContextRange;
+}
+
+export interface ContextPageEvidence {
+  id: string;
+  kind: ContextEvidenceKind;
+  state: ContextRelationState;
+  location: ContextPageLocation | null;
+}
+
 export interface ContextPageNode {
   id: string;
   kind: ContextScopeKind;
   parentId: string | null;
   label: string;
-  symbol: { revision: ContextRevision; id: string } | null;
+  symbol: { id: string } | null;
   coverage: ContextCoverage;
   state: ContextRelationState;
   childCount: number;
@@ -516,7 +529,8 @@ export interface ContextPageEdge {
   kind: ContextEvidenceKind | "bridge" | "flow";
   state: ContextRelationState;
   evidenceId: string;
-  call: ContextCall | null;
+  /** Syntactic callee name; full call records stay in the full-graph API. */
+  calleeText: string | null;
 }
 
 export interface ContextPageCollection<T> {
@@ -540,7 +554,7 @@ export interface ContextPageDocument {
   revision: ContextRevision;
   nodes: ContextPageCollection<ContextPageNode>;
   edges: ContextPageCollection<ContextPageEdge>;
-  evidence: ContextPageCollection<ContextEvidence>;
+  evidence: ContextPageCollection<ContextPageEvidence>;
   counts: { children: number; edges: number };
   diagnostics: unknown[];
 }

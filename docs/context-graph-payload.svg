@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="760" viewBox="0 0 1400 760" role="img" aria-labelledby="title desc">
+  <title id="title">Context graph: frontend flow</title>
+  <desc id="desc">Open one session, load graph pages lazily as the user expands, and fetch source only when evidence is clicked.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#23324a"/>
+    </marker>
+    <marker id="arrow-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#0f766e"/>
+    </marker>
+    <style>
+      .title { font: 700 32px Inter, Helvetica, Arial, sans-serif; fill: #1f2937; }
+      .subtitle { font: 400 16px Inter, Helvetica, Arial, sans-serif; fill: #6b7280; }
+      .panel { fill: #ffffff; stroke: #d6d3c8; stroke-width: 1.5; }
+      .step { font: 700 20px Inter, Helvetica, Arial, sans-serif; fill: #23324a; }
+      .hint { font: 400 14px Inter, Helvetica, Arial, sans-serif; fill: #6b7280; }
+      .card { fill: #f6f4ed; stroke: #d6d3c8; stroke-width: 1.2; }
+      .card-teal { fill: #eef6f4; stroke: #0f766e; stroke-width: 1.4; }
+      .label { font: 600 16px Inter, Helvetica, Arial, sans-serif; fill: #1f2937; }
+      .small { font: 400 13px Inter, Helvetica, Arial, sans-serif; fill: #6b7280; }
+      .code { font: 500 14px "IBM Plex Mono", "SFMono-Regular", Consolas, monospace; fill: #23324a; }
+      .arrow { stroke: #23324a; stroke-width: 2; fill: none; }
+      .accent { stroke: #0f766e; stroke-width: 4; }
+    </style>
+  </defs>
+
+  <rect width="1400" height="760" fill="#f7f5ef"/>
+  <text x="60" y="66" class="title">Context graph: frontend flow</text>
+  <text x="60" y="98" class="subtitle">Open once. Load pages as the user expands. Fetch source only when evidence is clicked.</text>
+
+  <!-- Step 1 -->
+  <rect x="50" y="140" width="380" height="430" rx="16" class="panel"/>
+  <rect x="50" y="140" width="6" height="430" rx="3" fill="#0f766e"/>
+  <text x="80" y="183" class="step">1 · Open a session</text>
+  <text x="80" y="210" class="hint">Do this once per compile.</text>
+
+  <rect x="80" y="242" width="320" height="66" rx="10" class="card-teal"/>
+  <text x="100" y="272" class="code">openViews(repo)</text>
+  <text x="100" y="293" class="small">compile once, return a handle</text>
+
+  <path d="M 240 308 L 240 340" class="arrow" marker-end="url(#arrow)"/>
+
+  <rect x="80" y="348" width="320" height="74" rx="10" class="card"/>
+  <text x="100" y="376" class="label">sessionId + brief</text>
+  <text x="100" y="399" class="small">render the brief immediately</text>
+
+  <text x="80" y="462" class="hint">Keep <tspan class="code">sessionId</tspan> for every</text>
+  <text x="80" y="486" class="hint">page and source request.</text>
+
+  <rect x="80" y="510" width="320" height="40" rx="8" fill="#faf8f2" stroke="#e5e0d3"/>
+  <text x="100" y="536" class="small">Close on recompile / unmount.</text>
+
+  <!-- Step 2 -->
+  <rect x="510" y="140" width="380" height="430" rx="16" class="panel"/>
+  <rect x="510" y="140" width="6" height="430" rx="3" fill="#0f766e"/>
+  <text x="540" y="183" class="step">2 · Load pages</text>
+  <text x="540" y="210" class="hint">One page per expanded scope.</text>
+
+  <rect x="540" y="240" width="200" height="52" rx="9" class="card-teal"/>
+  <text x="558" y="262" class="label">Root</text>
+  <text x="558" y="281" class="small">modules</text>
+
+  <rect x="540" y="310" width="200" height="52" rx="9" class="card"/>
+  <text x="558" y="332" class="label">Module</text>
+  <text x="558" y="351" class="small">files</text>
+
+  <rect x="540" y="380" width="200" height="52" rx="9" class="card"/>
+  <text x="558" y="402" class="label">File</text>
+  <text x="558" y="421" class="small">symbols</text>
+
+  <rect x="540" y="450" width="200" height="52" rx="9" class="card"/>
+  <text x="558" y="472" class="label">Symbol</text>
+  <text x="558" y="491" class="small">calls</text>
+
+  <path d="M 640 292 L 640 308" class="arrow" marker-end="url(#arrow)"/>
+  <path d="M 640 362 L 640 378" class="arrow" marker-end="url(#arrow)"/>
+  <path d="M 640 432 L 640 448" class="arrow" marker-end="url(#arrow)"/>
+
+  <rect x="765" y="240" width="100" height="52" rx="8" fill="#faf8f2" stroke="#e5e0d3"/>
+  <text x="780" y="262" class="small">kind</text>
+  <text x="780" y="281" class="small">parentScope</text>
+
+  <text x="540" y="526" class="small">Each page returns:</text>
+  <text x="540" y="546" class="code">nodes · edges · evidence</text>
+  <text x="540" y="566" class="code">total + nextOffset</text>
+
+  <!-- Step 3 -->
+  <rect x="970" y="140" width="380" height="430" rx="16" class="panel"/>
+  <rect x="970" y="140" width="6" height="430" rx="3" fill="#0f766e"/>
+  <text x="1000" y="183" class="step">3 · Show source</text>
+  <text x="1000" y="210" class="hint">Only when the user clicks evidence.</text>
+
+  <rect x="1000" y="242" width="320" height="62" rx="10" class="card"/>
+  <text x="1020" y="270" class="label">Evidence ID</text>
+  <text x="1020" y="291" class="small">from a brief item or page edge</text>
+
+  <path d="M 1160 304 L 1160 338" class="arrow" marker-end="url(#arrow)"/>
+
+  <rect x="1000" y="346" width="320" height="78" rx="10" class="card-teal"/>
+  <text x="1020" y="374" class="code">readSessionSource(</text>
+  <text x="1020" y="395" class="code">  sessionId, evidenceId)</text>
+  <text x="1020" y="414" class="small">pinned source, not embedded in pages</text>
+
+  <path d="M 1160 424 L 1160 456" class="arrow" marker-end="url(#arrow)"/>
+
+  <rect x="1000" y="464" width="320" height="66" rx="10" class="card"/>
+  <text x="1020" y="492" class="label">location + source</text>
+  <text x="1020" y="515" class="small">file, range and exact bytes</text>
+
+  <text x="1000" y="556" class="small">Open it in the source drawer.</text>
+
+  <!-- Arrows between steps -->
+  <path d="M 432 355 L 506 355" class="arrow" marker-end="url(#arrow)"/>
+  <path d="M 892 355 L 966 355" class="arrow" marker-end="url(#arrow)"/>
+
+  <!-- Bottom takeaways -->
+  <rect x="50" y="615" width="1300" height="90" rx="14" fill="#ffffff" stroke="#d6d3c8"/>
+  <circle cx="85" cy="646" r="4" fill="#0f766e"/>
+  <text x="100" y="651" class="label">No full graph in the app</text>
+  <circle cx="475" cy="646" r="4" fill="#0f766e"/>
+  <text x="490" y="651" class="label">No source text in pages</text>
+  <circle cx="850" cy="646" r="4" fill="#0f766e"/>
+  <text x="865" y="651" class="label">Page size stays bounded</text>
+  <text x="100" y="682" class="small">The brief is always small. Graph detail arrives one page at a time.</text>
+</svg>

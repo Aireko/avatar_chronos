@@ -1,6 +1,7 @@
 /* ============ toolbar tools and the tool drawer (same hand-drawn family as graph.css) ============ */
 
-/* Tool buttons: a hand-drawn icon plus a label. Labels fold away on narrow windows. */
+/* Tool buttons: a hand-drawn icon plus a label (in the toolbar the three tools are
+   icon-only, with a tooltip: .icon-only and .tip in toolbar.css). */
 .tools { display: flex; align-items: center; gap: 6px; margin-left: auto; }
 .tool-btn {
   display: inline-flex;
@@ -11,23 +12,21 @@
 .tool-btn svg { flex: none; }
 .tool-btn[aria-pressed="true"] { background: var(--highlight); }
 .tool-btn[aria-pressed="true"]:hover:not(:disabled) { background: var(--highlight); opacity: 0.9; }
-.toolbar-sep { width: 0; height: 26px; border-left: 2px dashed var(--soft); margin: 0 2px; }
 
-/* The toolbar also holds the history scope switcher, so the path form gives up width first. */
-.toolbar .open-form { min-width: 150px; }
+/* The toolbar holds the history scope switcher; its chip shortens on narrower windows
+   (the rest of the bar's sizes are in toolbar.css). */
 .toolbar .scope { flex: none; }
 .toolbar .scope-chip { max-width: 200px; }
 
-@media (max-width: 1699px) {
-  .tool-btn { padding: 0 9px; }
-  .tool-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* Small labels (the map's Find key) fold to their icons on narrower windows. */
+@media (max-width: 1349px) {
+  .toolbar .scope-chip { max-width: 160px; }
+  .tool-label-sm { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 }
 
-/* On the narrowest windows Reload and the theme switch fold to icons too. */
 @media (max-width: 1149px) {
   .toolbar { gap: 8px; }
   .toolbar .scope-chip { max-width: 120px; }
-  .tool-label-sm { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 }
 
 /* The graph or code editor area. The editor is absolutely positioned, so it fills
@@ -36,15 +35,16 @@
 
 /* The drawer: a ticket that hosts a tool. Slightly wider than commit details. */
 .tool-drawer { width: 460px; }
-/* Icon + name. Keyed in ToolDrawer, so switching tools re-inks the heading. */
+/* Icon + name. Keyed in ToolDrawer; only switching tools re-inks the heading (.is-swap),
+   so opening the drawer is one movement, the sheet sliding in. */
 .tool-drawer-title {
   display: inline-flex;
   align-items: center;
   gap: 9px;
   min-width: 0;
   font-size: 22px;
-  animation: swap-in 0.2s ease-out backwards;
 }
+.tool-drawer-title.is-swap { animation: swap-in 0.2s ease-out backwards; }
 .tool-drawer-title svg { flex: none; }
 .tool-drawer-name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tool-drawer-body { padding: 0 0 22px; }
@@ -77,8 +77,10 @@
   to { transform: translateX(40px) rotate(1deg); opacity: 0; }
 }
 
-/* Switching between tools keeps the drawer and fades the new content in. */
-.tool-swap { animation: swap-in 0.2s ease-out backwards; }
+/* Switching between tools keeps the drawer and fades the new tool in. Every opened tool
+   stays mounted (hidden) so its work goes on; a pane that comes back from hiding starts
+   its animation afresh. */
+.tool-pane.is-swap { animation: swap-in 0.2s ease-out backwards; }
 @keyframes swap-in { from { opacity: 0; transform: translateY(6px); } }
 
 /* The code editor: a sheet laid over the graph, lifted off again on close. */
@@ -90,32 +92,59 @@
 @keyframes sheet-in { from { transform: translateY(12px) rotate(-0.25deg) scale(0.99); } }
 @keyframes sheet-out { to { opacity: 0; transform: translateY(10px) rotate(0.2deg) scale(0.99); } }
 
-/* The terminal dock slides up from the status bar and back down. */
-.dock-panel { flex: none; display: flex; flex-direction: column; overflow: hidden; }
-.dock-panel.is-entering { animation: dock-in 0.22s ease-out backwards; }
-.dock-panel.is-leaving { pointer-events: none; animation: dock-out 0.2s ease-in forwards; }
-@keyframes dock-in { from { height: 0; } to { height: 210px; } }
-@keyframes dock-out { from { height: 210px; } to { height: 0; } }
-/* The Code editor / Terminal keys ride along with the dock. */
+/* The terminal dock slides up from the status bar and back down. Its height is a
+   transition, not keyframes, so toggling it mid-way turns round from where it is. The
+   terminal stays mounted while closed (parked at no height, so its output survives). */
+.dock-panel {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  height: 210px;
+  transition: height 0.22s ease-out;
+}
+@starting-style { .dock-panel.is-entering { height: 0; } }
+.dock-panel.is-leaving { height: 0; pointer-events: none; transition: height 0.2s ease-in; }
+/* Parked rather than display:none, so reopening grows from nothing and the old lines
+   don't replay their entrance. */
+.dock-panel.is-parked { display: flex !important; height: 0; visibility: hidden; transition: none; }
+/* The Code editor / Terminal keys ride along with the dock: the same duration and
+   easing both ways, so they turn round together and never cover the terminal. */
 .dock-toggles { transition: bottom 0.22s ease-out; }
-/* Same duration and easing as dock-out, so the keys never cover the closing terminal. */
-.stage:has(.dock-panel.is-leaving) .dock-toggles { bottom: 16px; transition: bottom 0.2s ease-in; }
+.stage:has(.dock-panel.is-leaving) .dock-toggles,
+.stage:has(.dock-panel.is-parked) .dock-toggles { bottom: 16px; }
+.stage:has(.dock-panel.is-leaving) .dock-toggles { transition: bottom 0.2s ease-in; }
+
+/* In the editor only the Terminal and Context compiler keys are left down there (Back
+   to map closes the editor), and the file tree scrolls its last files clear of them
+   (two 36px keys, the 8px gap and the 16px inset, plus 20px to spare). */
+.stage:has(.editor-layer.is-entering) .file-tree-scroll { padding-bottom: 116px; }
+
+/* Beside a tool drawer on a narrow window the editor's bar wraps instead of pushing
+   its buttons under the drawer, and the drawer gives up some width. */
+.editor-bar { flex-wrap: wrap; row-gap: 6px; }
+@media (max-width: 1199px) {
+  .workspace:has(.editor-layer.is-entering) .tool-drawer { width: 380px; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   .slide-panel.is-entering,
   .slide-panel.is-leaving,
-  .tool-swap,
+  .tool-pane.is-swap,
+  .tool-drawer-title.is-swap,
   .editor-layer.is-entering,
-  .editor-layer.is-leaving,
-  .dock-panel.is-entering,
-  .dock-panel.is-leaving { animation: none; }
-  .dock-toggles { transition: none; }
+  .editor-layer.is-leaving { animation: none; }
+  .dock-panel,
+  .dock-panel.is-leaving,
+  .dock-toggles,
+  .stage:has(.dock-panel.is-leaving) .dock-toggles { transition: none; }
 }
 
 /* ============ small pop-ups: the File / Function picker and the branch legend ============ */
 
-/* Scope tabs slide their ink highlight across instead of snapping. */
-.scope-tab { transition: background-color 0.18s ease, color 0.18s ease; }
+/* Scope tabs: the ink itself glides between them (.scope-ink in scope.css); each
+   tab's lettering and hover wash ease along with it. */
+.scope-tab { transition: background-color 0.18s ease, color 0.18s ease, opacity 0.18s ease; }
 /* The chosen file or function lands in the toolbar like a fresh stamp. */
 .scope-chip { animation: chip-in 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards; }
 @keyframes chip-in { from { opacity: 0; transform: translateX(-6px) scale(0.96); } }
@@ -155,18 +184,18 @@
    The browser fades two snapshots on the compositor, so nothing re-renders mid-fade. */
 ::view-transition-old(root),
 ::view-transition-new(root) { animation-duration: 0.26s; animation-timing-function: ease; }
+/* During that fade the new frame must already be in its final colours: elements that
+   ease their own colours would otherwise fade a second time, from the old theme's. */
+:root[data-cross-fading] *,
+:root[data-cross-fading] *::before,
+:root[data-cross-fading] *::after { transition: none !important; }
 /* The switch's icon turns into place, chalk to sun and back. */
 .theme-glyph { display: inline-flex; }
 .theme-glyph.is-turning { animation: glyph-turn 0.28s cubic-bezier(0.2, 0.9, 0.25, 1.15) backwards; }
 @keyframes glyph-turn { from { opacity: 0; transform: rotate(-110deg) scale(0.6); } }
 
-/* Toolbar and dock buttons ease their fill and ink instead of snapping (graph.css only
-   transitions the press). Icons tilt a touch under the pointer, like a pen picked up. */
-.toolbar .btn,
-.dock-key,
-.banner .btn {
-  transition: transform 0.08s, background-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
-}
+/* Tool icons tilt a touch under the pointer, like a pen picked up. (Every .btn eases its
+   fill and ink in graph.css.) */
 .tool-btn svg { transition: transform 0.16s ease; }
 .tool-btn:hover:not(:disabled) svg { transform: rotate(-8deg) scale(1.08); }
 .tool-btn[aria-pressed="true"] svg { transform: rotate(-4deg); }
@@ -250,10 +279,27 @@
 .status-conn:not(.is-ok):not(.status-bad) .status-dot { animation: status-wait 0.8s ease-in-out infinite alternate; }
 @keyframes status-wait { to { opacity: 0.3; } }
 
-/* The drawer's close mark gives a little twist under the pointer. */
-.tool-drawer .ticket-close { transition: transform 0.15s ease, background-color 0.15s ease; }
-.tool-drawer .ticket-close:hover { transform: rotate(8deg); }
-.tool-drawer .ticket-close:active { transform: rotate(8deg) scale(0.92); }
+/* A tool still working while its pane is out of sight: a chalk dot on its button that
+   pops on and breathes (the shared waiting tempo). Reduced motion keeps a still dot. */
+.tool-btn { position: relative; }
+.tool-busy-dot {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--paper);
+  border-radius: 50% 42% 55% 46%;
+  background: var(--pen-1);
+  pointer-events: none;
+  animation: dot-pop 0.2s var(--ease-pop) backwards, breathe 1.1s ease-in-out 0.2s infinite;
+}
+
+/* The ticket's "open in the editor" arrow is an SVG now (OpenFileIcon), so graph.css's
+   masked stand-in for the old glyph is not drawn over it. */
+.ticket .file-row .file-open.has-icon { display: inline-flex; align-items: center; }
+.ticket .file-row .file-open.has-icon::before { content: none; }
+.open-file-icon { display: block; }
 
 @media (prefers-reduced-motion: reduce) {
   ::view-transition-old(root),
@@ -269,17 +315,141 @@
   .shell-empty.is-waiting .d-dot,
   .status-tick,
   .status-conn:not(.is-ok):not(.status-bad) .status-dot,
-  .tool-drawer-title { animation: none; }
-  .toolbar .btn,
-  .dock-key,
-  .banner .btn,
+  .tool-busy-dot,
+  .tool-drawer-title.is-swap { animation: none; }
   .tool-btn svg,
   .open-form .field,
   .scope-pop .field,
-  .status-dot,
-  .tool-drawer .ticket-close { transition: none; }
+  .status-dot { transition: none; }
   .tool-btn:hover:not(:disabled) svg,
-  .tool-btn[aria-pressed="true"] svg,
-  .tool-drawer .ticket-close:hover,
-  .tool-drawer .ticket-close:active { transform: none; }
+  .tool-btn[aria-pressed="true"] svg { transform: none; }
 }
+
+/* ============ app shell additions: focus, notes and the unsaved-edits question ============ */
+
+/* Only wraps the window so it can be made inert under the unsaved-edits question. */
+.app-body { display: contents; }
+
+/* Panels take keyboard focus when they open (tabindex=-1); the ring only shows for keyboard users. */
+.ticket[tabindex="-1"]:focus { outline: none; }
+.ticket[tabindex="-1"]:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: -6px; }
+
+/* The reload note's stamp sits on the tag, which is keyed per reload, so a repeat reload
+   stamps it again (the wrapper only stays put while the note is up). */
+.statusbar .reload-note.is-entering { animation: none; }
+.statusbar .reload-note-tag { animation: reload-note-in 0.26s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards; }
+
+/* A rebase paused on a conflict: a highlighter note under the toolbar, rolled down like
+   the error banner, that stays until the rebase is continued or aborted. */
+.banner.rebase-note {
+  border-bottom-color: var(--warn);
+  background-color: var(--paper);
+  background-image: linear-gradient(color-mix(in srgb, var(--highlight) 30%, transparent) 0 0);
+  color: var(--ink);
+}
+.rebase-note .banner-text svg { color: var(--warn); }
+.rebase-note-title { font-weight: 400; }
+.rebase-note-help { color: var(--soft); }
+.rebase-note code { font-family: var(--mono); font-size: 13px; color: var(--ink); }
+.rebase-note-keys { display: flex; flex: none; gap: 8px; }
+
+/* The history moved under the open editor: a sticky note offering fresh files. */
+.editor-note {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  /* Above the editor sheet (3); the graph's chrome (20) is not shown in the editor. */
+  z-index: 4;
+  width: max-content;
+  max-width: min(440px, calc(100% - 32px));
+  translate: -50% 0;
+}
+.editor-note-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px 12px;
+  padding: 10px 10px 10px 16px;
+  border: 2px solid var(--ink);
+  border-radius: var(--sketch);
+  background-color: var(--paper);
+  background-image: linear-gradient(color-mix(in srgb, var(--highlight) 45%, transparent) 0 0);
+  box-shadow: 4px 5px 0 color-mix(in srgb, var(--ink) 16%, transparent);
+  transform: rotate(-0.5deg);
+}
+.editor-note-text { flex: 1 1 220px; margin: 0; font-size: 16px; line-height: 1.25; }
+.editor-note-keys { display: flex; flex: none; align-items: center; gap: 6px; }
+.editor-note.is-entering { animation: note-in 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards; }
+.editor-note.is-leaving { pointer-events: none; animation: note-out 0.14s ease-in forwards; }
+@keyframes note-in { from { opacity: 0; transform: translateY(12px) rotate(1deg); } }
+@keyframes note-out { to { opacity: 0; transform: translateY(8px); } }
+
+/* "Stop waiting" in the terminal bar while a command runs. */
+.term-stop {
+  flex: none;
+  height: 24px;
+  padding: 0 10px;
+  border: 2px solid color-mix(in srgb, var(--term-ink) 40%, transparent);
+  border-radius: var(--sketch);
+  background: transparent;
+  color: var(--term-accent);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+.term-stop:hover { background: color-mix(in srgb, var(--term-ink) 14%, transparent); }
+.term-stop:focus-visible { outline: 2px dashed currentColor; outline-offset: 2px; }
+
+/* Unsaved edits: a hand-drawn card over a dimmed window, instead of the browser's dialog.
+   Above everything, the scope picker (60) included. */
+.leave-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--ink) 22%, transparent);
+}
+.leave-card {
+  width: min(430px, 100%);
+  padding: 4px 22px 18px;
+  border: 2.5px solid var(--ink);
+  border-radius: var(--sketch);
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 5px 6px 0 color-mix(in srgb, var(--ink) 18%, transparent);
+  transform: rotate(-0.6deg);
+}
+.leave-title { margin-top: 14px; }
+.leave-text { margin: 10px 0 18px; font-size: 18px; }
+/* Marker-pen highlight on the words that matter. */
+.leave-mark { padding: 0 4px; border-radius: 4px 9px 5px 8px; background: var(--highlight); }
+.leave-keys { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.leave-discard { border-color: var(--bad); color: var(--bad); }
+.leave-discard:hover:not(:disabled) { background: color-mix(in srgb, var(--bad) 10%, var(--paper)); }
+.leave-scrim.is-entering { animation: scrim-in 0.16s ease-out backwards; }
+.leave-scrim.is-leaving { pointer-events: none; animation: scrim-out 0.14s ease-in forwards; }
+.leave-scrim.is-entering .leave-card { animation: leave-card-in 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards; }
+.leave-scrim.is-leaving .leave-card { animation: leave-card-out 0.14s ease-in forwards; }
+@keyframes scrim-in { from { background-color: transparent; } }
+@keyframes scrim-out { to { background-color: transparent; } }
+@keyframes leave-card-in { from { opacity: 0; transform: translateY(10px) rotate(1.2deg) scale(0.96); } }
+@keyframes leave-card-out { to { opacity: 0; transform: translateY(6px) rotate(0deg) scale(0.98); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .statusbar .reload-note-tag,
+  .editor-note.is-entering,
+  .editor-note.is-leaving,
+  .leave-scrim.is-entering,
+  .leave-scrim.is-leaving,
+  .leave-scrim.is-entering .leave-card,
+  .leave-scrim.is-leaving .leave-card { animation: none; }
+  .term-stop { transition: none; }
+}
+
+/* A tool panel that crashed: a calm note instead of a blank window. */
+.panel-crash { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 18px 22px; }
+.panel-crash p { margin: 0; }

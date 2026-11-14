@@ -17,7 +17,11 @@ import {
 } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { runShellCommand } from "../backend";
+import { useBusySignal, usePaneReturn } from "../ai/panelHooks";
 import { bugCheckService, isValidPrNumber, isValidRepo, toBugCheckError } from "./bugCheckService";
+import { type ChunkOutcome, chunkTicks, ticksLabel } from "./chunkTicks";
+import { githubRepoFromRemote } from "./originRepo";
 import type {
   BugCheckError,
   BugCheckEvent,
@@ -35,8 +39,8 @@ import type {
 } from "./types";
 import "./BugCheckPanel.css";
 
+/** The repository the user last typed in; used when the open repository has no GitHub origin. */
 const REPO_KEY = "prBugCheck.repo";
-const DEFAULT_REPO = "Aireko/avatar";
 const MAX_COMMENTS_PER_REVIEW = 50;
 const MAX_ACTIVITY = 8;
 
@@ -69,12 +73,13 @@ function stagger(index: number): CSSProperties {
   return { "--i": Math.min(index, MAX_STAGGER) } as CSSProperties;
 }
 
+/** The saved repository, or "" (never some unrelated default: the user types one in). */
 function loadRepo(): string {
   try {
     const saved = localStorage.getItem(REPO_KEY);
-    return saved && isValidRepo(saved) ? saved : DEFAULT_REPO;
+    return saved && isValidRepo(saved) ? saved : "";
   } catch {
-    return DEFAULT_REPO;
+    return "";
   }
 }
 
@@ -123,6 +128,8 @@ function postedIdsOf(report: BugCheckReport | undefined): Set<string> {
 
 /** Opens a GitHub link in the system browser (inside the app) or a new tab (in a browser). */
 function ExternalLink({ href, children }: { href: string; children: ReactNode }) {
+  // No address (a partial answer): plain text rather than a link to nowhere.
+  if (!/^https?:\/\//i.test(href)) return <>{children}</>;
   const onClick = (event: MouseEvent<HTMLAnchorElement>) => {
     if (!isTauri()) return;
     event.preventDefault();
@@ -161,6 +168,8 @@ interface RunProgress {
   chunkFiles: string[];
   chunksDone: number;
   chunksFailed: number;
+  /** How each finished chunk ended, by index: one tick each on the progress track. */
+  settled: Record<number, ChunkOutcome>;
   findings: number;
   /** Findings the double-check filtered out so far. */
   filtered: number;
@@ -178,6 +187,7 @@ function freshProgress(repo: string, number: number): RunProgress {
     chunkFiles: [],
     chunksDone: 0,
     chunksFailed: 0,
+    settled: {},
     findings: 0,
     filtered: 0,
     filesReviewed: 0,
@@ -205,12 +215,18 @@ function applyEvent(progress: RunProgress, event: BugCheckEvent): RunProgress {
     case "findingFiltered":
       return { ...progress, filtered: progress.filtered + 1 };
     case "chunkDone":
-      return { ...progress, chunksDone: progress.chunksDone + 1, verifying: undefined };
+      return {
+        ...progress,
+        chunksDone: progress.chunksDone + 1,
+        settled: { ...progress.settled, [event.index]: "done" },
+        verifying: undefined,
+      };
     case "chunkFailed":
       return {
         ...progress,
         chunksDone: progress.chunksDone + 1,
         chunksFailed: progress.chunksFailed + 1,
+        settled: { ...progress.settled, [event.index]: "failed" },
         verifying: undefined,
       };
     default:
@@ -227,6 +243,73 @@ function progressLine(progress: RunProgress): string {
     : "";
   const filtered = progress.filtered > 0 ? `, ${progress.filtered} filtered out` : "";
   return `Chunk ${current} of ${progress.totalChunks}${step} · ${plural(progress.findings, "finding")} so far${filtered}`;
+}
+
+/**
+ * How far a run got: one tick per diff chunk (done, failed, being reviewed or
+ * waiting), or a plain bar while the chunk count is unknown or too large to tick.
+ */
+function ProgressTrack({ progress }: { progress: RunProgress }) {
+  const ticks = chunkTicks(progress.totalChunks, progress.settled, progress.chunk);
+  if (!ticks) {
+    return (
+      <progress
+        max={progress.totalChunks || 1}
+        value={progress.totalChunks ? progress.chunksDone : undefined}
+        aria-label="Bug check progress"
+      />
+    );
+  }
+  return (
+    <div
+      className="bc-ticks"
+      role="progressbar"
+      aria-label="Bug check progress"
+      aria-valuemin={0}
+      aria-valuemax={ticks.length}
+      aria-valuenow={progress.chunksDone}
+      aria-valuetext={ticksLabel(ticks.length, progress.chunksDone, progress.chunksFailed)}
+    >
+      {ticks.map((state, index) => (
+        <span key={index} className={`bc-tick is-${state}`} />
+      ))}
+    </div>
+  );
+}
+
+function prefersReducedMotion(): boolean {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+}
+
+/** Whether `el` is laid out (not inside the drawer's hidden panes or a parked drawer). */
+function isShown(el: Element | null | undefined): el is HTMLElement {
+  return !!el && el.isConnected && el.getClientRects().length > 0;
+}
+
+/** Moves focus to `el`, but only while the panel is on screen: a hidden pane never takes focus. */
+function focusIfShown(el: HTMLElement | null | undefined, options?: FocusOptions): boolean {
+  if (!isShown(el) || (el instanceof HTMLButtonElement && el.disabled)) return false;
+  el.focus(options);
+  return document.activeElement === el;
+}
+
+/**
+ * Scrolls the nearest scrolling ancestor (the drawer body) so `el` sits at its
+ * top. Unlike scrollIntoView it never nudges the fixed app shell around it: it
+ * stops at that first scroll container even when it has nothing to scroll.
+ */
+function scrollToTop(el: HTMLElement) {
+  // In a hidden drawer pane every box measures 0: there is nothing to scroll to.
+  if (!isShown(el)) return;
+  for (let parent = el.parentElement; parent; parent = parent.parentElement) {
+    const { overflowY } = getComputedStyle(parent);
+    if (overflowY !== "auto" && overflowY !== "scroll") continue;
+    if (parent.scrollHeight > parent.clientHeight) {
+      const top = parent.scrollTop + el.getBoundingClientRect().top - parent.getBoundingClientRect().top - 8;
+      parent.scrollTo({ top: Math.max(0, top), behavior: prefersReducedMotion() ? "auto" : "smooth" });
+    }
+    return;
+  }
 }
 
 /** A short label for a finding's double-check verdict, or nothing when it was not double-checked. */
@@ -351,7 +434,24 @@ function FindingCard({
   );
 }
 
-export default function BugCheckPanel() {
+interface BugCheckPanelProps {
+  /** The local repository open in Chronos; its GitHub `origin` is the default repository. */
+  repoPath?: string;
+  /**
+   * Told when long work starts (true) and when the last of it stops (false): loading the
+   * PR list, a bug check run here, or an auto-review run. False again on unmount.
+   */
+  onBusyChange?: (busy: boolean) => void;
+}
+
+export default function BugCheckPanel({ repoPath, onBusyChange }: BugCheckPanelProps = {}) {
+  const panelRef = useRef<HTMLElement>(null);
+  // Focus targets around the report and the posting step (see the effects below).
+  const prsHeading = useRef<HTMLHeadingElement>(null);
+  const reportOpener = useRef<HTMLElement | null>(null);
+  const postKey = useRef<HTMLButtonElement>(null);
+  const confirmCancel = useRef<HTMLButtonElement>(null);
+  const postDone = useRef<HTMLParagraphElement>(null);
   const [gh, setGh] = useState<GhStatus>();
   const [ghError, setGhError] = useState<BugCheckError>();
   const [checkingGh, setCheckingGh] = useState(false);
@@ -360,10 +460,16 @@ export default function BugCheckPanel() {
   const [repoDraft, setRepoDraft] = useState(repo);
   const repoRef = useRef(repo);
   repoRef.current = repo;
+  // The GitHub repository of the open repository's origin remote, once looked up. Until
+  // then (with a repository open) no list is loaded, so an unrelated one never flashes up.
+  const [originRepo, setOriginRepo] = useState<string>();
+  const [originChecked, setOriginChecked] = useState(!repoPath);
 
   const [prs, setPrs] = useState<PrWithStatus[]>();
   const [prsError, setPrsError] = useState<BugCheckError>();
   const [loadingPrs, setLoadingPrs] = useState(false);
+  // A reload the watcher asked for after a poll: not work anyone waits on, so not "busy".
+  const [prsLoadQuiet, setPrsLoadQuiet] = useState(false);
   const prsRequest = useRef(0);
 
   const [otherPr, setOtherPr] = useState("");
@@ -382,6 +488,9 @@ export default function BugCheckPanel() {
   const reportRef = useRef<BugCheckReport | undefined>(undefined);
   reportRef.current = report;
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // "View report" brings the report into view; bumped on each successful open.
+  const reportBox = useRef<HTMLDivElement>(null);
+  const [revealReport, setRevealReport] = useState(0);
 
   const [confirming, setConfirming] = useState(false);
   const [posting, setPosting] = useState(false);
@@ -415,9 +524,10 @@ export default function BugCheckPanel() {
     }
   }, []);
 
-  const loadPrs = useCallback(async (target: string) => {
+  const loadPrs = useCallback(async (target: string, quiet = false) => {
     const request = ++prsRequest.current;
     setLoadingPrs(true);
+    setPrsLoadQuiet(quiet);
     try {
       const list = await bugCheckService.listPrs(target);
       if (request !== prsRequest.current) return;
@@ -463,9 +573,48 @@ export default function BugCheckPanel() {
     return () => runAbort.current?.abort();
   }, [refreshGh, refreshWatch]);
 
+  // The open repository decides the default: its GitHub origin when it has one, otherwise
+  // the repository typed in last (or none). Runs again whenever another repository opens.
   useEffect(() => {
-    void loadPrs(repo);
-  }, [repo, loadPrs]);
+    if (!repoPath) {
+      setOriginRepo(undefined);
+      setOriginChecked(true);
+      return;
+    }
+    let live = true;
+    setOriginChecked(false);
+    const use = (next: string, origin: string | undefined) => {
+      if (!live) return;
+      setOriginRepo(origin);
+      setOriginChecked(true);
+      setRepoDraft(next);
+      if (next !== repoRef.current) {
+        // Drop a list still loading for the previous repository (a watcher reload, say):
+        // with no repository now ("") nothing newer would supersede it, and its late
+        // answer would show another repository's PRs (and keep "Loading..." stuck).
+        prsRequest.current++;
+        setLoadingPrs(false);
+        setPrs(undefined);
+        setPrsError(undefined);
+        setRepo(next);
+      }
+    };
+    runShellCommand(repoPath, "git remote get-url origin").then(
+      (result) => {
+        const origin = result.ok ? githubRepoFromRemote(result.stdout) : undefined;
+        if (origin && isValidRepo(origin)) use(origin, origin);
+        else use(loadRepo(), undefined);
+      },
+      () => use(loadRepo(), undefined),
+    );
+    return () => {
+      live = false;
+    };
+  }, [repoPath]);
+
+  useEffect(() => {
+    if (originChecked && repo) void loadPrs(repo);
+  }, [repo, originChecked, loadPrs]);
 
   // Watcher events: keep the auto-review state, the PR list and an open report current.
   useEffect(
@@ -494,7 +643,9 @@ export default function BugCheckPanel() {
           setWatchProgress(undefined);
         }
         if (event.type === "reviewDone" || event.type === "polled") {
-          void loadPrs(repoRef.current);
+          // After a plain poll the refresh is background upkeep (quiet: no busy dot and no
+          // "finished" announcement every few minutes); after a review it ends that run's work.
+          if (repoRef.current) void loadPrs(repoRef.current, event.type === "polled");
           const open = reportRef.current;
           // Reload an open report only if the watcher just reviewed that very PR (repo and number).
           if (event.type === "reviewDone" && open && open.number === event.number && sameRepo(open.repo, event.repo)) {
@@ -509,19 +660,21 @@ export default function BugCheckPanel() {
     event.preventDefault();
     const next = repoDraft.trim();
     if (!isValidRepo(next)) {
-      setPrsError({ kind: "invalid_request", message: `'${next}' is not a GitHub repository`, hint: "Use owner/name, e.g. Aireko/avatar" });
+      setPrsError({ kind: "invalid_request", message: `'${next}' is not a GitHub repository`, hint: "Use owner/name, as in github.com/owner/name" });
       return;
     }
     saveRepo(next);
     if (next === repo) void loadPrs(next);
     else {
       setPrs(undefined);
+      setPrsError(undefined);
       setRepo(next);
     }
   }
 
   async function runCheck(number: number) {
-    if (runAbort.current) return;
+    if (runAbort.current || !repo) return;
+    rememberOpener();
     const target = repo;
     const controller = new AbortController();
     runAbort.current = controller;
@@ -549,12 +702,32 @@ export default function BugCheckPanel() {
     runAbort.current?.abort();
   }
 
+  /** The control that asked for a report, so closing the report can hand focus back to it. */
+  function rememberOpener() {
+    const active = document.activeElement;
+    reportOpener.current = active instanceof HTMLElement && panelRef.current?.contains(active) ? active : null;
+  }
+
+  // Closing the report removes the focused Close key: focus goes back to whatever opened
+  // the report (its "View report" or "Run bug check" key), else to the PR list heading.
+  function closeReport() {
+    const opener = reportOpener.current;
+    reportOpener.current = null;
+    const hadFocus = !!reportBox.current?.contains(document.activeElement);
+    showReport(undefined);
+    if (hadFocus && !focusIfShown(opener)) focusIfShown(prsHeading.current);
+  }
+
   async function viewReport(number: number) {
+    if (!repo) return;
+    rememberOpener();
     setReportError(undefined);
     try {
       const stored = await bugCheckService.getReport(repo, number);
-      if (stored) showReport(stored);
-      else {
+      if (stored) {
+        showReport(stored);
+        setRevealReport((n) => n + 1);
+      } else {
         showReport(undefined);
         setReportError({ kind: "not_found", message: `No stored check for ${repo}#${number}`, hint: "Run the bug check first" });
       }
@@ -562,6 +735,15 @@ export default function BugCheckPanel() {
       setReportError(toBugCheckError(error));
     }
   }
+
+  // After "View report": scroll the report to the top of the drawer and move focus to
+  // its title, so keyboard users continue from there.
+  useEffect(() => {
+    const box = reportBox.current;
+    if (revealReport === 0 || !box) return;
+    focusIfShown(box.querySelector<HTMLElement>(".bc-report-title"), { preventScroll: true });
+    scrollToTop(box);
+  }, [revealReport]);
 
   const otherNumber = Number(otherPr);
   const otherValid = otherPr.trim() !== "" && isValidPrNumber(otherNumber);
@@ -669,8 +851,31 @@ export default function BugCheckPanel() {
     }
   }
 
+  // The posting question takes focus on its safe answer (Cancel), since the key that asked
+  // it is gone; when it closes, focus returns to the Post key, or to the posted note.
+  const wasConfirming = useRef(false);
+  useEffect(() => {
+    const was = wasConfirming.current;
+    wasConfirming.current = confirming;
+    if (confirming) {
+      focusIfShown(confirmCancel.current);
+      return;
+    }
+    // Only when focus was lost with the question (it sits on the page body now).
+    const active = document.activeElement;
+    if (!was || (active && active !== document.body)) return;
+    if (!focusIfShown(postKey.current)) focusIfShown(postDone.current);
+  }, [confirming]);
+
   const running = progress !== undefined;
   const watchConfig = watch?.config;
+  // Auto review is checking a PR (the watcher reports it as current, or progress is arriving).
+  const autoReviewing = (!!watch?.enabled && watch.current !== undefined) || watchProgress !== undefined;
+  useBusySignal((loadingPrs && !prsLoadQuiet) || running || autoReviewing, onBusyChange);
+
+  // Kept mounted (hidden) in the drawer: coming back neither replays the entrance of every
+  // PR row and finding card nor loses the scroll offset of a suggested fix.
+  usePaneReturn(panelRef);
   const watchDirty =
     !!watch?.enabled &&
     !!watchConfig &&
@@ -688,7 +893,7 @@ export default function BugCheckPanel() {
       (!!watch?.enabled && watch.current === report.number && sameRepo(watchConfig?.repo, report.repo)));
 
   return (
-    <section className="bc-panel" aria-labelledby="bc-panel-title">
+    <section ref={panelRef} className="bc-panel" aria-labelledby="bc-panel-title">
       {/* The drawer band already shows the title; this one names the section for assistive tech. */}
       <h2 id="bc-panel-title" className="bc-sr">
         PR Bug Check
@@ -737,9 +942,23 @@ export default function BugCheckPanel() {
       </div>
 
       <div className="bc-block">
-        <h3 className="bc-title">
-          Open pull requests in <span className="bc-title-repo">{repo}</span>
+        <h3 ref={prsHeading} className="bc-title" tabIndex={-1}>
+          Open pull requests
+          {repo && (
+            <>
+              {" "}
+              in <span className="bc-title-repo">{repo}</span>
+              {originRepo && sameRepo(repo, originRepo) && <span className="bc-muted bc-origin"> (from origin)</span>}
+            </>
+          )}
         </h3>
+        {!repo && originChecked && (
+          <p className="bc-empty">
+            {repoPath
+              ? "The open repository has no GitHub origin remote. Type a GitHub repository (owner/name) above to list its open pull requests."
+              : "Type a GitHub repository (owner/name) above to list its open pull requests."}
+          </p>
+        )}
         {prsError && <ErrorBox error={prsError} />}
         {!prs && loadingPrs && !prsError && (
           <div className="bc-loading" role="status">
@@ -807,13 +1026,13 @@ export default function BugCheckPanel() {
           />
           <button
             type="button"
-            className="btn bc-btn-sm"
+            className="btn"
             onClick={() => void runCheck(otherNumber)}
-            disabled={!otherValid || running}
+            disabled={!otherValid || running || !repo}
           >
             Run bug check
           </button>
-          <button type="button" className="btn bc-btn-sm" onClick={() => void viewReport(otherNumber)} disabled={!otherValid}>
+          <button type="button" className="btn" onClick={() => void viewReport(otherNumber)} disabled={!otherValid || !repo}>
             View report
           </button>
           <span className="bc-muted">also works for closed and merged PRs</span>
@@ -835,13 +1054,13 @@ export default function BugCheckPanel() {
           </div>
           <div className="bc-option-grid">
             <label htmlFor="bc-ctx">Context window</label>
-            <select id="bc-ctx" className="bc-select" value={numCtx} onChange={(e) => setNumCtx(Number(e.target.value))}>
+            <select id="bc-ctx" className="field bc-select" value={numCtx} onChange={(e) => setNumCtx(Number(e.target.value))}>
               <option value={8192}>8K tokens (less memory, more and smaller parts)</option>
               <option value={16384}>16K tokens (default)</option>
               <option value={32768}>32K tokens (more memory)</option>
             </select>
             <label htmlFor="bc-conf">Minimum confidence</label>
-            <select id="bc-conf" className="bc-select" value={minConfidence} onChange={(e) => setMinConfidence(Number(e.target.value))}>
+            <select id="bc-conf" className="field bc-select" value={minConfidence} onChange={(e) => setMinConfidence(Number(e.target.value))}>
               <option value={0.3}>30%</option>
               <option value={0.5}>50% (default)</option>
               <option value={0.7}>70%</option>
@@ -862,11 +1081,7 @@ export default function BugCheckPanel() {
               {progress.cancelling ? "Cancelling..." : "Cancel"}
             </button>
           </div>
-          <progress
-            max={progress.totalChunks || 1}
-            value={progress.totalChunks ? progress.chunksDone : undefined}
-            aria-label="Bug check progress"
-          />
+          <ProgressTrack progress={progress} />
           <p>{progressLine(progress)}</p>
           {progress.totalChunks !== undefined && (
             <p className="bc-muted">
@@ -884,12 +1099,12 @@ export default function BugCheckPanel() {
 
       {report && (
         // Keyed by the check, so opening another report eases it in afresh.
-        <div key={`${report.repo}#${report.number}@${report.startedAt}`} className="bc-block bc-report">
+        <div key={`${report.repo}#${report.number}@${report.startedAt}`} ref={reportBox} className="bc-block bc-report">
           <div className="bc-report-head">
-            <h3 className="bc-report-title">
+            <h3 className="bc-report-title" tabIndex={-1}>
               {report.repo}#{report.number}: {report.title}
             </h3>
-            <button type="button" className="btn bc-btn-sm" onClick={() => showReport(undefined)}>
+            <button type="button" className="btn bc-btn-sm" onClick={closeReport}>
               Close
             </button>
           </div>
@@ -994,6 +1209,7 @@ export default function BugCheckPanel() {
               {!confirming && (
                 <div className="bc-row">
                   <button
+                    ref={postKey}
                     type="button"
                     className="btn primary"
                     onClick={() => setConfirming(true)}
@@ -1003,13 +1219,13 @@ export default function BugCheckPanel() {
                   </button>
                   <button
                     type="button"
-                    className="btn bc-btn-sm"
+                    className="btn"
                     onClick={() => setSelected(new Set(unpostedIds))}
                     disabled={unpostedIds.length === 0}
                   >
                     Select all
                   </button>
-                  <button type="button" className="btn bc-btn-sm" onClick={() => setSelected(new Set())}>
+                  <button type="button" className="btn" onClick={() => setSelected(new Set())}>
                     Select none
                   </button>
                   {overLimit && (
@@ -1020,8 +1236,21 @@ export default function BugCheckPanel() {
                 </div>
               )}
               {confirming && (
-                <div className="bc-confirm" role="alertdialog" aria-label="Confirm posting">
-                  <p>
+                <div
+                  className="bc-confirm"
+                  role="alertdialog"
+                  aria-label="Confirm posting"
+                  aria-describedby="bc-confirm-text"
+                  onKeyDown={(event) => {
+                    // Esc answers "Cancel" here; it must not also close the whole drawer
+                    // (not even while posting, when there is nothing left to cancel).
+                    if (event.key !== "Escape") return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (!posting) setConfirming(false);
+                  }}
+                >
+                  <p id="bc-confirm-text">
                     Post a review with {plural(selectedIds.length, "inline comment")} to{" "}
                     <strong>
                       {report.repo}#{report.number}
@@ -1037,14 +1266,20 @@ export default function BugCheckPanel() {
                     >
                       {posting ? "Posting..." : `Post ${plural(selectedIds.length, "comment")}`}
                     </button>
-                    <button type="button" className="btn" onClick={() => setConfirming(false)} disabled={posting}>
+                    <button
+                      ref={confirmCancel}
+                      type="button"
+                      className="btn"
+                      onClick={() => setConfirming(false)}
+                      disabled={posting}
+                    >
                       Cancel
                     </button>
                   </div>
                 </div>
               )}
               {postResult && (
-                <p className="bc-ok bc-done" role="status">
+                <p ref={postDone} className="bc-ok bc-done bc-post-done" role="status" tabIndex={-1}>
                   Posted {plural(postResult.postedCount, "comment")}
                   {postResult.reviewUrl && (
                     <>
@@ -1082,7 +1317,7 @@ export default function BugCheckPanel() {
       <div className="bc-block">
         <h3 className="bc-title">Auto review</h3>
         <p className="bc-muted">
-          While the app is running, checks open PRs of <strong>{repo}</strong> that have no up-to-date check, one at a
+          While the app is running, checks open PRs of {repo ? <strong>{repo}</strong> : "the repository above"} that have no up-to-date check, one at a
           time. The first poll works through every open PR not checked yet (up to 50, which can take a long time on a
           small GPU); after that, only PRs that are opened or get new commits.
         </p>
@@ -1091,7 +1326,7 @@ export default function BugCheckPanel() {
             <input
               type="checkbox"
               checked={!!watch?.enabled}
-              disabled={watchBusy || watch === undefined}
+              disabled={watchBusy || watch == null || (!watch.enabled && !repo)}
               onChange={(e) => void setWatching(e.target.checked)}
             />{" "}
             Enabled
@@ -1128,7 +1363,7 @@ export default function BugCheckPanel() {
         {watchDirty && (
           <div className="bc-row">
             <span className="bc-warn">Settings changed.</span>
-            <button type="button" className="btn bc-btn-sm" onClick={() => void setWatching(true)} disabled={watchBusy}>
+            <button type="button" className="btn bc-btn-sm" onClick={() => void setWatching(true)} disabled={watchBusy || !repo}>
               Apply
             </button>
           </div>

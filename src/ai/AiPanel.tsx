@@ -3,8 +3,13 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { notReadyReason } from "./aiReady";
 import { aiErrorMessage, aiService, isAiError } from "./aiService";
+import { usePaneReturn, useBusySignal } from "./panelHooks";
 import type { AiError, AiStatus, GenerateResponse, GenerationStats, PullEvent } from "./types";
 import "./AiPanel.css";
+
+/** How long "Copied" stays on the copy button: the same hold as the commit ticket's copy
+ *  stamp and the editor's "Saved" (CommitDetails, CodeEditor) and the People panel. */
+const COPIED_MS = 1400;
 
 function asAiError(error: unknown): AiError {
   return isAiError(error) ? error : { kind: "internal", message: aiErrorMessage(error) };
@@ -73,6 +78,9 @@ interface AiPanelProps {
   request?: AiRequest | null;
   /** Called once the panel has taken `request` (with its prompt) into its prompt box. */
   onRequestTaken?: (id: number) => void;
+  /** Told when work starts (true) and when the last of it stops (false): a model download,
+   *  a generation, or a handed-in prompt being prepared, checked and run. */
+  onBusyChange?: (busy: boolean) => void;
 }
 
 /** Matches the drawer's enter animation (.slide-panel ticket-in, 0.26s), so the scroll lands on settled layout. */
@@ -87,7 +95,8 @@ function scrollParent(el: HTMLElement): HTMLElement | null {
   return null;
 }
 
-export default function AiPanel({ request = null, onRequestTaken }: AiPanelProps = {}) {
+export default function AiPanel({ request = null, onRequestTaken, onBusyChange }: AiPanelProps = {}) {
+  const panelRef = useRef<HTMLElement>(null);
   const [status, setStatus] = useState<AiStatus>();
   const [statusError, setStatusError] = useState<AiError>();
   const [loadingStatus, setLoadingStatus] = useState(false);
@@ -122,6 +131,9 @@ export default function AiPanel({ request = null, onRequestTaken }: AiPanelProps
   // The streamed answer follows its newest line unless the reader scrolled up.
   const outputRef = useRef<HTMLPreElement>(null);
   const stickToEnd = useRef(true);
+  // The copy button says "Copied" (or that it failed) for a moment, in place.
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const copyTimer = useRef<number | undefined>(undefined);
 
   const refresh = useCallback(async () => {
     setLoadingStatus(true);
@@ -149,17 +161,42 @@ export default function AiPanel({ request = null, onRequestTaken }: AiPanelProps
       // Stop any running generation or download when the panel goes away.
       genAbort.current?.abort();
       pullAbort.current?.abort();
+      window.clearTimeout(copyTimer.current);
     };
   }, [refresh]);
+
+  // A handed-in prompt (e.g. "Explain this commit") counts as busy from the moment the app
+  // starts preparing it, through the status check, to the end of its run.
+  useBusySignal(pulling || generating || preparing || pending !== null, onBusyChange);
 
   useEffect(() => {
     const el = outputRef.current;
     if (el && generating && stickToEnd.current) el.scrollTop = el.scrollHeight;
   }, [output, generating]);
 
+  // The drawer hides this panel (display: none) while another tool is shown; the answer
+  // can keep streaming meanwhile. Back on screen, a followed answer shows its newest line.
+  usePaneReturn(panelRef, () => {
+    const el = outputRef.current;
+    if (el && stickToEnd.current) el.scrollTop = el.scrollHeight;
+  });
+
   function onOutputScroll() {
     const el = outputRef.current;
-    if (el) stickToEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    // A hidden box reads all zeros; that says nothing about where the reader is.
+    if (el && el.clientHeight > 0) stickToEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  }
+
+  async function onCopy() {
+    let next: "copied" | "failed" = "copied";
+    try {
+      await navigator.clipboard.writeText(output);
+    } catch {
+      next = "failed";
+    }
+    setCopyState(next);
+    window.clearTimeout(copyTimer.current);
+    copyTimer.current = window.setTimeout(() => setCopyState("idle"), COPIED_MS);
   }
 
   async function onSelect() {
@@ -183,13 +220,14 @@ export default function AiPanel({ request = null, onRequestTaken }: AiPanelProps
       await aiService.pullModel(tag, {
         signal: controller.signal,
         onProgress: (event: PullEvent) => {
-          if (event.type !== "progress") return;
+          if (!event || event.type !== "progress") return;
           setPullProgress((prev) => {
             const layers = { ...(prev?.layers ?? {}) };
-            if (event.digest && event.total !== undefined) {
-              layers[event.digest] = { total: event.total, completed: event.completed ?? 0 };
+            const { digest, total, completed } = event;
+            if (typeof digest === "string" && digest && typeof total === "number" && Number.isFinite(total)) {
+              layers[digest] = { total, completed: typeof completed === "number" && Number.isFinite(completed) ? completed : 0 };
             }
-            return { status: event.status, layers };
+            return { status: typeof event.status === "string" ? event.status : (prev?.status ?? "downloading"), layers };
           });
         },
       });
@@ -212,6 +250,8 @@ export default function AiPanel({ request = null, onRequestTaken }: AiPanelProps
     const current = () => genAbort.current === controller;
     stickToEnd.current = true;
     setBlocked(false);
+    window.clearTimeout(copyTimer.current);
+    setCopyState("idle");
     setGenerating(true);
     setOutput("");
     setThinking("");
@@ -330,7 +370,7 @@ export default function AiPanel({ request = null, onRequestTaken }: AiPanelProps
   const blockedReason = blocked && !generating ? notReadyReason(status, statusError) : null;
 
   return (
-    <section className="ai-panel" aria-labelledby="ai-panel-title">
+    <section ref={panelRef} className="ai-panel" aria-labelledby="ai-panel-title">
       {/* The drawer band already shows the tool title; keep the heading for screen readers. */}
       <h2 id="ai-panel-title" className="ai-sr-only">
         Local AI test panel
@@ -550,7 +590,29 @@ export default function AiPanel({ request = null, onRequestTaken }: AiPanelProps
             {generating && <span className="ai-caret" aria-hidden="true" />}
           </pre>
         )}
-        {result && <p className="ai-note ai-muted ai-stats">{formatStats(result.stats, result.doneReason)}</p>}
+        {!generating && (result || output) && (
+          <div className="ai-answer-bar">
+            {result && <p className="ai-note ai-muted ai-stats">{formatStats(result.stats, result.doneReason)}</p>}
+            {output && (
+              <button
+                type="button"
+                className={`btn ai-small ai-copy${copyState === "idle" ? "" : ` is-${copyState}`}`}
+                onClick={() => void onCopy()}
+              >
+                {/* All labels share one grid cell so the button keeps its width; the hidden ones are
+                    visibility: hidden, which also keeps them out of the accessible name. */}
+                <span className="ai-swap">
+                  <span className={copyState === "idle" ? undefined : "is-off"}>Copy answer</span>
+                  <span className={copyState === "copied" ? "ai-copied-label" : "is-off"}>Copied</span>
+                  <span className={copyState === "failed" ? "ai-copy-failed-label" : "is-off"}>Couldn't copy</span>
+                </span>
+              </button>
+            )}
+          </div>
+        )}
+        <span className="ai-sr-only" role="status">
+          {copyState === "copied" ? "Answer copied to the clipboard." : copyState === "failed" ? "Couldn't copy the answer." : ""}
+        </span>
         {genError?.kind === "cancelled" && <p className="ai-note ai-muted">Stopped.</p>}
         {genError && genError.kind !== "cancelled" && <ErrorBox error={genError} />}
       </form>

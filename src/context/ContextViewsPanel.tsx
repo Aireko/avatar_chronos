@@ -11,18 +11,12 @@ import {
   type ContextViews,
   type SourceResponse,
 } from "../backend";
+import "../graph/details.css";
 
 type ViewTab = "brief" | "graph";
 type FlowMode = "onboarding" | "task";
 
 const MAX_EDGE_ROWS = 200;
-
-const preStyle = {
-  maxHeight: 320,
-  overflow: "auto",
-  textAlign: "left" as const,
-  whiteSpace: "pre-wrap" as const,
-};
 
 function ContextViewsPanel({ repoPath }: { repoPath: string }) {
   const [revision, setRevision] = useState("HEAD");
@@ -69,7 +63,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
     const label = (
       <>
         <strong>{node.kind}</strong> {node.label}{" "}
-        <small>
+        <small className="quiet">
           [{node.state}] {node.id}
         </small>
       </>
@@ -77,12 +71,18 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
     return (
       <li key={node.id}>
         {children.length > 0 && (
-          <button onClick={() => toggleScope(node.id)} style={{ marginRight: 6 }}>
+          <button
+            type="button"
+            className="ctx-toggle"
+            onClick={() => toggleScope(node.id)}
+            aria-expanded={open}
+            aria-label={`${open ? "Collapse" : "Expand"} ${node.label}`}
+          >
             {open ? "−" : "+"}
           </button>
         )}
         {label}
-        {open && <ul style={{ textAlign: "left" }}>{children.map(renderScope)}</ul>}
+        {open && <ul className="ctx-panel">{children.map(renderScope)}</ul>}
       </li>
     );
   }
@@ -188,37 +188,55 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
   const visibleEdges = graphEdges.slice(0, MAX_EDGE_ROWS);
 
   return (
-    <section>
-      <h2>Context compiler</h2>
-      <p>
+    <section className="ctx" aria-label="Context compiler">
+      <h3 className="section-title">Context compiler</h3>
+      <p className="ctx-intro">
         Compile the budgeted agent brief and the module-oriented graph from the same pinned revision.
         Evidence IDs resolve to the same source from either view.
       </p>
 
-      <div className="row">
-        <input value={revision} onChange={(e) => setRevision(e.currentTarget.value)} placeholder="revision" />
-        <select value={mode} onChange={(e) => setMode(e.currentTarget.value as FlowMode)}>
+      <div className="ctx-row">
+        <input
+          className="field"
+          value={revision}
+          onChange={(e) => setRevision(e.currentTarget.value)}
+          placeholder="revision"
+          aria-label="Revision"
+          spellCheck={false}
+        />
+        <select
+          className="field"
+          value={mode}
+          onChange={(e) => setMode(e.currentTarget.value as FlowMode)}
+          aria-label="Mode"
+        >
           <option value="onboarding">onboarding</option>
           <option value="task">task / change impact</option>
         </select>
-        <input
-          type="number"
-          value={maxItems}
-          onChange={(e) => setMaxItems(Number(e.currentTarget.value))}
-          min={1}
-          max={128}
-          style={{ width: 90 }}
-          title="max brief items"
-        />
-        <input
-          type="number"
-          value={maxSourceBytes}
-          onChange={(e) => setMaxSourceBytes(Number(e.currentTarget.value))}
-          min={0}
-          style={{ width: 120 }}
-          title="max source bytes"
-        />
-        <button onClick={onCompile} disabled={disabled}>
+      </div>
+      <div className="ctx-row">
+        <label className="ctx-label">
+          Brief items
+          <input
+            className="field ctx-num"
+            type="number"
+            value={maxItems}
+            onChange={(e) => setMaxItems(Number(e.currentTarget.value))}
+            min={1}
+            max={128}
+          />
+        </label>
+        <label className="ctx-label">
+          Source bytes
+          <input
+            className="field ctx-num"
+            type="number"
+            value={maxSourceBytes}
+            onChange={(e) => setMaxSourceBytes(Number(e.currentTarget.value))}
+            min={0}
+          />
+        </label>
+        <button type="button" className="btn primary" onClick={onCompile} disabled={disabled}>
           Compile views
         </button>
       </div>
@@ -226,57 +244,72 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
       {mode === "task" && (
         <div>
           {targets.map((target, index) => (
-            <div className="row" key={index}>
+            <div className="ctx-row ctx-panel" key={index}>
               <input
+                className="field"
                 value={target.path}
                 onChange={(e) => updateTarget(index, { path: e.currentTarget.value })}
                 placeholder="path, e.g. src-tauri/src/lib.rs"
-                style={{ flex: 1 }}
+                aria-label={`Target ${index + 1} path`}
+                spellCheck={false}
               />
               <input
+                className="field"
                 value={target.qualifiedName}
                 onChange={(e) =>
                   updateTarget(index, { qualifiedName: e.currentTarget.value })
                 }
                 placeholder="qualified name, e.g. run"
-                style={{ flex: 1 }}
+                aria-label={`Target ${index + 1} qualified name`}
+                spellCheck={false}
               />
               <button
+                type="button"
+                className="btn"
                 onClick={() => removeTarget(index)}
                 disabled={targets.length === 1}
-                title="remove target"
+                aria-label={`Remove target ${index + 1}`}
               >
-                remove
+                Remove
               </button>
             </div>
           ))}
-          <button onClick={addTarget} disabled={targets.length >= 64}>
-            Add target
-          </button>
-          <small style={{ marginLeft: 8 }}>
-            {filledTargets.length} target{filledTargets.length === 1 ? "" : "s"} will share one
-            evidence catalog and budget.
-          </small>
+          <div className="ctx-row">
+            <button type="button" className="btn" onClick={addTarget} disabled={targets.length >= 64}>
+              Add target
+            </button>
+            <small className="quiet">
+              {filledTargets.length} target{filledTargets.length === 1 ? "" : "s"} will share one
+              evidence catalog and budget.
+            </small>
+          </div>
         </div>
       )}
 
-      {busy && <p>Working...</p>}
+      {busy && (
+        <p className="working" role="status">
+          <span className="working-dot" />
+          Working…
+        </p>
+      )}
       {error && (
-        <p className="error" role="alert">
+        <p className="notice bad" role="alert">
           {error}
         </p>
       )}
 
       {views && (
         <>
-          <div className="row">
-            <button onClick={() => setTab("brief")} disabled={tab === "brief"}>
-              Brief
-            </button>
-            <button onClick={() => setTab("graph")} disabled={tab === "graph"}>
-              Graph
-            </button>
-            <small>
+          <div className="ctx-row">
+            <div className="ctx-tabs" role="group" aria-label="View">
+              <button type="button" className="btn" aria-pressed={tab === "brief"} onClick={() => setTab("brief")}>
+                Brief
+              </button>
+              <button type="button" className="btn" aria-pressed={tab === "graph"} onClick={() => setTab("graph")}>
+                Graph
+              </button>
+            </div>
+            <small className="quiet">
               {views.repositoryId} @ {views.revision.commitSha.slice(0, 7)} ·{" "}
               {brief?.sections.length ?? 0} sections · {graph?.nodes.items?.length ?? 0} nodes ·{" "}
               {graph?.edges.items?.length ?? 0} edges
@@ -284,29 +317,30 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
           </div>
 
           {tab === "brief" && brief && (
-            <div>
-              <h3>Agent brief</h3>
+            <div key="brief" className="ctx-panel">
+              <h3 className="section-title">Agent brief</h3>
               <p>
-                <small>
+                <small className="quiet">
                   coverage {brief.coverage}, source budget used {brief.budget.usedSourceBytes} bytes
                 </small>
               </p>
               {brief.sections.map((section) => (
                 <div key={section.id}>
                   <h4>{section.title}</h4>
-                  <ul style={{ textAlign: "left" }}>
+                  <ul>
                     {section.items.map((item, index) => (
                       <li key={`${section.id}-${index}`}>
                         <span>{item.text}</span>{" "}
-                        <small>({item.state})</small>
+                        <small className="quiet">({item.state})</small>
                         {item.evidenceIds.length > 0 && (
                           <div>
                             {item.evidenceIds.map((id) => (
                               <button
+                                type="button"
+                                className="ctx-chip"
                                 key={id}
                                 onClick={() => openEvidence(id)}
                                 title={id}
-                                style={{ marginRight: 4, marginTop: 4 }}
                               >
                                 {evidenceLabel(id)}
                               </button>
@@ -321,7 +355,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
               {brief.omittedEvidenceIds.length > 0 && (
                 <details>
                   <summary>{brief.omittedEvidenceIds.length} evidence IDs omitted by budget</summary>
-                  <ul style={{ textAlign: "left" }}>
+                  <ul>
                     {brief.omittedEvidenceIds.map((id) => (
                       <li key={id}>
                         <code>{id}</code>
@@ -334,27 +368,27 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
           )}
 
           {tab === "graph" && graph && (
-            <div>
-              <h3>UI graph</h3>
+            <div key="graph" className="ctx-panel">
+              <h3 className="section-title">UI graph</h3>
               <p>
-                <small>
+                <small className="quiet">
                   node coverage {graph.nodes.status}, edge coverage {graph.edges.status}. Source is
                   loaded by evidence ID, not embedded in this payload.
                 </small>
               </p>
               <p>
-                <small>
+                <small className="quiet">
                   {graph.evidence.items?.length ?? 0} evidence entries ·{" "}
                   {brief?.omittedEvidenceIds.length ?? 0} brief evidence IDs omitted by budget
                 </small>
               </p>
-              <div className="row" style={{ alignItems: "flex-start" }}>
+              <div className="ctx-row" style={{ alignItems: "flex-start" }}>
                 <div style={{ flex: 1, minWidth: 280 }}>
                   <h4>Scopes</h4>
                   <p>
-                    <small>Modules start collapsed; use +/− to expand to files and symbols.</small>
+                    <small className="quiet">Modules start collapsed; use +/− to expand to files and symbols.</small>
                   </p>
-                  <ul style={{ textAlign: "left" }}>{rootScopes.map(renderScope)}</ul>
+                  <ul>{rootScopes.map(renderScope)}</ul>
                 </div>
                 <div style={{ flex: 2, minWidth: 360 }}>
                   <h4>Relationships</h4>
@@ -374,7 +408,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
                           <td>{nodeLabel(edge.to)}</td>
                           <td>{edge.state}</td>
                           <td>
-                            <button onClick={() => openEvidence(edge.evidenceId)}>
+                            <button type="button" className="ctx-chip" onClick={() => openEvidence(edge.evidenceId)}>
                               open callsite
                             </button>
                           </td>
@@ -384,7 +418,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
                   </table>
                   {graphEdges.length > visibleEdges.length && (
                     <p>
-                      <small>
+                      <small className="quiet">
                         Showing the first {MAX_EDGE_ROWS} of {graphEdges.length} edges.
                       </small>
                     </p>
@@ -395,20 +429,21 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
               {(views?.flows?.length ?? 0) > 0 && (
                 <div>
                   <h4>Flows</h4>
-                  <ul style={{ textAlign: "left" }}>
+                  <ul>
                     {(views?.flows ?? []).slice(0, 50).map((flow) => (
                       <li key={flow.id}>
                         {flow.nodes.map((node) => node.name).join(" → ")}{" "}
-                        <small>
+                        <small className="quiet">
                           relevance {flow.relevance.toFixed(2)}, {flow.nodes.length} nodes
                         </small>
                         <div>
                           {flow.edges.map((edge) => (
                             <button
+                              type="button"
+                              className="ctx-chip"
                               key={edge.evidenceId}
                               onClick={() => openEvidence(edge.evidenceId)}
                               title={edge.evidenceId}
-                              style={{ marginRight: 4, marginTop: 4 }}
                             >
                               {evidenceLabel(edge.evidenceId)}
                             </button>
@@ -437,7 +472,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
                           <td>{bridge.kind}</td>
                           <td>{bridge.label}</td>
                           <td>
-                            <button onClick={() => openEvidence(bridge.evidenceId)}>
+                            <button type="button" className="ctx-chip" onClick={() => openEvidence(bridge.evidenceId)}>
                               open callsite
                             </button>
                           </td>
@@ -451,12 +486,12 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
           )}
 
           {selectedEvidence && (
-            <div>
-              <h3>Evidence</h3>
+            <div key={selectedEvidence.id} className="ctx-panel">
+              <h3 className="section-title">Evidence</h3>
               <p>
                 <code>{selectedEvidence.id}</code>
                 <br />
-                <small>
+                <small className="quiet">
                   {selectedEvidence.kind} / {selectedEvidence.state}
                   {selectedEvidence.location
                     ? ` · ${selectedEvidence.location.filePath}:${selectedEvidence.location.range.startLine}-${selectedEvidence.location.range.endLine}`
@@ -466,15 +501,15 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
               {source ? (
                 <>
                   <p>
-                    <small>
+                    <small className="quiet">
                       {source.filePath} [{source.startByte}, {source.endByte}) @{" "}
                       {source.commitSha.slice(0, 7)}
                     </small>
                   </p>
-                  <pre style={preStyle}>{source.source}</pre>
+                  <pre>{source.source}</pre>
                 </>
               ) : (
-                <p>No source is available for this evidence.</p>
+                <p className="quiet">No source is available for this evidence.</p>
               )}
             </div>
           )}

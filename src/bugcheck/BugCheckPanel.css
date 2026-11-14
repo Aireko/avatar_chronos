@@ -246,12 +246,14 @@
 .bc-check input[type="checkbox"] { margin: 0; }
 .bc-category { color: var(--soft); font-size: 15px; }
 .bc-finding-title { flex: 1 1 100%; min-width: 0; font-size: 19px; font-weight: 400; line-height: 1.2; overflow-wrap: anywhere; }
-/* a selected finding gets a highlighter stroke under its title */
-.bc-finding:has(.bc-check input:checked) .bc-finding-title {
-  background: linear-gradient(transparent 58%, var(--highlight) 58%, var(--highlight) 92%, transparent 92%);
+/* a selected finding gets a highlighter stroke under its title, swept on left to right */
+.bc-finding-title {
+  background: linear-gradient(transparent 58%, var(--highlight) 58%, var(--highlight) 92%, transparent 92%) no-repeat 0 0 / 0% 100%;
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
+  transition: background-size 0.24s ease-out;
 }
+.bc-finding:has(.bc-check input:checked) .bc-finding-title { background-size: 100% 100%; }
 .bc-finding-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 2px; font-size: 14px; }
 .bc-explanation { white-space: pre-wrap; overflow-wrap: anywhere; }
 .bc-panel .bc-verification { margin: 4px 0; font-size: 15px; overflow-wrap: anywhere; }
@@ -345,7 +347,91 @@
 .bc-activity li:last-child { border-bottom: none; }
 .bc-activity .bc-muted { font-family: var(--mono); font-size: 12px; }
 
+/* ============ loading, empty and summary states ============ */
+.bc-checking { display: inline-flex; align-items: center; gap: 6px; }
+.bc-checking .working-dot { flex: none; }
+
+.bc-loading .working { margin: 8px 0 4px; }
+/* placeholder PR rows: two pencil strokes each, breathing while GitHub answers */
+.bc-skeleton { list-style: none; margin: 4px 0; padding: 0; }
+.bc-skeleton li { display: grid; gap: 7px; padding: 10px 0 11px; border-bottom: 1.5px dashed var(--grid-strong); }
+.bc-skeleton span {
+  display: block;
+  height: 10px;
+  border-radius: var(--sketch);
+  background: repeating-linear-gradient(-55deg, var(--grid-strong) 0 5px, transparent 5px 9px);
+  animation: bc-breathe 1.4s ease-in-out infinite;
+}
+.bc-skeleton span:first-child { width: 68%; }
+.bc-skeleton span:last-child { width: 42%; height: 8px; animation-delay: 0.15s; }
+.bc-skeleton li:nth-child(2) span:first-child { width: 54%; }
+.bc-skeleton li:nth-child(3) span:first-child { width: 76%; }
+.bc-skeleton li:nth-child(2) span { animation-delay: 0.2s; }
+.bc-skeleton li:nth-child(3) span { animation-delay: 0.4s; }
+@keyframes bc-breathe { 50% { opacity: 0.4; } }
+
+/* empty results: a quiet dashed note rather than a stray line of text */
+.bc-panel .bc-empty {
+  margin: 10px 0;
+  padding: 10px 14px;
+  border: 2px dashed var(--soft);
+  border-radius: var(--sketch);
+  color: var(--soft);
+  font-size: 16px;
+  text-align: center;
+}
+/* "no bugs found" is good news: ruled in the ok pen, with a tick */
+.bc-panel .bc-empty.bc-clean { border-color: var(--ok); color: var(--ink); text-align: left; }
+.bc-clean::before { content: "\2713" / ""; margin-right: 8px; color: var(--ok); font-size: 18px; }
+
+/* reloading a list that is already shown dims it instead of blanking it */
+.bc-prs { transition: opacity 0.18s ease; }
+.bc-prs[aria-busy="true"] { opacity: 0.55; }
+
+/* findings by severity, right under the report's facts */
+.bc-panel .bc-tally { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 2px; }
+.bc-tally .bc-muted { margin-right: 2px; }
+.bc-tally .bc-badge { font-size: 14px; }
+
+.bc-done::before { content: "\2713" / ""; margin-right: 6px; }
+
+/* ============ motion ============
+   Quick and calm, in the drawer's vocabulary: things settle in from just below
+   (like .tool-swap), lists stagger by --i (capped in BugCheckPanel.tsx), and the
+   confirmation pops up like the scope picker. */
+.bc-pr,
+.bc-finding { animation: bc-rise 0.22s ease-out backwards; animation-delay: calc(var(--i, 0) * 35ms); }
+.bc-report,
+.bc-progress,
+.bc-error,
+.bc-warning,
+.bc-done,
+.bc-panel .bc-empty,
+.bc-panel .bc-note { animation: bc-rise 0.22s ease-out backwards; }
+@keyframes bc-rise { from { opacity: 0; transform: translateY(6px); } }
+
+.bc-confirm { transform-origin: 20px 0; animation: bc-pop 0.2s cubic-bezier(0.2, 0.9, 0.25, 1.15) backwards; }
+@keyframes bc-pop { from { opacity: 0; transform: translateY(-6px) rotate(-0.6deg) scale(0.97); } }
+
+/* the newest auto-review line slides in at the top of the log */
+.bc-activity li { animation: bc-slide 0.2s ease-out backwards; }
+@keyframes bc-slide { from { opacity: 0; transform: translateX(-8px); } }
+
 @media (prefers-reduced-motion: reduce) {
   .bc-progress progress:indeterminate { animation: none; }
   .bc-progress progress::-webkit-progress-value { transition: none; }
+  .bc-skeleton span,
+  .bc-pr,
+  .bc-finding,
+  .bc-report,
+  .bc-progress,
+  .bc-error,
+  .bc-warning,
+  .bc-done,
+  .bc-panel .bc-empty,
+  .bc-panel .bc-note,
+  .bc-confirm,
+  .bc-activity li { animation: none; }
+  .bc-prs,
+  .bc-finding-title { transition: none; }
 }

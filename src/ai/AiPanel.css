@@ -254,7 +254,82 @@
   font-size: 15px;
 }
 
+/* ---------- loading the status ---------- */
+.ai-checking .working { margin: 10px 0 2px; }
+/* Pencil strokes standing in for the facts list; they breathe while Ollama is asked. */
+.ai-skeleton { display: grid; gap: 9px; padding: 8px 0 6px; }
+.ai-skeleton span {
+  display: block;
+  height: 10px;
+  border-radius: var(--sketch);
+  background: repeating-linear-gradient(-55deg, var(--grid-strong) 0 5px, transparent 5px 9px);
+  animation: ai-breathe 1.4s ease-in-out infinite;
+}
+.ai-skeleton span:nth-child(1) { width: 58%; }
+.ai-skeleton span:nth-child(2) { width: 34%; animation-delay: 0.15s; }
+.ai-skeleton span:nth-child(3) { width: 72%; animation-delay: 0.3s; }
+@keyframes ai-breathe { 50% { opacity: 0.4; } }
+
+/* A refresh with facts already on screen dims them instead of blanking them. */
+.ai-panel .ai-facts { transition: opacity 0.18s ease; }
+.ai-panel .ai-facts[aria-busy="true"] { opacity: 0.55; }
+
+/* The status word carries a matching dot and is stamped on whenever it changes. */
+.ai-status::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  vertical-align: 1px;
+}
+.ai-status.ai-bad::before { background: transparent; border: 2px solid currentColor; }
+.ai-status { animation: ai-stamp 0.24s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards; }
+@keyframes ai-stamp { from { opacity: 0; transform: scale(0.9) rotate(-2deg); } }
+
+/* ---------- things arriving ---------- */
+/* New sections, results and messages settle in from just below, like swap-in. */
+.ai-reveal,
+.ai-download,
+.ai-progress,
+.ai-error,
+.ai-thinking,
+.ai-stats,
+.ai-output { animation: ai-rise 0.22s ease-out backwards; }
+.ai-stats { animation-duration: 0.28s; }
+@keyframes ai-rise { from { opacity: 0; transform: translateY(5px); } }
+
+/* ---------- streaming ---------- */
+.ai-waiting { color: var(--soft); }
+/* A pen nib at the end of the answer while the model is still writing. */
+.ai-caret {
+  display: inline-block;
+  width: 0.55em;
+  height: 1.05em;
+  margin-left: 2px;
+  border-radius: 2px;
+  background: var(--pen-2);
+  vertical-align: -0.18em;
+  animation: ai-blink 1s steps(2, jump-none) infinite;
+}
+@keyframes ai-blink { 50% { opacity: 0; } }
+.ai-output { transition: border-color 0.2s ease; }
+
 @media (prefers-reduced-motion: reduce) {
   .ai-progress progress:indeterminate { animation: none; }
   .ai-progress progress::-webkit-progress-value { transition: none; }
+  .ai-skeleton span,
+  .ai-status,
+  .ai-reveal,
+  .ai-download,
+  .ai-progress,
+  .ai-error,
+  .ai-thinking,
+  .ai-stats,
+  .ai-output,
+  .ai-caret { animation: none; }
+  .ai-panel .ai-facts,
+  .ai-output { transition: none; }
 }

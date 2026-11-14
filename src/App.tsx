@@ -1,4 +1,5 @@
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import "@fontsource/patrick-hand/400.css";
 // Base doodle styles first, so the tool panels' stylesheets (imported by the
 // components below) can refine shared classes like .field and .btn.
@@ -18,8 +19,20 @@ import { carryIds, layoutGraph } from "./graph/layout";
 import { Terminal } from "./graph/Terminal";
 import { ScopeBar } from "./graph/ScopeBar";
 import { PROJECT, scopeGraph, scopeKey, type Scope } from "./graph/scope";
-import { useTheme } from "./tools/theme";
-import { ExplorerIcon, FolderIcon, PeopleIcon, ReloadIcon, ReviewIcon, SparkIcon, ThemeIcon } from "./tools/icons";
+import { useTheme, type Theme } from "./tools/theme";
+import { crossFade } from "./tools/crossFade";
+import {
+  EmptyScopeDoodle,
+  ExplorerIcon,
+  FolderIcon,
+  HistoryDoodle,
+  PeopleIcon,
+  ReloadIcon,
+  ReviewIcon,
+  SparkIcon,
+  ThemeIcon,
+  WarnIcon,
+} from "./tools/icons";
 import { Presence } from "./tools/Presence";
 import { ToolDrawer, type ToolId } from "./tools/ToolDrawer";
 
@@ -32,6 +45,8 @@ const TOOLS: { id: ToolId; label: string; title: string; hint: string; icon: () 
 function App() {
   // Follows the system light/dark setting until the user picks; their pick is remembered.
   const [theme, setTheme] = useTheme();
+  // The switch icon only turns once the user has flipped the theme, not on launch.
+  const [themeFlipped, setThemeFlipped] = useState(false);
   const [version, setVersion] = useState("");
   const [connected, setConnected] = useState<boolean | null>(null);
   const [path, setPath] = useState("");
@@ -256,6 +271,16 @@ function App() {
     setShowTerminal((v) => !v);
   }
 
+  /** The theme switch repaints everything, so the whole window cross-fades instead of snapping. */
+  function switchTheme(next: Theme) {
+    crossFade(() =>
+      flushSync(() => {
+        setThemeFlipped(true);
+        setTheme(next);
+      }),
+    );
+  }
+
 
   // Every path seen in the loaded history, offered as suggestions in the People tool.
   const filePaths = useMemo(
@@ -272,6 +297,7 @@ function App() {
 
         <form
           className="open-form"
+          aria-busy={loading || undefined}
           onSubmit={(e) => {
             e.preventDefault();
             void load(path);
@@ -304,7 +330,7 @@ function App() {
         <ScopeBar graph={graph} scope={scope} onChange={changeScope} />
 
         <button
-          className="btn tool-btn"
+          className={`btn tool-btn${loading && graph ? " is-busy" : ""}`}
           disabled={loading || !graph}
           onClick={() => graph && void load(graph.repoPath)}
           title="Reload the repository's history"
@@ -338,26 +364,37 @@ function App() {
           ))}
           <span className="toolbar-sep" aria-hidden />
           <button
-            className="btn tool-btn"
-            onClick={() => setTheme(theme === "paper" ? "board" : "paper")}
+            className="btn tool-btn theme-switch"
+            onClick={() => switchTheme(theme === "paper" ? "board" : "paper")}
             title={theme === "paper" ? "Switch to the blackboard theme" : "Switch to the paper theme"}
           >
-            <ThemeIcon to={theme === "paper" ? "board" : "paper"} />
+            {/* Keyed so the new icon turns into place when the theme flips. */}
+            <span key={theme} className={`theme-glyph${themeFlipped ? " is-turning" : ""}`}>
+              <ThemeIcon to={theme === "paper" ? "board" : "paper"} />
+            </span>
             <span className="tool-label-sm">{theme === "paper" ? "Blackboard" : "Paper"}</span>
           </button>
         </div>
 
-        {loading && <div className="progress" />}
+        {loading && <div className="progress" role="progressbar" aria-label="Opening the repository" />}
       </header>
 
-      {error && (
-        <div className="banner" role="alert">
-          <span>{error}</span>
-          <button className="btn" onClick={() => setError("")}>
-            Dismiss
-          </button>
-        </div>
-      )}
+      <Presence show={Boolean(error)} className="banner-roll" exitMs={160}>
+        {error && (
+          <div className="banner-clip">
+            <div className="banner" role="alert">
+              {/* Keyed by the message, so a new error nudges in even while the banner is already open. */}
+              <span key={error} className="banner-text">
+                <WarnIcon />
+                <span>{error}</span>
+              </span>
+              <button className="btn" onClick={() => setError("")}>
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+      </Presence>
 
       <main className="stage">
         <div className="workspace">
@@ -366,9 +403,13 @@ function App() {
           <div className="workspace-main">
           {graph && layout && scoped ? (
             showEditor ? null : layout.nodes.length === 0 ? (
-              <div className="empty">
+              <div key={scopeKey(scope)} className="empty shell-empty">
+                <EmptyScopeDoodle />
                 <h1>Nothing here</h1>
                 <p>No loaded commit touches this {scope.kind}.</p>
+                <button type="button" className="btn shell-empty-action" onClick={() => changeScope(PROJECT)}>
+                  Show the whole project
+                </button>
               </div>
             ) : (
               <CommitGraph
@@ -387,10 +428,29 @@ function App() {
                 }}
               />
             )
+          ) : loading ? (
+            // First load: say what's happening. The text fades in after a beat, so a
+            // quick open doesn't flash it.
+            <div key="opening" className="empty shell-empty is-waiting" aria-live="polite">
+              <HistoryDoodle />
+              <h1>Reading the history…</h1>
+              <p>Following every commit in {path.split(/[/\\]/).filter(Boolean).pop() || "the folder"}.</p>
+            </div>
           ) : (
-            <div className="empty">
+            <div key="start" className="empty shell-empty">
+              <HistoryDoodle />
               <h1>Open a repository</h1>
-              <p>Choose Browse to pick a Git repository folder, or write its path in the bar above, then choose Open.</p>
+              <p>
+                {desktop
+                  ? "Pick a Git repository folder, or write its path in the bar above, then choose Open."
+                  : "Write a Git repository's folder path in the bar above, then choose Open."}
+              </p>
+              {desktop && (
+                <button type="button" className="btn primary tool-btn shell-empty-action" onClick={() => void browse()}>
+                  <FolderIcon />
+                  Browse for a folder…
+                </button>
+              )}
             </div>
           )}
 
@@ -437,7 +497,7 @@ function App() {
 
           <Presence show={Boolean(activeTool && !panel)} className="slide-panel">
             {activeTool && (
-              <ToolDrawer title={activeTool.title} onClose={() => setTool(null)}>
+              <ToolDrawer title={activeTool.title} icon={activeTool.icon} onClose={() => setTool(null)}>
                 <div key={activeTool.id} className="tool-swap">
                   {activeTool.id === "ai" && <AiPanel />}
                   {activeTool.id === "reviews" && <BugCheckPanel />}
@@ -487,18 +547,27 @@ function App() {
             <span className="status-path" title={graph.repoPath}>
               {graph.repoPath}
             </span>
-            <span>{currentBranch ? `On ${currentBranch}` : "Detached HEAD"}</span>
-            <span>
+            {/* Keyed by value: a changed figure ticks in, so a reload or scope change is noticed. */}
+            <span key={`b:${currentBranch}`} className="status-tick">
+              {currentBranch ? `On ${currentBranch}` : "Detached HEAD"}
+            </span>
+            <span key={`c:${scoped?.graph.commits.length ?? 0}:${scope.kind}`} className="status-tick">
               {scoped?.graph.commits.length ?? 0} commits{scope.kind !== "project" ? ` touching this ${scope.kind}` : ""}
             </span>
-            <span>{graph.branches.length} branches</span>
+            <span key={`r:${graph.branches.length}`} className="status-tick">
+              {graph.branches.length} branches
+            </span>
           </>
         ) : (
-          <span className="status-path">No repository open</span>
+          <span className="status-path">{loading ? "Opening…" : "No repository open"}</span>
         )}
 
-        <span className={connected === false ? "status-bad" : ""}>
-          {connected === false ? "Backend not connected" : version}
+        <span
+          className={`status-conn${connected === false ? " status-bad" : connected ? " is-ok" : ""}`}
+          title={connected === false ? undefined : connected ? "Backend connected" : "Connecting to the backend"}
+        >
+          <span className="status-dot" aria-hidden />
+          {connected === false ? "Backend not connected" : connected ? version : "Connecting…"}
         </span>
       </footer>
     </div>

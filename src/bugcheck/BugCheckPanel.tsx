@@ -4,7 +4,17 @@
 // controls the auto-review watcher.
 //
 // Everything goes through ./bugCheckService.ts; see docs/pr-bug-check.md.
-import { type FormEvent, type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type FormEvent,
+  type MouseEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { bugCheckService, isValidPrNumber, isValidRepo, toBugCheckError } from "./bugCheckService";
@@ -49,6 +59,15 @@ const SEVERITY_LABELS: Record<Severity, string> = {
 };
 
 const SEVERITY_ORDER: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+const SEVERITIES: Severity[] = ["critical", "high", "medium", "low"];
+
+/** Items of a list that ease in one after another; past this many they all share the last delay. */
+const MAX_STAGGER = 6;
+
+/** The --i custom property the CSS uses to stagger a list item's entrance. */
+function stagger(index: number): CSSProperties {
+  return { "--i": Math.min(index, MAX_STAGGER) } as CSSProperties;
+}
 
 function loadRepo(): string {
   try {
@@ -266,19 +285,22 @@ interface ActivityEntry {
 
 function FindingCard({
   finding,
+  order,
   selected,
   posted,
   postedEarlier,
   onToggle,
 }: {
   finding: Finding;
+  /** Position in the whole report, for the staggered entrance. */
+  order: number;
   selected: boolean;
   posted: boolean;
   postedEarlier: boolean;
   onToggle: (id: string) => void;
 }) {
   return (
-    <li className={`bc-finding bc-sev-${finding.severity}`}>
+    <li className={`bc-finding bc-sev-${finding.severity}`} style={stagger(order)}>
       <div className="bc-finding-head">
         <label className="bc-check">
           <input
@@ -598,6 +620,21 @@ export default function BugCheckPanel() {
     return [...byFile.entries()].sort(([a], [b]) => a.localeCompare(b));
   }, [report]);
 
+  // Display order of each finding across files (for the stagger), and the tally by severity.
+  const findingOrder = useMemo(() => {
+    const order = new Map<string, number>();
+    for (const [, findings] of grouped) for (const f of findings) order.set(f.id, order.size);
+    return order;
+  }, [grouped]);
+  const tally = useMemo(
+    () =>
+      SEVERITIES.map((severity) => ({
+        severity,
+        count: report?.findings.filter((f) => f.severity === severity).length ?? 0,
+      })).filter((entry) => entry.count > 0),
+    [report],
+  );
+
   async function setWatching(enabled: boolean) {
     setWatchBusy(true);
     setWatchError(undefined);
@@ -664,7 +701,12 @@ export default function BugCheckPanel() {
         <div className="bc-row">
           <span>
             GitHub CLI:{" "}
-            {gh === undefined && !ghError && <span className="bc-muted">checking...</span>}
+            {gh === undefined && !ghError && (
+              <span className="bc-muted bc-checking">
+                <span className="working-dot" aria-hidden="true" />
+                checking...
+              </span>
+            )}
             {gh?.authenticated && (
               <span className="bc-ok">signed in{gh.user ? ` as @${gh.user}` : ""}</span>
             )}
@@ -699,13 +741,27 @@ export default function BugCheckPanel() {
           Open pull requests in <span className="bc-title-repo">{repo}</span>
         </h3>
         {prsError && <ErrorBox error={prsError} />}
-        {prs && prs.length === 0 && <p className="bc-muted">No open pull requests.</p>}
+        {!prs && loadingPrs && !prsError && (
+          <div className="bc-loading" role="status">
+            <p className="working">
+              <span className="working-dot" aria-hidden="true" />
+              Asking GitHub for open pull requests...
+            </p>
+            {/* Ruled placeholder rows where the list will land. */}
+            <ul className="bc-skeleton" aria-hidden="true">
+              <li><span /><span /></li>
+              <li><span /><span /></li>
+              <li><span /><span /></li>
+            </ul>
+          </div>
+        )}
+        {prs && prs.length === 0 && <p className="bc-empty">No open pull requests in this repository.</p>}
         {prs && prs.length > 0 && (
-          <ul className="bc-prs">
-            {prs.map((pr) => {
+          <ul className="bc-prs" aria-busy={loadingPrs || undefined}>
+            {prs.map((pr, index) => {
               const status = lastCheckLabel(pr);
               return (
-                <li key={pr.number} className="bc-pr">
+                <li key={pr.number} className="bc-pr" style={stagger(index)}>
                   <div className="bc-pr-main">
                     <span className="bc-pr-number">
                       <ExternalLink href={pr.url}>#{pr.number}</ExternalLink>
@@ -827,7 +883,8 @@ export default function BugCheckPanel() {
       {reportError && <ErrorBox error={reportError} />}
 
       {report && (
-        <div className="bc-block bc-report">
+        // Keyed by the check, so opening another report eases it in afresh.
+        <div key={`${report.repo}#${report.number}@${report.startedAt}`} className="bc-block bc-report">
           <div className="bc-report-head">
             <h3 className="bc-report-title">
               {report.repo}#{report.number}: {report.title}
@@ -840,6 +897,16 @@ export default function BugCheckPanel() {
             Commit <code>{report.headSha.slice(0, 7)}</code> · <code>{report.model}</code> · {formatTime(report.startedAt)} · took{" "}
             {formatDuration(report.durationMs)} · {plural(report.filesReviewed.length, "file")} reviewed
           </p>
+          {tally.length > 0 && (
+            <p className="bc-tally">
+              <span className="bc-muted">{plural(report.findings.length, "finding")}:</span>
+              {tally.map(({ severity, count }) => (
+                <span key={severity} className={`bc-badge bc-badge-${severity}`}>
+                  {count} {SEVERITY_LABELS[severity]}
+                </span>
+              ))}
+            </p>
+          )}
           {report.filesSkipped.length > 0 && (
             <details className="bc-disclosure">
               <summary className="bc-muted">{plural(report.filesSkipped.length, "file")} skipped</summary>
@@ -860,7 +927,7 @@ export default function BugCheckPanel() {
             </ul>
           )}
           {report.posted && (
-            <p className="bc-ok">
+            <p className="bc-ok bc-done">
               {plural(report.posted.findingIds.length, "comment")} from this check{" "}
               {report.posted.findingIds.length === 1 ? "was" : "were"} posted
               {report.posted.reviewUrl && (
@@ -873,7 +940,7 @@ export default function BugCheckPanel() {
           )}
 
           {report.findings.length === 0 ? (
-            <p>
+            <p className="bc-empty bc-clean">
               No bugs found in the reviewed diff
               {report.filtered && report.filtered.length > 0
                 ? ` (the double-check filtered out ${plural(report.filtered.length, "possible finding")}).`
@@ -890,6 +957,7 @@ export default function BugCheckPanel() {
                     <FindingCard
                       key={f.id}
                       finding={f}
+                      order={findingOrder.get(f.id) ?? 0}
                       selected={selected.has(f.id)}
                       posted={postedHere.has(f.id)}
                       postedEarlier={!postedHere.has(f.id) && postedIds.has(f.id)}
@@ -976,7 +1044,7 @@ export default function BugCheckPanel() {
                 </div>
               )}
               {postResult && (
-                <p className="bc-ok">
+                <p className="bc-ok bc-done" role="status">
                   Posted {plural(postResult.postedCount, "comment")}
                   {postResult.reviewUrl && (
                     <>

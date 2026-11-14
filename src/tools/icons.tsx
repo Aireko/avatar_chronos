@@ -89,3 +89,58 @@ export function PeopleIcon() {
     </svg>
   );
 }
+
+/** A hand-drawn warning sign for the error banner. */
+export function WarnIcon() {
+  return (
+    <svg {...common}>
+      <path d="M11.4 3.6c.3-.5 1-.5 1.3 0l8.3 15.1c.3.5-.1 1.1-.7 1.1H3.6c-.6 0-.9-.6-.6-1.1z" />
+      <path d="M12.1 9.4l-.2 4.9" />
+      <path d="M12 17.1v.1" />
+    </svg>
+  );
+}
+
+// ---- Empty-state doodles. Bigger sketches whose strokes draw themselves in
+// (each path has pathLength=1; see .doodle in tools.css). Colours come from
+// classes so both themes recolour them. ----
+
+const doodle = {
+  className: "doodle",
+  viewBox: "0 0 160 90",
+  fill: "none",
+  strokeWidth: 2.6,
+  strokeLinecap: "round" as const,
+  strokeLinejoin: "round" as const,
+  "aria-hidden": true,
+};
+
+/** A little commit history: a main line with a branch peeling off it. */
+export function HistoryDoodle() {
+  return (
+    <svg {...doodle} width={176} height={99}>
+      <path className="d-ink" pathLength={1} d="M14 62c34-1.6 70 1.4 132-.6" />
+      <path className="d-pen-a" pathLength={1} d="M48 61.6c10-1.2 13-27.4 32-28.6 14-.6 26 .8 40-.4" />
+      <path className="d-soft d-dash" pathLength={1} d="M120 32.6c12 .4 18 4 26 6" />
+      <circle className="d-dot d-ink" cx="20" cy="61.8" r="5.2" />
+      <circle className="d-dot d-ink" cx="48" cy="61.4" r="5.2" />
+      <circle className="d-dot d-ink" cx="88" cy="62.2" r="5.2" />
+      <circle className="d-dot d-pen-a" cx="82" cy="32.8" r="5.2" />
+      <circle className="d-dot d-pen-a" cx="118" cy="32.4" r="5.2" />
+      <circle className="d-dot d-ink" cx="138" cy="61.8" r="5.2" />
+    </svg>
+  );
+}
+
+/** A magnifying glass over an empty, dashed line: nothing found here. */
+export function EmptyScopeDoodle() {
+  return (
+    <svg {...doodle} width={176} height={99}>
+      <path className="d-soft d-dash" pathLength={1} d="M18 78c40-1.4 84 1 124-.4" />
+      <path className="d-ink" pathLength={1} d="M80.6 18.4c11.6-.6 20.4 8 20.2 19.4-.2 11-9.4 19.6-20.6 19.2-11-.4-19.2-9-18.8-20 .2-10 8.6-18 19.2-18.6z" />
+      <path className="d-ink" pathLength={1} d="M95.4 52.2l13.8 14.4" />
+      <path className="d-pen-a" pathLength={1} d="M74.6 32.6c.8-4.2 4.4-6.2 7.8-5.4 3.6.8 5 4.6 3 7.4-1.6 2.2-4.4 2.8-4.6 6.2" />
+      <path className="d-pen-a" pathLength={1} d="M80.8 46.2v.2" />
+    </svg>
+  );
+}

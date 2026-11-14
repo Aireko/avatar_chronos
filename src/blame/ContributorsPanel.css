@@ -173,3 +173,64 @@
 .people-latest { overflow-wrap: anywhere; }
 
 .people-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+
+/* "Copy address" turns into "Copied" in place; both labels stack so the width holds. */
+.people-swap { display: inline-grid; }
+.people-swap > span { grid-area: 1 / 1; text-align: center; }
+.people-swap > .is-off { visibility: hidden; }
+.people-panel .btn.people-copied { border-color: var(--ok); color: var(--ok); }
+.people-copied-label::before { content: "\2713" / ""; margin-right: 5px; }
+.people-copied-label { animation: people-stamp 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards; }
+@keyframes people-stamp { from { opacity: 0; transform: scale(0.85) rotate(-3deg); } }
+
+/* ---------- states: working, empty, near the limit ---------- */
+.people-panel .people-working { margin: 14px 0 0; }
+.people-panel .people-empty {
+  margin: 16px 0 0;
+  padding: 10px 14px;
+  border: 2px dashed var(--soft);
+  border-radius: var(--sketch);
+  color: var(--soft);
+  font-size: 16px;
+  text-align: center;
+}
+.people-count { transition: color 0.18s ease; }
+.people-count.people-near { color: var(--warn); }
+
+/* A new blame running over an old result dims it instead of blanking it. */
+.people-report { transition: opacity 0.18s ease; }
+.people-report[aria-busy="true"] { opacity: 0.55; }
+
+/* ---------- motion ----------
+   Results settle in from just below (like the drawer's swap-in), contributor
+   rows stagger by --i (capped in ContributorsPanel.tsx), and each share bar is
+   drawn in left to right, then glides when the scope changes. */
+.people-report,
+.people-error,
+.people-notice,
+.people-panel .people-empty { animation: people-rise 0.22s ease-out backwards; }
+.people-person { animation: people-rise 0.22s ease-out backwards; animation-delay: calc(var(--i, 0) * 35ms); }
+@keyframes people-rise { from { opacity: 0; transform: translateY(6px); } }
+
+.people-lines { animation: people-rise 0.18s ease-out backwards; }
+
+.people-bar-fill {
+  transition: width 0.28s ease-out;
+  animation: people-fill 0.28s ease-out backwards;
+  animation-delay: calc(var(--i, 0) * 35ms + 80ms);
+}
+@keyframes people-fill { from { width: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .people-copied-label,
+  .people-report,
+  .people-error,
+  .people-notice,
+  .people-panel .people-empty,
+  .people-person,
+  .people-lines,
+  .people-bar-fill { animation: none; }
+  .people-count,
+  .people-report,
+  .people-bar-fill { transition: none; }
+}

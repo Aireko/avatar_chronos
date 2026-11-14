@@ -78,6 +78,9 @@ export default function AiPanel() {
   const [result, setResult] = useState<GenerateResponse>();
   const [genError, setGenError] = useState<AiError>();
   const genAbort = useRef<AbortController | null>(null);
+  // The streamed answer follows its newest line unless the reader scrolled up.
+  const outputRef = useRef<HTMLPreElement>(null);
+  const stickToEnd = useRef(true);
 
   const refresh = useCallback(async () => {
     setLoadingStatus(true);
@@ -107,6 +110,16 @@ export default function AiPanel() {
       pullAbort.current?.abort();
     };
   }, [refresh]);
+
+  useEffect(() => {
+    const el = outputRef.current;
+    if (el && generating && stickToEnd.current) el.scrollTop = el.scrollHeight;
+  }, [output, generating]);
+
+  function onOutputScroll() {
+    const el = outputRef.current;
+    if (el) stickToEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  }
 
   async function onSelect() {
     if (!choice) return;
@@ -153,6 +166,7 @@ export default function AiPanel() {
     event.preventDefault();
     const controller = new AbortController();
     genAbort.current = controller;
+    stickToEnd.current = true;
     setGenerating(true);
     setOutput("");
     setThinking("");
@@ -213,13 +227,31 @@ export default function AiPanel() {
             {loadingStatus ? "Checking..." : "Refresh"}
           </button>
         </div>
+        {!connection && !statusError && loadingStatus && (
+          <div className="ai-checking" role="status">
+            <p className="working">
+              <span className="working-dot" aria-hidden="true" />
+              Looking for Ollama...
+            </p>
+            {/* Pencil lines where the facts will go, so the panel does not jump when they arrive. */}
+            <div className="ai-skeleton" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </div>
+          </div>
+        )}
         {statusError && <ErrorBox error={statusError} />}
         {connection && (
           <>
-            <dl className="facts ai-facts">
+            <dl className="facts ai-facts" aria-busy={loadingStatus || undefined}>
               <dt>Status</dt>
               <dd>
-                <span className={connection.reachable ? "ai-status ai-ok" : "ai-status ai-bad"}>
+                <span
+                  // Re-stamped whenever the connection flips, so the change is noticed.
+                  key={String(connection.reachable)}
+                  className={connection.reachable ? "ai-status ai-ok" : "ai-status ai-bad"}
+                >
                   {connection.reachable ? "Connected" : "Not connected"}
                 </span>
               </dd>
@@ -243,7 +275,7 @@ export default function AiPanel() {
       </div>
 
       {status && (
-        <div className="ai-block">
+        <div className="ai-block ai-reveal">
           <h3 className="section-title">Model</h3>
           <dl className="facts ai-facts">
             <dt>Configured</dt>
@@ -347,7 +379,7 @@ export default function AiPanel() {
             <input type="checkbox" checked={think} onChange={(e) => setThink(e.target.checked)} /> Think (show reasoning)
           </label>
           <button type="submit" className="btn primary" disabled={!canGenerate || !prompt.trim()}>
-            Generate
+            {generating ? "Generating..." : "Generate"}
           </button>
           <button type="button" className="btn" onClick={() => genAbort.current?.abort()} disabled={!generating}>
             Stop
@@ -361,7 +393,15 @@ export default function AiPanel() {
           </details>
         )}
         {(output || generating) && (
-          <pre className={generating ? "ai-output ai-streaming" : "ai-output"}>{output || "Waiting for the model..."}</pre>
+          <pre
+            ref={outputRef}
+            className={generating ? "ai-output ai-streaming" : "ai-output"}
+            onScroll={onOutputScroll}
+            aria-busy={generating || undefined}
+          >
+            {output || <span className="ai-waiting">Waiting for the model...</span>}
+            {generating && <span className="ai-caret" aria-hidden="true" />}
+          </pre>
         )}
         {result && <p className="ai-note ai-muted ai-stats">{formatStats(result.stats, result.doneReason)}</p>}
         {genError?.kind === "cancelled" && <p className="ai-note ai-muted">Stopped.</p>}

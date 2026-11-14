@@ -98,10 +98,12 @@ typedef struct {
 } ContextFlow;
 
 typedef struct {
-    ContextFlow *flows; /* Owns flows and their nested arrays. */
+    ContextFlow *flows;          /* Owns flows and their nested arrays. */
     size_t count;
+    const GraphSymbol **seeds;   /* Borrows the index. Deduplicated. */
+    size_t seed_count;
     size_t collapsed_cycles;
-    ChronosCoverage coverage; /* Resolved call discovery coverage. */
+    ChronosCoverage coverage;    /* Resolved call discovery coverage. */
 } ContextFlowSet;
 
 /* Start out zeroed. A request with no resolvable task seed returns

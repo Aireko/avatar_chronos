@@ -259,6 +259,7 @@ void context_flow_set_free(ContextFlowSet *flows)
     if (flows == NULL) return;
     for (size_t i = 0; i < flows->count; ++i) free_flow(&flows->flows[i]);
     free(flows->flows);
+    free((void *)flows->seeds);
     *flows = (ContextFlowSet){0};
 }
 
@@ -290,6 +291,7 @@ int context_discover_flows(const RepositoryIndex *index, const ContextFlowReques
     int status = flow_graph_build(index, &graph);
     if (status < 0) return status;
     SeedList seeds = {0};
+    const GraphSymbol **seed_symbols = NULL;
     status = resolve_seeds(index, request, &seeds);
     if (status < 0) goto done;
     if (seeds.count == 0) {
@@ -297,10 +299,17 @@ int context_discover_flows(const RepositoryIndex *index, const ContextFlowReques
             status = CHRONOS_NOT_FOUND;
             goto done;
         }
-        *out = (ContextFlowSet){NULL, 0, 0, index_call_coverage(index)};
+        *out = (ContextFlowSet){NULL, 0, NULL, 0, 0, index_call_coverage(index)};
         status = index_call_coverage(index) == CHRONOS_COMPLETE ? CHRONOS_OK : CHRONOS_PARTIAL;
         goto done;
     }
+    seed_symbols = calloc(seeds.count, sizeof *seed_symbols);
+    if (seed_symbols == NULL) {
+        status = CHRONOS_OUT_OF_MEMORY;
+        goto done;
+    }
+    for (size_t i = 0; i < seeds.count; ++i)
+        seed_symbols[i] = graph.scopes[seeds.items[i]].symbol;
 
     size_t *hop = malloc(graph.scope_count * sizeof *hop);
     size_t *parent = malloc(graph.scope_count * sizeof *parent);
@@ -462,7 +471,9 @@ int context_discover_flows(const RepositoryIndex *index, const ContextFlowReques
         for (size_t i = max_flows; i < flow_count; ++i) free_flow(&flows[i]);
         flow_count = max_flows;
     }
-    *out = (ContextFlowSet){flows, flow_count, collapsed_cycles, index_call_coverage(index)};
+    *out = (ContextFlowSet){flows, flow_count, seed_symbols, seeds.count,
+                            collapsed_cycles, index_call_coverage(index)};
+    seed_symbols = NULL;
     status = index_call_coverage(index) == CHRONOS_COMPLETE ? CHRONOS_OK : CHRONOS_PARTIAL;
     goto cleanup;
 
@@ -477,6 +488,7 @@ cleanup:
     free(score);
     free(queue);
 done:
+    free(seed_symbols);
     free(seeds.items);
     flow_graph_free(&graph);
     return status;

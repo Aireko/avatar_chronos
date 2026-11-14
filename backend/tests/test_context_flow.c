@@ -152,6 +152,7 @@ int main(void)
     };
     assert(context_discover_flows(index, &onboarding, &flows) == CHRONOS_OK);
     assert(flows.count >= 4);
+    assert(flows.seed_count == 1 && strcmp(flows.seeds[0]->name, "main") == 0);
     assert(flows.collapsed_cycles > 0);
 
     const char *expected[] = {"main", "alpha", "beta", "gamma"};
@@ -182,6 +183,7 @@ int main(void)
     }
     context_flow_set_free(&flows);
     assert(flows.flows == NULL && flows.count == 0);
+    assert(flows.seeds == NULL && flows.seed_count == 0);
 
     ContextFlowRequest limited = onboarding;
     limited.max_flows = 2;

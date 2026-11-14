@@ -163,6 +163,23 @@ pinned callsite or registration range. The fixtures under
 `backend/tests/fixtures/context_flow/` cover a cycle, a high-fan-in helper,
 same-name symbols, and the real Chronos command/wrapper naming pattern.
 
+### Both views
+
+`backend/include/context_views.h` builds the graph and brief from one flow
+request. The graph keeps the project root as a container and starts at module
+scope, expanding to files and symbols. It contains contains-edges and
+resolved/unresolved/ambiguous call edges, but no source text. Every edge has an
+evidence ID, and a client opens the callsite behind an edge through that ID.
+The brief contains template-rendered entry points, top flows, likely edit and
+test locations, and unresolved calls, with evidence IDs for retrieving source.
+
+Both documents share one evidence catalog, so the same evidence ID resolves to
+the same pinned location from either view. The brief uses a separate item and
+source budget. Evidence skipped by the brief is still present in the graph as
+`omitted`, so expanding the graph can reveal relationships excluded from the
+prompt. `test_context_views` covers the shared catalog, template text, tight
+budgets, omitted graph edges, and task-mode caller ranking.
+
 ## Adding a C function
 
 1. Declare it in `backend/include/avatar.h` and implement it in `backend/src/`. New `.c` files are picked up automatically.

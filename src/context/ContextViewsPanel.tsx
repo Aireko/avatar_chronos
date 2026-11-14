@@ -15,19 +15,13 @@ import {
   type ContextSourceDocument,
   type ContextTarget,
 } from "../backend";
+import "../graph/details.css";
 
 type ViewTab = "brief" | "graph";
 type FlowMode = "onboarding" | "task";
 type CollectionMode = "replace" | "append" | "keep";
 
 const ROOT_KEY = "root";
-
-const preStyle = {
-  maxHeight: 320,
-  overflow: "auto",
-  textAlign: "left" as const,
-  whiteSpace: "pre-wrap" as const,
-};
 
 interface PageState {
   key: string;
@@ -384,7 +378,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
     return (
       <div>
         <p>
-          <small>
+          <small className="quiet">
             {page.edges.length} of {page.edgeTotal} edges · {page.edgeCoverage} edge coverage
             {page.nodeCoverage !== "complete" ? ` · ${page.nodeCoverage} nodes` : ""}
           </small>
@@ -407,7 +401,11 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
                 <td>{edgeTarget(edge, "to")}</td>
                 <td>{edge.state}</td>
                 <td>
-                  <button onClick={() => void openEvidence(edge.evidenceId)}>
+                  <button
+                    type="button"
+                    className="ctx-chip"
+                    onClick={() => void openEvidence(edge.evidenceId)}
+                  >
                     {evidenceLabel(edge.evidenceId)}
                   </button>
                 </td>
@@ -416,7 +414,12 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
           </tbody>
         </table>
         {page.edgeNextOffset < page.edgeTotal && (
-          <button onClick={() => void loadMoreEdges(page)} disabled={loading}>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => void loadMoreEdges(page)}
+            disabled={loading}
+          >
             Load more edges ({page.edgeTotal - page.edgeNextOffset} remaining)
           </button>
         )}
@@ -432,42 +435,53 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
     const canExpand = isSymbol ? node.edgeCount > 0 : node.childCount > 0;
     return (
       <li key={node.id}>
-        <div className="row" style={{ gap: 6, alignItems: "center" }}>
-          {canExpand ? (
-            <button
-              onClick={() => void toggleScope(node)}
-              disabled={loading}
-              title={open ? "collapse" : "expand"}
-            >
-              {loading ? "…" : open ? "−" : "+"}
-            </button>
-          ) : (
-            <span style={{ display: "inline-block", width: 32 }} />
-          )}
-          <button onClick={() => void focusNode(node)} title="show relationships">
-            <strong>{node.kind}</strong> {node.label}
+        {canExpand ? (
+          <button
+            type="button"
+            className="ctx-toggle"
+            onClick={() => void toggleScope(node)}
+            disabled={loading}
+            aria-expanded={open}
+            aria-label={`${open ? "Collapse" : "Expand"} ${node.label}`}
+          >
+            {loading ? "…" : open ? "−" : "+"}
           </button>
-          <small>
-            [{node.state}] {node.childCount} children
-            {node.edgeCount > 0 ? ` · ${node.edgeCount} calls` : ""}
-            {node.coverage !== "complete" ? ` · ${node.coverage}` : ""}
-          </small>
-        </div>
+        ) : null}
+        <button
+          type="button"
+          className="ctx-node"
+          onClick={() => void focusNode(node)}
+          title="Show relationships"
+        >
+          <strong>{node.kind}</strong> {node.label}
+        </button>{" "}
+        <small className="quiet">
+          [{node.state}] {node.childCount} children
+          {node.edgeCount > 0 ? ` · ${node.edgeCount} calls` : ""}
+          {node.coverage !== "complete" ? ` · ${node.coverage}` : ""}
+        </small>
         {open &&
           (isSymbol ? (
             page ? (
               renderRelationships(page)
             ) : (
               <p>
-                <small>{loading ? "Loading calls…" : "No call data loaded."}</small>
+                <small className="quiet">
+                  {loading ? "Loading calls…" : "No call data loaded."}
+                </small>
               </p>
             )
           ) : page ? (
-            <ul style={{ textAlign: "left" }}>
+            <ul className="ctx-panel">
               {page.nodes.map(renderScope)}
               {page.nodeNextOffset < page.nodeTotal && (
                 <li>
-                  <button onClick={() => void loadMoreNodes(page)} disabled={loading}>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => void loadMoreNodes(page)}
+                    disabled={loading}
+                  >
                     Load more ({page.nodeTotal - page.nodeNextOffset} remaining)
                   </button>
                 </li>
@@ -475,7 +489,7 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
             </ul>
           ) : (
             <p>
-              <small>{loading ? "Loading…" : "Not loaded."}</small>
+              <small className="quiet">{loading ? "Loading…" : "Not loaded."}</small>
             </p>
           ))}
       </li>
@@ -486,129 +500,183 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
     ? evidenceById.get(selectedEvidenceId)
     : undefined;
   const focusLabel =
-    focusScope === ROOT_KEY ? "project root" : (nodeById.get(focusScope)?.label ?? shortenId(focusScope));
+    focusScope === ROOT_KEY
+      ? "project root"
+      : (nodeById.get(focusScope)?.label ?? shortenId(focusScope));
 
   return (
-    <section>
-      <h2>Context compiler</h2>
-      <p>
+    <section className="ctx" aria-label="Context compiler">
+      <h3 className="section-title">Context compiler</h3>
+      <p className="ctx-intro">
         Compile the budgeted agent brief, then load graph pages one scope at a time. Evidence IDs
         resolve to pinned source; source text is never embedded in a page.
       </p>
 
-      <div className="row">
-        <input value={revision} onChange={(e) => setRevision(e.currentTarget.value)} placeholder="revision" />
-        <select value={mode} onChange={(e) => setMode(e.currentTarget.value as FlowMode)}>
+      <div className="ctx-row">
+        <input
+          className="field"
+          value={revision}
+          onChange={(e) => setRevision(e.currentTarget.value)}
+          placeholder="revision"
+          aria-label="Revision"
+          spellCheck={false}
+        />
+        <select
+          className="field"
+          value={mode}
+          onChange={(e) => setMode(e.currentTarget.value as FlowMode)}
+          aria-label="Mode"
+        >
           <option value="onboarding">onboarding</option>
           <option value="task">task / change impact</option>
         </select>
-        <input
-          type="number"
-          value={maxItems}
-          onChange={(e) => setMaxItems(Number(e.currentTarget.value))}
-          min={1}
-          max={128}
-          style={{ width: 90 }}
-          title="max brief items"
-        />
-        <input
-          type="number"
-          value={maxSourceBytes}
-          onChange={(e) => setMaxSourceBytes(Number(e.currentTarget.value))}
-          min={0}
-          style={{ width: 120 }}
-          title="max source bytes"
-        />
-        <button onClick={onCompile} disabled={disabled}>
+        <button type="button" className="btn primary" onClick={onCompile} disabled={disabled}>
           Compile views
         </button>
+      </div>
+
+      <div className="ctx-row">
+        <label className="ctx-label">
+          Brief items
+          <input
+            className="field ctx-num"
+            type="number"
+            value={maxItems}
+            onChange={(e) => setMaxItems(Number(e.currentTarget.value))}
+            min={1}
+            max={128}
+          />
+        </label>
+        <label className="ctx-label">
+          Source bytes
+          <input
+            className="field ctx-num"
+            type="number"
+            value={maxSourceBytes}
+            onChange={(e) => setMaxSourceBytes(Number(e.currentTarget.value))}
+            min={0}
+          />
+        </label>
       </div>
 
       {mode === "task" && (
         <div>
           {targets.map((target, index) => (
-            <div className="row" key={index}>
+            <div className="ctx-row ctx-panel" key={index}>
               <input
+                className="field"
                 value={target.path}
                 onChange={(e) => updateTarget(index, { path: e.currentTarget.value })}
                 placeholder="path, e.g. src-tauri/src/lib.rs"
-                style={{ flex: 1 }}
+                aria-label={`Target ${index + 1} path`}
+                spellCheck={false}
               />
               <input
+                className="field"
                 value={target.qualifiedName}
                 onChange={(e) =>
                   updateTarget(index, { qualifiedName: e.currentTarget.value })
                 }
                 placeholder="qualified name, e.g. run"
-                style={{ flex: 1 }}
+                aria-label={`Target ${index + 1} qualified name`}
+                spellCheck={false}
               />
               <button
+                type="button"
+                className="btn"
                 onClick={() => removeTarget(index)}
                 disabled={targets.length === 1}
-                title="remove target"
+                aria-label={`Remove target ${index + 1}`}
               >
-                remove
+                Remove
               </button>
             </div>
           ))}
-          <button onClick={addTarget} disabled={targets.length >= 64}>
-            Add target
-          </button>
-          <small style={{ marginLeft: 8 }}>
-            {filledTargets.length} target{filledTargets.length === 1 ? "" : "s"} will share one
-            evidence catalog and budget.
-          </small>
+          <div className="ctx-row">
+            <button
+              type="button"
+              className="btn"
+              onClick={addTarget}
+              disabled={targets.length >= 64}
+            >
+              Add target
+            </button>
+            <small className="quiet">
+              {filledTargets.length} target{filledTargets.length === 1 ? "" : "s"} will share one
+              evidence catalog and budget.
+            </small>
+          </div>
         </div>
       )}
 
-      {busy && <p>Working...</p>}
+      {busy && (
+        <p className="working" role="status">
+          <span className="working-dot" />
+          Working…
+        </p>
+      )}
       {error && (
-        <p className="error" role="alert">
+        <p className="notice bad" role="alert">
           {error}
         </p>
       )}
 
       {session && brief && (
         <>
-          <div className="row">
-            <button onClick={() => setTab("brief")} disabled={tab === "brief"}>
-              Brief
-            </button>
-            <button onClick={() => setTab("graph")} disabled={tab === "graph"}>
-              Graph
-            </button>
-            <small>
+          <div className="ctx-row">
+            <div className="ctx-tabs" role="group" aria-label="View">
+              <button
+                type="button"
+                className="btn"
+                aria-pressed={tab === "brief"}
+                onClick={() => setTab("brief")}
+              >
+                Brief
+              </button>
+              <button
+                type="button"
+                className="btn"
+                aria-pressed={tab === "graph"}
+                onClick={() => setTab("graph")}
+              >
+                Graph
+              </button>
+            </div>
+            <small className="quiet">
               {brief.repositoryId} @ {brief.revision.commitSha.slice(0, 7)} ·{" "}
               {brief.sections.length} sections · {rootPage?.nodeTotal ?? 0} modules ·{" "}
-              {focusScope === ROOT_KEY ? (rootPage?.edgeTotal ?? 0) : (focusedPage?.edgeTotal ?? 0)}{" "}
+              {focusScope === ROOT_KEY
+                ? (rootPage?.edgeTotal ?? 0)
+                : (focusedPage?.edgeTotal ?? 0)}{" "}
               focused edges
             </small>
           </div>
 
           {tab === "brief" && (
-            <div>
-              <h3>Agent brief</h3>
+            <div key="brief" className="ctx-panel">
+              <h3 className="section-title">Agent brief</h3>
               <p>
-                <small>
+                <small className="quiet">
                   coverage {brief.coverage}, source budget used {brief.budget.usedSourceBytes} bytes
                 </small>
               </p>
               {brief.sections.map((section) => (
                 <div key={section.id}>
                   <h4>{section.title}</h4>
-                  <ul style={{ textAlign: "left" }}>
+                  <ul>
                     {section.items.map((item, index) => (
                       <li key={`${section.id}-${index}`}>
                         <span>{item.text}</span>{" "}
-                        <small>({item.state})</small>
+                        <small className="quiet">({item.state})</small>
                         {item.evidenceIds.length > 0 && (
                           <div>
                             {item.evidenceIds.map((id) => (
                               <button
+                                type="button"
+                                className="ctx-chip"
                                 key={id}
                                 onClick={() => void openEvidence(id)}
                                 title={id}
-                                style={{ marginRight: 4, marginTop: 4 }}
                               >
                                 {evidenceLabel(id)}
                               </button>
@@ -622,8 +690,10 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
               ))}
               {brief.omittedEvidenceIds.length > 0 && (
                 <details>
-                  <summary>{brief.omittedEvidenceIds.length} evidence IDs omitted by budget</summary>
-                  <ul style={{ textAlign: "left" }}>
+                  <summary>
+                    {brief.omittedEvidenceIds.length} evidence IDs omitted by budget
+                  </summary>
+                  <ul>
                     {brief.omittedEvidenceIds.map((id) => (
                       <li key={id}>
                         <code>{id}</code>
@@ -636,29 +706,31 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
           )}
 
           {tab === "graph" && (
-            <div>
-              <h3>UI graph</h3>
+            <div key="graph" className="ctx-panel">
+              <h3 className="section-title">UI graph</h3>
               <p>
-                <small>
+                <small className="quiet">
                   Pages load on demand as modules and files expand. Source is loaded by evidence ID,
                   not embedded in this payload.
                 </small>
               </p>
-              <div className="row" style={{ alignItems: "flex-start" }}>
+              <div className="ctx-row" style={{ alignItems: "flex-start" }}>
                 <div style={{ flex: 1, minWidth: 280 }}>
                   <h4>Scopes</h4>
                   <p>
-                    <small>
+                    <small className="quiet">
                       Root lists modules. Expand a module for files, a file for symbols, and a
                       symbol for its calls.
                     </small>
                   </p>
                   {rootPage ? (
-                    <ul style={{ textAlign: "left" }}>
+                    <ul>
                       {rootPage.nodes.map(renderScope)}
                       {rootPage.nodeNextOffset < rootPage.nodeTotal && (
                         <li>
                           <button
+                            type="button"
+                            className="btn"
                             onClick={() => void loadMoreNodes(rootPage)}
                             disabled={loadingScopes.has(ROOT_KEY)}
                           >
@@ -670,23 +742,31 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
                     </ul>
                   ) : (
                     <p>
-                      <small>{loadingScopes.has(ROOT_KEY) ? "Loading root…" : "Root not loaded."}</small>
+                      <small className="quiet">
+                        {loadingScopes.has(ROOT_KEY) ? "Loading root…" : "Root not loaded."}
+                      </small>
                     </p>
                   )}
                 </div>
                 <div style={{ flex: 2, minWidth: 360 }}>
-                  <div className="row" style={{ alignItems: "center", gap: 6 }}>
-                    <h4>Relationships</h4>
-                    <small>{focusLabel}</small>
+                  <div className="ctx-row" style={{ alignItems: "center", marginTop: 0 }}>
+                    <h4 style={{ margin: 0 }}>Relationships</h4>
+                    <small className="quiet">{focusLabel}</small>
                     {focusScope !== ROOT_KEY && (
-                      <button onClick={() => setFocusScope(ROOT_KEY)}>root</button>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => setFocusScope(ROOT_KEY)}
+                      >
+                        Root
+                      </button>
                     )}
                   </div>
                   {focusedPage ? (
                     renderRelationships(focusedPage)
                   ) : (
                     <p>
-                      <small>
+                      <small className="quiet">
                         {loadingScopes.has(focusScope)
                           ? "Loading relationships…"
                           : "Select a scope to load its relationships."}
@@ -699,12 +779,12 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
           )}
 
           {selectedEvidenceId && (
-            <div>
-              <h3>Evidence</h3>
+            <div key={selectedEvidenceId} className="ctx-panel">
+              <h3 className="section-title">Evidence</h3>
               <p>
                 <code>{selectedEvidenceId}</code>
                 <br />
-                <small>
+                <small className="quiet">
                   {selectedEvidence
                     ? `${selectedEvidence.kind} / ${selectedEvidence.state}`
                     : "not loaded in the current page"}
@@ -714,20 +794,23 @@ function ContextViewsPanel({ repoPath }: { repoPath: string }) {
                 </small>
               </p>
               {sourceBusy ? (
-                <p>Loading source…</p>
+                <p className="working" role="status">
+                  <span className="working-dot" />
+                  Loading source…
+                </p>
               ) : source?.status === "present" && source.source !== null ? (
                 <>
                   <p>
-                    <small>
+                    <small className="quiet">
                       {source.location?.filePath} [{source.location?.range.startByte},{" "}
                       {source.location?.range.endByte}) @{" "}
                       {source.location?.revision.commitSha.slice(0, 7)}
                     </small>
                   </p>
-                  <pre style={preStyle}>{source.source}</pre>
+                  <pre>{source.source}</pre>
                 </>
               ) : (
-                <p>
+                <p className="quiet">
                   No source is available for this evidence
                   {source ? ` (${source.status})` : ""}.
                 </p>

@@ -521,10 +521,25 @@ async fn read_source(
     .map_err(join_error)?
 }
 
+/// Safety net for the hidden-until-loaded window: if the page never reports that it
+/// finished loading (for example the dev server is down), show the window anyway
+/// so the app is never stuck invisible.
+fn show_main_window_eventually(app: &tauri::AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // Native folder picker for choosing a repository (toolbar "Browse").
+        .plugin(tauri_plugin_dialog::init())
         // Local Qwen 3.5 inference through Ollama (see ai/). Reads the OLLAMA_*
         // variables and never panics: an invalid config is reported by ai_status
         // and makes the other ai_* commands reject.
@@ -533,7 +548,16 @@ pub fn run() {
         // and an AppHandle to emit auto mode events, so it is created here.
         .setup(|app| {
             app.manage(create_bug_check(app.handle()));
+            show_main_window_eventually(app.handle());
             Ok(())
+        })
+        // The window starts hidden (tauri.conf.json) so a dark-theme launch never
+        // shows the light native background first. Show it once the page has loaded:
+        // by then index.html has painted the theme the user picked or the system uses.
+        .on_page_load(|webview, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                let _ = webview.window().show();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             backend_version,

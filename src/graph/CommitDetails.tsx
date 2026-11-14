@@ -14,6 +14,7 @@ import {
 import { functionDiffText } from "./functionDiff";
 import { scopeNoun, scopeTarget, type Scope } from "./scope";
 import { formatAge, truncate, type GraphLayout, type Lane } from "./layout";
+import "./details.css";
 
 interface Props {
   repoPath: string;
@@ -73,6 +74,24 @@ export function CommitDetails({
   const [diff, setDiff] = useState<GitCommandResult | null>(null);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<number | undefined>(undefined);
+  const cancelKey = useRef<HTMLButtonElement>(null);
+  const rebaseKey = useRef<HTMLButtonElement>(null);
+  const refocusRebase = useRef(false);
+
+  // Keyboard focus follows the rebase question: onto Cancel when it opens (the safe
+  // choice), and back to the Rebase key when it is cancelled.
+  useEffect(() => {
+    if (confirming) cancelKey.current?.focus();
+    else if (refocusRebase.current) rebaseKey.current?.focus();
+    refocusRebase.current = false;
+  }, [confirming]);
+  useEffect(() => () => window.clearTimeout(copiedTimer.current), []);
+
+  function cancelConfirm() {
+    refocusRebase.current = true;
+    setConfirming(false);
+  }
 
   const branchLabel = currentBranch ?? "your checkout";
   const isHead = commit.hash === graph.head;
@@ -160,7 +179,8 @@ export function CommitDetails({
     try {
       await navigator.clipboard.writeText(commit.hash);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1400);
+      window.clearTimeout(copiedTimer.current);
+      copiedTimer.current = window.setTimeout(() => setCopied(false), 1400);
     } catch {
       /* clipboard unavailable */
     }
@@ -184,6 +204,14 @@ export function CommitDetails({
     else if (outcome.result.ok) outcomeTitle = `Rebased ${target}`;
     else outcomeTitle = stuck ? "Rebase stopped on a conflict" : "Rebase did not run";
   }
+
+  const busyText = !busy
+    ? ""
+    : busy === "diff"
+      ? "Comparing…"
+      : busy === "abort"
+        ? "Aborting the rebase…"
+        : "Rebasing…";
 
   const rebaseNote = isHead
     ? scoped
@@ -239,9 +267,17 @@ export function CommitDetails({
           </dd>
           <dt>Commit ID</dt>
           <dd>
-            <button className="link" onClick={copyHash} title="Copy the full commit ID">
-              {copied ? "Copied" : commit.shortHash}
+            <button
+              className="link"
+              onClick={copyHash}
+              title="Copy the full commit ID"
+              aria-label={`Copy commit ID ${commit.shortHash}`}
+            >
+              {copied ? <span className="copy-stamp">Copied</span> : commit.shortHash}
             </button>
+            <span className="details-sr-only" role="status">
+              {copied ? "Commit ID copied" : ""}
+            </span>
           </dd>
           <dt>Comes after</dt>
           <dd className="stops">
@@ -266,7 +302,17 @@ export function CommitDetails({
 
         <div className="actions">
           {confirming ? (
-            <div className="confirm">
+            <div
+              className="confirm"
+              role="group"
+              aria-label="Confirm rebase"
+              onKeyDown={(e) => {
+                if (e.key !== "Escape") return;
+                // Escape backs out of the question without closing the whole ticket.
+                e.stopPropagation();
+                cancelConfirm();
+              }}
+            >
               {scoped ? (
                 <p>
                   Put <strong>{target}</strong> back to how it was at this commit? A new commit is added to{" "}
@@ -280,7 +326,7 @@ export function CommitDetails({
                 </p>
               )}
               <div className="confirm-keys">
-                <button className="key plain" onClick={() => setConfirming(false)}>
+                <button ref={cancelKey} className="key plain" onClick={cancelConfirm}>
                   Cancel
                 </button>
                 <button className="key amber" onClick={rebase}>
@@ -295,6 +341,7 @@ export function CommitDetails({
                 <span>{isHead ? "Nothing newer to compare" : "Side-by-side comparison"}</span>
               </button>
               <button
+                ref={rebaseKey}
                 className="key plain tall"
                 disabled={busy !== null || !canRebase}
                 onClick={() => setConfirming(true)}
@@ -307,13 +354,21 @@ export function CommitDetails({
         </div>
 
         <div className="ticket-body">
+          {/* One live region that is always present, so screen readers hear progress and results. */}
+          <p className="details-sr-only" role="status">
+            {busyText || outcomeTitle}
+          </p>
           {busy && (
             <p className="working">
               <span className="working-dot" />
-              {busy === "diff" ? "Comparing…" : busy === "abort" ? "Aborting the rebase…" : "Rebasing…"}
+              {busyText}
             </p>
           )}
-          {error && <p className="notice bad">{error}</p>}
+          {error && (
+            <p className="notice bad" role="alert">
+              {error}
+            </p>
+          )}
 
           {outcome && (
             <section className={`notice ${outcome.result.ok ? "good" : "bad"}`}>
@@ -343,8 +398,8 @@ export function CommitDetails({
             </h3>
             {commit.filesChanged.length === 0 && <p className="quiet">This commit changes no files.</p>}
             <ul className="files">
-              {commit.filesChanged.map((f) => (
-                <li key={f.path}>
+              {commit.filesChanged.map((f, i) => (
+                <li key={f.path} style={{ "--i": i } as CSSProperties}>
                   <span className={`status status-${f.status}`} title={STATUS_NAME[f.status] ?? f.status}>
                     {f.status}
                   </span>
@@ -462,6 +517,9 @@ function DiffPanel({ result, branch }: { result: GitCommandResult; branch: strin
       {files.map((f, i) => (
         <details key={i} className="diff-file" open={files.length <= 4}>
           <summary>
+            <span className="diff-caret" aria-hidden="true">
+              ▸
+            </span>
             <span className="diff-name">{f.name}</span>
             <span className="counts">
               <span className="add">+{f.additions}</span> <span className="del">−{f.deletions}</span>

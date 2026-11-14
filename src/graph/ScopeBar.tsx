@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from "react";
+import { Presence } from "../tools/Presence";
 import { blameFile, errorMessage, listFiles, type ChronosGraph } from "../backend";
 import { PROJECT, functionChoices, scopeTarget, type FunctionChoice, type Scope } from "./scope";
 import "./scope.css";
@@ -20,6 +21,8 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const root = useRef<HTMLDivElement>(null);
+  const filter = useRef<HTMLInputElement>(null);
+  const list = useRef<HTMLUListElement>(null);
 
   const repoPath = graph?.repoPath;
   const functionPath = picking?.kind === "function" ? picking.path : null;
@@ -78,7 +81,10 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
       if (root.current && !root.current.contains(e.target as Node)) setPicking(null);
     };
     const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setPicking(null);
+      if (e.key === "Escape") {
+        returnFocus();
+        setPicking(null);
+      }
     };
     window.addEventListener("mousedown", down);
     window.addEventListener("keydown", key);
@@ -88,10 +94,20 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
     };
   }, [picking]);
 
+  /** The picker is closing: if focus was inside it, hand it back to the tab that opened it. */
+  function returnFocus() {
+    const pop = root.current?.querySelector(".scope-pop");
+    if (pop && pop.contains(document.activeElement)) {
+      root.current?.querySelector<HTMLButtonElement>(".scope-tab.on")?.focus();
+    }
+  }
+
   function open(next: Picking) {
     setQuery("");
     setError("");
     setPicking(next);
+    // Moving between steps removes the button that was clicked; keep focus in the picker.
+    filter.current?.focus();
   }
 
   function pickFile(path: string) {
@@ -99,7 +115,9 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
       setQuery("");
       setFunctions([]);
       setPicking({ kind: "function", path });
+      filter.current?.focus();
     } else {
+      returnFocus();
       setPicking(null);
       onChange({ kind: "file", path });
     }
@@ -107,12 +125,51 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
 
   function pickFunction(name: string) {
     if (!functionPath) return;
+    returnFocus();
     setPicking(null);
     onChange({ kind: "function", path: functionPath, name });
   }
 
+  /** Moves focus within the picker's list: ArrowUp on the first item returns to the filter. */
+  function focusItem(index: number) {
+    const items = list.current?.querySelectorAll<HTMLButtonElement>("button");
+    if (!items || items.length === 0) return;
+    if (index < 0) {
+      filter.current?.focus();
+      return;
+    }
+    items[Math.min(index, items.length - 1)].focus();
+  }
+
+  function onFilterKey(e: ReactKeyboardEvent<HTMLInputElement>) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      focusItem(0);
+    } else if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+      // Enter takes the first match, so "type a few letters, Enter" is enough. It needs
+      // some letters typed (a stray Enter shouldn't jump to the first file) and a
+      // finished load (so it never picks from the previous repository's stale list).
+      e.preventDefault();
+      if (!q || loading) return;
+      if (wantFiles && fileMatches[0]) pickFile(fileMatches[0]);
+      else if (!wantFiles && functionMatches[0]) pickFunction(functionMatches[0].name);
+    }
+  }
+
+  function onListKey(e: ReactKeyboardEvent<HTMLUListElement>) {
+    const items = [...(list.current?.querySelectorAll<HTMLButtonElement>("button") ?? [])];
+    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (at === -1) return;
+    const to =
+      e.key === "ArrowDown" ? at + 1 : e.key === "ArrowUp" ? at - 1 : e.key === "Home" ? 0 : e.key === "End" ? items.length - 1 : null;
+    if (to === null) return;
+    e.preventDefault();
+    focusItem(to);
+  }
+
   const active = picking ? picking.kind : scope.kind;
   const q = query.trim().toLowerCase();
+  const isCurrent = (name: string) => scope.kind === "function" && scope.path === functionPath && scope.name === name;
   const fileMatches = files.filter((f) => f.toLowerCase().includes(q));
   const functionMatches = functions.filter((f) => f.name.toLowerCase().includes(q));
 
@@ -121,6 +178,7 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
       <div className="scope-tabs" role="group" aria-label="History view">
         <button
           className={`scope-tab${active === "project" ? " on" : ""}`}
+          aria-pressed={active === "project"}
           disabled={!graph}
           onClick={() => {
             setPicking(null);
@@ -131,6 +189,7 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
         </button>
         <button
           className={`scope-tab${active === "file" ? " on" : ""}`}
+          aria-pressed={active === "file"}
           disabled={!graph}
           onClick={() => open({ kind: "file" })}
         >
@@ -138,6 +197,7 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
         </button>
         <button
           className={`scope-tab${active === "function" ? " on" : ""}`}
+          aria-pressed={active === "function"}
           disabled={!graph}
           onClick={() => open({ kind: "function", path: null })}
         >
@@ -151,55 +211,77 @@ export function ScopeBar({ graph, scope, onChange }: Props) {
         </span>
       )}
 
-      {picking && (
-        <div className="scope-pop">
-          <div className="scope-title">
-            {picking.kind === "file" && "Choose a file"}
-            {picking.kind === "function" && picking.path === null && "Choose the file the function is in"}
-            {picking.kind === "function" && picking.path !== null && (
-              <>
-                <button className="scope-back" onClick={() => open({ kind: "function", path: null })}>
-                  ‹ files
-                </button>
-                Functions in {picking.path}
-              </>
-            )}
-          </div>
-          <input
-            className="field"
-            autoFocus
-            value={query}
-            onChange={(e) => setQuery(e.currentTarget.value)}
-            placeholder="Type to filter"
-            spellCheck={false}
-          />
-          {loading && <p className="quiet scope-note">Loading…</p>}
-          {error && <p className="scope-note scope-bad">{error}</p>}
-          <ul className="scope-list">
-            {wantFiles &&
-              fileMatches.slice(0, MAX_SHOWN).map((f) => (
-                <li key={f}>
-                  <button onClick={() => pickFile(f)}>{f}</button>
-                </li>
-              ))}
-            {!wantFiles &&
-              functionMatches.slice(0, MAX_SHOWN).map((f) => (
-                <li key={f.name}>
-                  <button onClick={() => pickFunction(f.name)}>
-                    {f.name}
-                    <span className="quiet"> {f.kind}{f.atHead ? "" : " (no longer in the file)"}</span>
+      <Presence show={picking !== null} className="scope-pop" exitMs={140}>
+        {picking && (
+          <>
+            {/* Keyed by the step (files, then a file's functions), so moving between steps slides the new one in. */}
+            <div key={wantFiles ? "files" : `fn:${functionPath}`} className="scope-title scope-step">
+              {picking.kind === "file" && "Choose a file"}
+              {picking.kind === "function" && picking.path === null && "Choose the file the function is in"}
+              {picking.kind === "function" && picking.path !== null && (
+                <>
+                  <button className="scope-back" onClick={() => open({ kind: "function", path: null })}>
+                    ‹ files
                   </button>
-                </li>
-              ))}
-          </ul>
-          {!loading && !wantFiles && functionMatches.length === 0 && (
-            <p className="quiet scope-note">No functions found.</p>
-          )}
-          {wantFiles && fileMatches.length > MAX_SHOWN && (
-            <p className="quiet scope-note">{fileMatches.length - MAX_SHOWN} more. Keep typing to narrow it down.</p>
-          )}
-        </div>
-      )}
+                  Functions in {picking.path}
+                </>
+              )}
+            </div>
+            <input
+              ref={filter}
+              className="field"
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.currentTarget.value)}
+              onKeyDown={onFilterKey}
+              placeholder="Type to filter, Enter for the first"
+              aria-label={wantFiles ? "Filter files" : "Filter functions"}
+              spellCheck={false}
+            />
+            {loading && <p className="quiet scope-note scope-loading">Loading…</p>}
+            {error && <p className="scope-note scope-bad" role="alert">{error}</p>}
+            <ul
+              key={wantFiles ? "files" : `fn:${functionPath}`}
+              ref={list}
+              className="scope-list scope-step"
+              onKeyDown={onListKey}
+              aria-label={wantFiles ? "Files" : "Functions"}
+            >
+              {wantFiles &&
+                fileMatches.slice(0, MAX_SHOWN).map((f) => (
+                  <li key={f}>
+                    <button
+                      className={scope.kind !== "project" && scope.path === f ? "on" : undefined}
+                      aria-current={scope.kind !== "project" && scope.path === f ? "true" : undefined}
+                      onClick={() => pickFile(f)}
+                    >
+                      {f}
+                    </button>
+                  </li>
+                ))}
+              {!wantFiles &&
+                functionMatches.slice(0, MAX_SHOWN).map((f) => (
+                  <li key={f.name}>
+                    <button
+                      className={isCurrent(f.name) ? "on" : undefined}
+                      aria-current={isCurrent(f.name) ? "true" : undefined}
+                      onClick={() => pickFunction(f.name)}
+                    >
+                      {f.name}
+                      <span className="quiet"> {f.kind}{f.atHead ? "" : " (no longer in the file)"}</span>
+                    </button>
+                  </li>
+                ))}
+            </ul>
+            {!loading && !wantFiles && functionMatches.length === 0 && (
+              <p className="quiet scope-note">No functions found.</p>
+            )}
+            {wantFiles && fileMatches.length > MAX_SHOWN && (
+              <p className="quiet scope-note">{fileMatches.length - MAX_SHOWN} more. Keep typing to narrow it down.</p>
+            )}
+          </>
+        )}
+      </Presence>
     </div>
   );
 }

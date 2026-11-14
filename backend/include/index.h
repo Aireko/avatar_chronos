@@ -53,6 +53,15 @@ typedef struct {
 int index_map_calls(const RepositoryIndex *index, size_t from, size_t to, IndexCallMap *out);
 void index_call_map_free(IndexCallMap *map);
 
+/* Borrowed call links in graph edge order, and their discovery coverage.
+ * Links use the same layout as index_map_calls(). */
+const IndexCallLink *index_call_links(const RepositoryIndex *index, size_t *count);
+ChronosCoverage index_call_coverage(const RepositoryIndex *index);
+
+/* Borrowed pinned bytes for a parsed file. Returns NULL when the path is not
+ * indexed or its source is unavailable. The index must outlive the pointer. */
+const char *index_file_bytes(const RepositoryIndex *index, const char *path, size_t *length);
+
 /* Open a pinned revision and parse its tracked source files. The scope,
  * revision, diagnostic and source accessors borrow from the index. */
 int index_build_revision(const GitRepository *repo, const char *selector, RepositoryIndex **out);

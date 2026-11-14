@@ -9,6 +9,7 @@
 
 typedef struct {
     const unsigned char *bytes;
+    size_t byte_count;
     size_t scope;
     size_t first_symbol;
     size_t symbol_count;
@@ -454,6 +455,7 @@ static int build_scopes(RepositoryIndex *index, const IndexFileInput *inputs, si
             if (!bytes) return CHRONOS_OUT_OF_MEMORY;
             if (blob->byte_count) memcpy(bytes, blob->bytes, blob->byte_count);
             file->bytes = bytes;
+            file->byte_count = blob->byte_count;
         }
         for (size_t j = file->first_symbol; j < file->first_symbol + file->symbol_count; ++j) {
             const GraphSymbol *symbol = &graph->nodes[j];
@@ -566,6 +568,32 @@ int index_map_calls(const RepositoryIndex *index, size_t from, size_t to, IndexC
     }
     *out = (IndexCallMap){links, count, index->graph.edge_coverage};
     return out->coverage == CHRONOS_COMPLETE ? CHRONOS_OK : CHRONOS_PARTIAL;
+}
+
+const IndexCallLink *index_call_links(const RepositoryIndex *index, size_t *count)
+{
+    if (count) *count = index ? index->graph.edge_count : 0;
+    return index ? index->links : NULL;
+}
+
+ChronosCoverage index_call_coverage(const RepositoryIndex *index)
+{
+    return index ? index->graph.edge_coverage : CHRONOS_UNAVAILABLE;
+}
+
+const char *index_file_bytes(const RepositoryIndex *index, const char *path, size_t *length)
+{
+    if (length) *length = 0;
+    if (!index || !path) return NULL;
+    for (size_t i = 0; i < index->file_count; ++i) {
+        const IndexedFile *file = &index->files[i];
+        const IndexScope *scope = &index->scopes[file->scope];
+        if (!same_text(scope->path, path)) continue;
+        if (!file->bytes) return NULL;
+        if (length) *length = file->byte_count;
+        return (const char *)file->bytes;
+    }
+    return NULL;
 }
 
 

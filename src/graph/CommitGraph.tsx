@@ -7,7 +7,20 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import type { ChronosGraph } from "../backend";
-import { STATION_R, drawDelay, drawInWindow, type GraphLayout, type Lane } from "./layout";
+import {
+  STATION_R,
+  cameraAt,
+  drawDelay,
+  drawInWindow,
+  fitAxis,
+  fitZoom,
+  glideMs,
+  scribbleLoop,
+  wheelZoomFactor,
+  type CameraShot,
+  type GraphLayout,
+  type Lane,
+} from "./layout";
 import { scopeNoun, type Scope } from "./scope";
 import { Presence } from "../tools/Presence";
 import { prefersReducedMotion } from "./drag";
@@ -30,16 +43,24 @@ const R = STATION_R;
 const ZOOM_MIN = 0.45;
 const ZOOM_MAX = 2.4;
 const ZOOM_STEP = 0.12;
-/** How long a zoom key or button takes to glide to its new zoom. */
+/** How long a zoom key or button takes to glide to its new zoom; long pans take up to PAN_MS. */
 const ZOOM_MS = 200;
+const PAN_MS = 280;
+/** Room kept clear around the history when fitting it all in. */
+const FIT_MARGIN = 24;
 /** Extra space around the graph so you can drag past the edges. */
 const MAP_PAD = 280;
 /** Stations land a little after their lines; crossing hops land last. */
 const STATION_LAG = 320;
 const BRIDGE_LAG = 400;
+/** The marker loop round a commit the map just flew to: drawn, held, then faded (see .landing). */
+const LANDING_MS = 1100;
+const LANDING_R = 30;
 
-function clampZoom(z: number) {
-  return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(z * 100) / 100));
+/** Keeps a zoom in range, rounded to a whole percent unless `exact` (pinch and wheel steps). */
+function clampZoom(z: number, exact = false) {
+  const kept = exact ? Math.round(z * 10000) / 10000 : Math.round(z * 100) / 100;
+  return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, kept));
 }
 
 /**
@@ -82,13 +103,19 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
   const [goal, setGoal] = useState(1);
   const [legendOpen, setLegendOpen] = useState(true);
   const [focusLane, setFocusLane] = useState<number | null>(null);
+  // The commit the map just flew to (legend, head key), ringed for a moment. `n` restarts the ink.
+  const [landing, setLanding] = useState<{ hash: string; n: number } | null>(null);
   const zoomRef = useRef(zoom);
   zoomRef.current = zoom;
   /** The zoom currently on screen, which differs from `zoom` while a glide runs. */
   const liveZoom = useRef(zoom);
-  const glide = useRef<{ raf: number; target: number } | null>(null);
+  /** The running glide and where it will end (zoom and scroll), so new moves can chain onto it. */
+  const cam = useRef<{ raf: number; zoom: number; left: number; top: number } | null>(null);
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
+  // The window listeners are set up once, so they read the latest props through this.
+  const latest = useRef({ layout, selected });
+  latest.current = { layout, selected };
   const sheetW = layout.width + MAP_PAD * 2;
   const sheetH = layout.height + MAP_PAD * 2;
   const sheetSize = useRef({ w: sheetW, h: sheetH });
@@ -109,81 +136,144 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
     if (zoomEl.current) zoomEl.current.style.transform = `scale(${z})`;
   }
 
-  function stopGlide() {
-    if (glide.current) cancelAnimationFrame(glide.current.raf);
-    glide.current = null;
+  function cancelFrame() {
+    if (cam.current) cancelAnimationFrame(cam.current.raf);
+    cam.current = null;
+  }
+
+  /** Stops a glide where it is (the user took hold of the map) and hands its zoom to React. */
+  function stopCamera() {
+    if (!cam.current) return;
+    cancelFrame();
+    const z = liveZoom.current;
+    if (z !== zoomRef.current) setZoom(z);
+    setGoal(z);
+  }
+
+  /** Where the map is heading: the end of a running glide, or where it is now. */
+  function dest() {
+    if (cam.current) return cam.current;
+    const el = viewport.current;
+    return { zoom: liveZoom.current, left: el?.scrollLeft ?? 0, top: el?.scrollTop ?? 0 };
+  }
+
+  /**
+   * Glides the map so content point (to.x, to.y), in unzoomed sheet pixels, ends at screen
+   * point `anchor` (default: the middle of the view) at zoom `to.zoom`. There is only ever one
+   * glide: a new move starts from wherever the running one has got to, so a pan that begins
+   * during a zoom (or the other way round) carries on smoothly instead of being overwritten.
+   */
+  function flyTo(
+    to: CameraShot,
+    opts: { anchor?: { x: number; y: number }; instant?: boolean; onLand?: () => void } = {},
+  ) {
+    const el = viewport.current;
+    cancelFrame();
+    setGoal(to.zoom);
+    if (!el) {
+      liveZoom.current = to.zoom;
+      setZoom(to.zoom);
+      opts.onLand?.();
+      return;
+    }
+    const ax = opts.anchor?.x ?? el.clientWidth / 2;
+    const ay = opts.anchor?.y ?? el.clientHeight / 2;
+    // End where the browser can actually scroll to, so the glide never runs into an edge.
+    const { w, h } = sheetSize.current;
+    const left = Math.min(Math.max(0, w * to.zoom - el.clientWidth), Math.max(0, to.x * to.zoom - ax));
+    const top = Math.min(Math.max(0, h * to.zoom - el.clientHeight), Math.max(0, to.y * to.zoom - ay));
+    const end: CameraShot = { zoom: to.zoom, x: (left + ax) / to.zoom, y: (top + ay) / to.zoom };
+    const z0 = liveZoom.current;
+    const from: CameraShot = { zoom: z0, x: (el.scrollLeft + ax) / z0, y: (el.scrollTop + ay) / z0 };
+
+    const place = (shot: CameraShot) => {
+      if (shot.zoom !== liveZoom.current) paintZoom(shot.zoom);
+      el.scrollLeft = shot.x * shot.zoom - ax;
+      el.scrollTop = shot.y * shot.zoom - ay;
+    };
+    const land = () => {
+      cam.current = null;
+      place(end);
+      if (end.zoom !== zoomRef.current) setZoom(end.zoom);
+      opts.onLand?.();
+    };
+    if (opts.instant || prefersReducedMotion()) {
+      land();
+      return;
+    }
+
+    // Scale and scroll frame by frame, then hand the final zoom to React. The drawing itself
+    // is memoised, so only the sheet's frame is touched while the glide runs.
+    const ms = glideMs(from, end, ZOOM_MS, PAN_MS);
+    const start = performance.now();
+    const step = (now: number) => {
+      const t = (now - start) / ms;
+      if (t >= 1) {
+        land();
+        return;
+      }
+      place(cameraAt(from, end, t));
+      cam.current = { raf: requestAnimationFrame(step), zoom: end.zoom, left, top };
+    };
+    cam.current = { raf: requestAnimationFrame(step), zoom: end.zoom, left, top };
   }
 
   /** Where the zoom is heading: the end of a running glide, or the current zoom. */
-  const targetZoom = () => glide.current?.target ?? liveZoom.current;
+  const targetZoom = () => dest().zoom;
 
-  function applyZoom(next: number, anchor?: { x: number; y: number }, smooth = false) {
+  /** Zoom keys hold the chosen commit still when it is on screen, else the middle of the view. */
+  function keyAnchor(): { x: number; y: number } | undefined {
     const el = viewport.current;
-    const prev = liveZoom.current;
-    const z = clampZoom(next);
-    stopGlide();
-    setGoal(z);
-    if (z === prev) {
-      if (z !== zoomRef.current) setZoom(z);
+    const { layout: now, selected: picked } = latest.current;
+    const node = el && picked ? now.byHash.get(picked) : undefined;
+    if (!el || !node) return undefined;
+    const d = dest();
+    const x = (node.x + MAP_PAD) * d.zoom - d.left;
+    const y = (node.y + MAP_PAD) * d.zoom - d.top;
+    return x > 0 && x < el.clientWidth && y > 0 && y < el.clientHeight ? { x, y } : undefined;
+  }
+
+  /**
+   * Zooms to `next`, keeping `anchor` (a point in the view) still. `exact` keeps the zoom as
+   * given instead of rounding it to a whole percent, so many small pinch steps add up.
+   */
+  function applyZoom(next: number, anchor?: { x: number; y: number }, opts: { smooth?: boolean; exact?: boolean } = {}) {
+    const el = viewport.current;
+    const z = clampZoom(next, opts.exact);
+    const d = dest();
+    if (z === d.zoom) {
+      if (!cam.current && z !== zoomRef.current) setZoom(z);
+      setGoal(z);
       return;
     }
     if (!el) {
-      liveZoom.current = z;
-      setZoom(z);
+      flyTo({ zoom: z, x: 0, y: 0 });
       return;
     }
-
-    const ax = anchor?.x ?? el.clientWidth / 2;
-    const ay = anchor?.y ?? el.clientHeight / 2;
-    const contentX = (el.scrollLeft + ax) / prev;
-    const contentY = (el.scrollTop + ay) / prev;
-    const settle = (at: number) => {
-      el.scrollLeft = contentX * at - ax;
-      el.scrollTop = contentY * at - ay;
-    };
-
-    if (!smooth || prefersReducedMotion()) {
-      paintZoom(z);
-      settle(z);
-      setZoom(z);
-      return;
-    }
-
-    // Glide: scale the sheet frame by frame, keeping the anchor point still, then hand the
-    // final zoom to React. The drawing itself is memoised, so only the frame is touched.
-    const start = performance.now();
-    const step = (now: number) => {
-      // A frame's timestamp can be a little older than `start`, so clamp at both ends.
-      const t = Math.min(1, Math.max(0, (now - start) / ZOOM_MS));
-      const eased = 1 - (1 - t) ** 3;
-      const at = prev + (z - prev) * eased;
-      paintZoom(at);
-      settle(at);
-      if (t < 1) {
-        glide.current = { raf: requestAnimationFrame(step), target: z };
-      } else {
-        glide.current = null;
-        setZoom(z);
-      }
-    };
-    glide.current = { raf: requestAnimationFrame(step), target: z };
+    const a = anchor ?? { x: el.clientWidth / 2, y: el.clientHeight / 2 };
+    // The content under the anchor where the map is heading, so a zoom during a pan chains onto it.
+    flyTo({ zoom: z, x: (d.left + a.x) / d.zoom, y: (d.top + a.y) / d.zoom }, { anchor: a, instant: !opts.smooth });
   }
 
-  useEffect(() => stopGlide, []);
+  useEffect(() => cancelFrame, []);
 
-  // Trackpad/mouse: free 2D pan. Shift+wheel pans horizontally. Ctrl/Cmd+wheel zooms.
+  // Trackpad/mouse: free 2D pan. Shift+wheel pans horizontally. Ctrl/Cmd+wheel (and pinch)
+  // glides the zoom about the cursor; each event retargets the glide, so a burst stays smooth.
   useEffect(() => {
     const el = viewport.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
       if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
         const rect = el.getBoundingClientRect();
-        const factor = e.deltaY < 0 ? 1 + ZOOM_STEP : 1 / (1 + ZOOM_STEP);
-        applyZoom(liveZoom.current * factor, { x: e.clientX - rect.left, y: e.clientY - rect.top });
+        applyZoom(
+          targetZoom() * wheelZoomFactor(e.deltaY, e.deltaMode),
+          { x: e.clientX - rect.left, y: e.clientY - rect.top },
+          { smooth: true, exact: true },
+        );
         return;
       }
-      e.preventDefault();
+      stopCamera();
       if (e.shiftKey) {
         el.scrollLeft += e.deltaY || e.deltaX;
       } else {
@@ -202,13 +292,13 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       if (e.key === "+" || e.key === "=") {
         e.preventDefault();
-        applyZoom(targetZoom() + ZOOM_STEP, undefined, true);
+        applyZoom(targetZoom() + ZOOM_STEP, keyAnchor(), { smooth: true });
       } else if (e.key === "-" || e.key === "_") {
         e.preventDefault();
-        applyZoom(targetZoom() - ZOOM_STEP, undefined, true);
+        applyZoom(targetZoom() - ZOOM_STEP, keyAnchor(), { smooth: true });
       } else if (e.key === "0" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
-        applyZoom(1, undefined, true);
+        applyZoom(1, keyAnchor(), { smooth: true });
       }
     };
     window.addEventListener("keydown", onKey);
@@ -216,16 +306,18 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function scrollToPoint(x: number, y: number, behavior: ScrollBehavior = "smooth") {
-    const el = viewport.current;
-    if (!el) return;
-    const z = zoomRef.current;
-    el.scrollTo({
-      left: (x + MAP_PAD) * z - el.clientWidth / 2,
-      top: (y + MAP_PAD) * z - el.clientHeight / 2,
-      behavior: prefersReducedMotion() ? "auto" : behavior,
-    });
+  /** Pans (at the zoom the map is heading for) so the map point (x, y) sits mid-view. */
+  function scrollToPoint(x: number, y: number, opts: { instant?: boolean; onLand?: () => void } = {}) {
+    flyTo({ zoom: targetZoom(), x: x + MAP_PAD, y: y + MAP_PAD }, opts);
   }
+
+  // Ring a commit once the map has flown to it, so the eye finds where it landed.
+  const ring = (hash: string) => setLanding((prev) => ({ hash, n: (prev?.n ?? 0) + 1 }));
+  useEffect(() => {
+    if (!landing) return;
+    const timer = window.setTimeout(() => setLanding(null), LANDING_MS);
+    return () => window.clearTimeout(timer);
+  }, [landing]);
 
   // A new repository opens at its newest commits. When head moves (after a rebase), follow it.
   useEffect(() => {
@@ -234,7 +326,7 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
     if (shownRepo.current !== graph.repoPath) {
       shownRepo.current = graph.repoPath;
       const node = graph.head ? layout.byHash.get(graph.head) : layout.nodes[layout.nodes.length - 1];
-      if (node) scrollToPoint(node.x, node.y, "auto");
+      if (node) scrollToPoint(node.x, node.y, { instant: true });
       else {
         el.scrollLeft = el.scrollWidth;
         el.scrollTop = MAP_PAD * zoomRef.current;
@@ -246,35 +338,46 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [graph.repoPath, graph.head]);
 
-  // Bring the selected commit into view when it is off screen.
+  // Bring the selected commit into view when it is off screen (judged by where the map is heading).
   useEffect(() => {
     const el = viewport.current;
     const node = selected ? layout.byHash.get(selected) : undefined;
     if (!el || !node) return;
-    const z = zoomRef.current;
-    const x = (node.x + MAP_PAD) * z;
-    const y = (node.y + MAP_PAD) * z;
-    const offX = x < el.scrollLeft + 150 || x > el.scrollLeft + el.clientWidth - 150;
-    const offY = y < el.scrollTop + 130 || y > el.scrollTop + el.clientHeight - 80;
+    const d = dest();
+    const x = (node.x + MAP_PAD) * d.zoom;
+    const y = (node.y + MAP_PAD) * d.zoom;
+    const offX = x < d.left + 150 || x > d.left + el.clientWidth - 150;
+    const offY = y < d.top + 130 || y > d.top + el.clientHeight - 80;
     if (offX || offY) scrollToPoint(node.x, node.y);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, panelOpen, zoom]);
+  }, [selected, panelOpen]);
 
   // Drag anywhere to pan freely (including up/down). A drag never counts as a click.
   function onPointerDown(e: ReactPointerEvent<HTMLDivElement>) {
     if (e.button !== 0) return;
     const el = e.currentTarget;
-    if (e.target === el && (e.nativeEvent.offsetX >= el.clientWidth || e.nativeEvent.offsetY >= el.clientHeight)) return;
+    if (e.target === el && (e.nativeEvent.offsetX >= el.clientWidth || e.nativeEvent.offsetY >= el.clientHeight)) {
+      // A scrollbar: let it take over from any glide.
+      stopCamera();
+      return;
+    }
     const start = { x: e.clientX, y: e.clientY, left: el.scrollLeft, top: el.scrollTop };
     drag.current.moved = false;
     const move = (ev: PointerEvent) => {
-      const dx = ev.clientX - start.x;
-      const dy = ev.clientY - start.y;
-      if (!drag.current.moved && Math.hypot(dx, dy) < 5) return;
+      if (!drag.current.moved && Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < 5) return;
+      // Holding the map stops a glide where it is (including one that began mid-drag, such as a
+      // head-follow), and the drag carries on from there instead of fighting it frame by frame.
+      if (cam.current) {
+        stopCamera();
+        start.x = ev.clientX;
+        start.y = ev.clientY;
+        start.left = el.scrollLeft;
+        start.top = el.scrollTop;
+      }
       drag.current.moved = true;
       el.classList.add("dragging");
-      el.scrollLeft = start.left - dx;
-      el.scrollTop = start.top - dy;
+      el.scrollLeft = start.left - (ev.clientX - start.x);
+      el.scrollTop = start.top - (ev.clientY - start.y);
     };
     const up = () => {
       el.classList.remove("dragging");
@@ -285,10 +388,33 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
     window.addEventListener("pointerup", up);
   }
 
-  /** The legend points at a branch: pan to its newest commit. */
+  /** The legend points at a branch: glide to its newest commit and ring it. */
   function showLane(lane: Lane) {
     const node = layout.byHash.get(lane.tip);
-    if (node) scrollToPoint(node.x, node.y);
+    if (node) scrollToPoint(node.x, node.y, { onLand: () => ring(node.commit.hash) });
+  }
+
+  /** Head, or the newest commit when head is not on this map. */
+  const homeNode = (graph.head ? layout.byHash.get(graph.head) : undefined) ?? layout.nodes[layout.nodes.length - 1];
+  const homeIsHead = !!homeNode && homeNode.commit.hash === graph.head;
+
+  function goHome() {
+    if (homeNode) scrollToPoint(homeNode.x, homeNode.y, { onLand: () => ring(homeNode.commit.hash) });
+  }
+
+  /** Zoom out (never in past 100%) until the whole history fits, or as far out as the map goes. */
+  function fitAll() {
+    const el = viewport.current;
+    if (!el || layout.nodes.length === 0) return;
+    const vw = el.clientWidth;
+    const vh = el.clientHeight;
+    const z = fitZoom(layout.width, layout.height, vw, vh, FIT_MARGIN, ZOOM_MIN, 1);
+    const d = dest();
+    flyTo({
+      zoom: z,
+      x: fitAxis(MAP_PAD, MAP_PAD + layout.width, vw, FIT_MARGIN, z, (d.left + vw / 2) / d.zoom),
+      y: fitAxis(MAP_PAD, MAP_PAD + layout.height, vh, FIT_MARGIN, z, (d.top + vh / 2) / d.zoom),
+    });
   }
 
   // The drawing only changes with the history, the selection and head. Zooming, panning and
@@ -443,6 +569,7 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
     );
   }, [layout, selected, graph.head, intro]);
 
+  const landingNode = landing ? layout.byHash.get(landing.hash) : undefined;
   const menuNode = selected && !panelOpen ? layout.byHash.get(selected) : undefined;
   const menuIsHead = menuNode?.commit.hash === graph.head;
   const scoped = scope.kind !== "project";
@@ -498,6 +625,16 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
               data-focus={focusLane ?? undefined}
             >
               {drawing}
+              {landingNode && (
+                <g
+                  key={landing!.n}
+                  className="landing"
+                  aria-hidden="true"
+                  style={{ transform: `translate(${landingNode.x}px, ${landingNode.y}px)`, "--line": landingNode.color } as CSSProperties}
+                >
+                  <path className="landing-loop" d={scribbleLoop(LANDING_R, landingNode.id)} pathLength={1} />
+                </g>
+              )}
             </svg>
 
             {/* The action bar pops up from the chosen commit and drops away when it closes. */}
@@ -569,25 +706,48 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
           </Presence>
         </div>
 
-        <div className="zoom-controls" role="toolbar" aria-label="Zoom">
+        <div className="zoom-controls" role="toolbar" aria-orientation="vertical" aria-label="Map view">
+          <button
+            type="button"
+            className="btn zoom-btn zoom-glyph"
+            aria-label="Fit the whole history"
+            title="Fit the whole history"
+            disabled={layout.nodes.length === 0}
+            onClick={fitAll}
+          >
+            <FitIcon />
+          </button>
+          <button
+            type="button"
+            className="btn zoom-btn zoom-glyph"
+            aria-label={homeIsHead ? "Go to head" : "Go to the newest commit"}
+            title={homeIsHead ? "Go to head" : "Go to the newest commit"}
+            disabled={!homeNode}
+            onClick={goHome}
+          >
+            <HeadIcon />
+          </button>
+          <span className="zoom-sep" aria-hidden="true" />
           <button
             type="button"
             className="btn zoom-btn"
             aria-label="Zoom in"
             title="Zoom in (+)"
             disabled={goal >= ZOOM_MAX}
-            onClick={() => applyZoom(targetZoom() + ZOOM_STEP, undefined, true)}
+            onClick={() => applyZoom(targetZoom() + ZOOM_STEP, keyAnchor(), { smooth: true })}
           >
             +
           </button>
           <button
             type="button"
-            className="btn zoom-btn"
+            className="btn zoom-btn zoom-reset"
             aria-label={`Reset zoom, now ${Math.round(goal * 100)}%`}
-            title="Reset zoom (⌘0)"
-            onClick={() => applyZoom(1, undefined, true)}
+            title="Reset zoom (Ctrl+0)"
+            onClick={() => applyZoom(1, keyAnchor(), { smooth: true })}
           >
-            <span key={Math.round(goal * 100)} className="zoom-level">
+            {/* Ticks over once per 10% band: every 12% key step crosses one, but a pinch (many
+                ~1% steps) does not restart the fade-in on each event and leave the readout dim. */}
+            <span key={Math.floor(goal * 10 + 1e-6)} className="zoom-level">
               {Math.round(goal * 100)}%
             </span>
           </button>
@@ -597,12 +757,32 @@ export function CommitGraph({ graph, layout, selected, panelOpen, scope, gone, c
             aria-label="Zoom out"
             title="Zoom out (−)"
             disabled={goal <= ZOOM_MIN}
-            onClick={() => applyZoom(targetZoom() - ZOOM_STEP, undefined, true)}
+            onClick={() => applyZoom(targetZoom() - ZOOM_STEP, keyAnchor(), { smooth: true })}
           >
             −
           </button>
         </div>
       </div>
     </div>
+  );
+}
+
+/** Four pen-drawn corners round a dot: show everything. */
+function FitIcon() {
+  return (
+    <svg className="zoom-icon" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M2.6 7.6 Q2.4 3.1 7.2 2.7 M12.7 2.5 Q17.3 2.6 17.5 7.3 M17.6 12.5 Q17.5 17.4 12.6 17.6 M7.4 17.5 Q2.5 17.6 2.4 12.7" />
+      <path d="M10.1 7.6 Q12.6 7.9 12.4 10.2 Q12.1 12.6 9.8 12.4 Q7.5 12.1 7.7 9.8 Q8 7.7 10.4 7.7" />
+    </svg>
+  );
+}
+
+/** A station with the "head" arrow pointing down at it, like the note on the map. */
+function HeadIcon() {
+  return (
+    <svg className="zoom-icon" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M10.3 1.8 Q11.4 4.6 9.9 8.2 M7.2 6.1 Q8.8 7.1 9.9 8.4 Q11.4 7.2 12.9 5.5" />
+      <path d="M10.2 11.2 Q14 11.4 13.8 14.6 Q13.5 18 9.9 17.8 Q6.3 17.5 6.5 14.4 Q6.8 11.3 10.6 11.4" />
+    </svg>
   );
 }

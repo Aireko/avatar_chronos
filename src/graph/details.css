@@ -69,6 +69,50 @@
 .diff-code .d-del { background: color-mix(in srgb, var(--bad) 16%, transparent); box-shadow: inset 3px 0 var(--bad); }
 .diff-code .d-hunk { background: var(--wash); }
 
+/* Each changed file is a key: it opens that file in the editor at this commit. The row
+   reaches a little past the list's edges so its wash doesn't crowd the text. */
+.ticket .files li { display: block; padding: 0; }
+.ticket .file-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: calc(100% + 12px);
+  margin: 0 -6px;
+  padding: 7px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+}
+.ticket .file-main,
+.ticket .file-path { display: block; }
+/* A deleted file isn't a key; keep its counts in line with the rows that have an arrow. */
+.ticket div.file-row::after { content: ""; flex: none; width: 14px; }
+.ticket button.file-row { cursor: pointer; transition: background-color 0.15s ease, transform 0.08s; }
+.ticket button.file-row:hover:not(:disabled) { background: var(--wash); }
+.ticket button.file-row:hover:not(:disabled) .file-path {
+  text-decoration: underline wavy;
+  text-decoration-color: var(--soft);
+  text-underline-offset: 4px;
+}
+.ticket button.file-row:active:not(:disabled) { transform: translateY(1px); }
+/* Briefly disabled while git runs; not dimmed, so the list doesn't flicker. */
+.ticket button.file-row:disabled { cursor: default; }
+.ticket button.file-row:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: -2px; }
+/* The arrow slides in under the pointer or keyboard focus. */
+.ticket .file-open {
+  flex: none;
+  width: 14px;
+  color: var(--soft);
+  opacity: 0;
+  transform: translate(-4px, 3px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.ticket button.file-row:hover:not(:disabled) .file-open,
+.ticket button.file-row:focus-visible .file-open { opacity: 1; transform: translate(0, 0); }
+
 /* ============ code editor ============ */
 
 /* Folder carets turn rather than swap glyphs, and opened folders drop their files in. */
@@ -131,6 +175,50 @@
    (the editable pane keeps its caret as its focus cue). */
 .side-diff pre.side-pane-code:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: -3px; }
 
+/* The editable pane is a textarea, which can't colour its own lines, so the marks are
+   drawn on a layer behind it (see EditMarks in CodeEditor.tsx), positioned in lines.
+   Its font, line height and 8px top padding must match .side-pane-edit in graph.css. */
+.side-edit { position: relative; flex: 1; min-height: 0; display: flex; overflow: hidden; background: var(--paper); }
+.side-edit > .side-pane-edit { position: relative; z-index: 1; height: 100%; background: transparent; }
+.side-edit-marks {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  pointer-events: none;
+}
+.side-edit-mark {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(8px + var(--at, 0) * 1.5em);
+  height: calc(var(--n, 1) * 1.5em);
+}
+/* Added lines take the same wash and margin rule as the read-only side. */
+.side-edit-mark.is-added { background: color-mix(in srgb, var(--ok) 16%, transparent); box-shadow: inset 3px 0 var(--ok); }
+/* Where lines were removed, a dashed rule between the lines with a small notch in the margin. */
+.side-edit-mark.is-gap { height: 0; margin-top: -1px; border-top: 2px dashed var(--bad); }
+.side-edit-mark.is-gap::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: -6px;
+  border: 5px solid transparent;
+  border-left: 7px solid var(--bad);
+  border-right-width: 0;
+}
+/* The change just jumped to glows here too, like the read-only side. */
+.side-edit-mark.is-jump { animation: details-flash 0.9s ease-out; }
+.side-edit-mark.is-jump.is-gap { height: 6px; margin-top: -3px; border: 0; border-radius: 3px; }
+.side-edit-mark.is-jump.is-gap::before { content: none; }
+
+/* A file that is the same in the commit and the working tree (opened from the ticket). */
+.file-tree .tree-status.is-same { color: var(--soft); }
+
 /* ============ terminal dock ============ */
 
 .term .term-line { animation: details-settle 0.14s ease-out backwards; }
@@ -167,6 +255,47 @@
   opacity: 0.7;
   animation: details-late 0.2s ease-out backwards;
 }
+
+/* ============ dock keys and the status bar (App.tsx) ============ */
+
+/* The dock keys show their keyboard shortcut, pencilled small on the right. */
+.dock-toggles .dock-key { display: inline-flex; align-items: center; justify-content: space-between; gap: 12px; }
+.dock-kbd {
+  flex: none;
+  padding: 2px 5px 3px;
+  border: 1.5px solid currentColor;
+  border-radius: 6px 4px 7px 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.55;
+}
+
+/* After a reload, a small note in the status bar says what it found, then leaves.
+   <Presence className="reload-note" exitMs={160}> in App.tsx. */
+.reload-note { display: flex; flex: none; }
+.reload-note.is-entering { animation: reload-note-in 0.26s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards; }
+.reload-note.is-leaving { animation: reload-note-out 0.16s ease-in forwards; }
+@keyframes reload-note-in { from { opacity: 0; transform: translateY(9px) rotate(-5deg) scale(0.9); } }
+@keyframes reload-note-out { to { opacity: 0; transform: translateY(6px); } }
+.reload-note-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 10px 1px 8px;
+  border: 2px solid currentColor;
+  border-radius: var(--sketch);
+  color: var(--ok);
+  font-size: 15px;
+  line-height: 1;
+  transform: rotate(-1deg);
+}
+/* New commits get a highlighter swipe instead of the tick. */
+.reload-note-tag.is-fresh { padding-left: 10px; border-color: var(--ink); background: var(--highlight); color: var(--ink); }
+.reload-tick { flex: none; }
+.reload-tick path { stroke-dasharray: 1; stroke-dashoffset: 1; animation: reload-tick-draw 0.24s ease-out 0.12s forwards; }
+@keyframes reload-tick-draw { to { stroke-dashoffset: 0; } }
 
 /* ============ context views panel ============ */
 
@@ -249,7 +378,15 @@
   .term .term-line,
   .term .term-prompt.is-busy .term-dollar,
   .term-running,
-  .ctx-panel { animation: none; }
+  .ctx-panel,
+  .side-edit-mark.is-jump,
+  .reload-note.is-entering,
+  .reload-note.is-leaving,
+  .reload-tick path { animation: none; }
+  .reload-tick path { stroke-dashoffset: 0; }
+  .side-edit-mark.is-jump { background-color: var(--highlight); }
+  .ticket button.file-row,
+  .ticket .file-open,
   .ticket .diff-file summary,
   .diff-caret,
   .file-tree .tree-chevron,
@@ -258,7 +395,8 @@
   .term .term-close,
   .term .term-prompt::after,
   .ctx-chip { transition: none; }
-  .file-tree .tree-row:active { transform: none; }
+  .file-tree .tree-row:active,
+  .ticket button.file-row:active:not(:disabled) { transform: none; }
   /* Without the fade, the jumped-to change still holds a plain highlight while it is marked. */
   .side-pane-code .side-line.is-jump { background-color: var(--highlight); }
 }

@@ -125,7 +125,29 @@
 }
 .people-person:last-child { border-bottom: none; }
 
-.people-who { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+/* Name block with an initial bubble beside it, inked in the person's pen. */
+.people-id { display: flex; align-items: center; gap: 10px; }
+.people-avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border: 2px solid var(--pen);
+  border-radius: 54% 46% 51% 49% / 47% 53% 47% 53%;
+  background: color-mix(in srgb, var(--pen) 16%, var(--paper));
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1;
+  white-space: nowrap;
+  transform: rotate(-4deg);
+  animation: people-pop 0.24s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards;
+  animation-delay: calc(var(--i, 0) * 35ms + 60ms);
+}
+.people-person:nth-child(even) .people-avatar { transform: rotate(3deg); }
+@keyframes people-pop { from { opacity: 0; transform: scale(0.6) rotate(-12deg); } }
+
+.people-who { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
 .people-name { font-size: 20px; font-weight: 400; line-height: 1.15; }
 .people-tag { font-size: 13px; }
 .people-email {
@@ -140,7 +162,6 @@
 /* share: a marker stroke inside a hand-ruled box, one pen per person */
 .people-share { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 15px; }
 .people-bar {
-  --pen: var(--pen-2);
   position: relative;
   display: block;
   flex: 0 0 132px;
@@ -162,13 +183,14 @@
     color-mix(in srgb, var(--paper) 28%, transparent) 4px 5.5px
   );
 }
-.people-person:nth-child(7n + 1) .people-bar { --pen: var(--pen-2); }
-.people-person:nth-child(7n + 2) .people-bar { --pen: var(--pen-1); }
-.people-person:nth-child(7n + 3) .people-bar { --pen: var(--pen-3); }
-.people-person:nth-child(7n + 4) .people-bar { --pen: var(--pen-4); }
-.people-person:nth-child(7n + 5) .people-bar { --pen: var(--pen-5); }
-.people-person:nth-child(7n + 6) .people-bar { --pen: var(--pen-6); }
-.people-person:nth-child(7n + 7) .people-bar { --pen: var(--pen-7); }
+/* One pen per person, shared by their initial bubble and share bar. */
+.people-person { --pen: var(--pen-2); }
+.people-person:nth-child(7n + 2) { --pen: var(--pen-1); }
+.people-person:nth-child(7n + 3) { --pen: var(--pen-3); }
+.people-person:nth-child(7n + 4) { --pen: var(--pen-4); }
+.people-person:nth-child(7n + 5) { --pen: var(--pen-5); }
+.people-person:nth-child(7n + 6) { --pen: var(--pen-6); }
+.people-person:nth-child(7n + 7) { --pen: var(--pen-7); }
 
 .people-latest { overflow-wrap: anywhere; }
 
@@ -229,7 +251,8 @@
   .people-panel .people-empty,
   .people-person,
   .people-lines,
-  .people-bar-fill { animation: none; }
+  .people-bar-fill,
+  .people-avatar { animation: none; }
   .people-count,
   .people-report,
   .people-bar-fill { transition: none; }

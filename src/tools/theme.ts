@@ -3,9 +3,14 @@
 // Until the user picks one with the toolbar switch, the app follows the system's
 // light/dark setting, including when it changes while the app is open. Once they
 // pick, that choice is saved and used on every later launch.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
+import { crossFade } from "./crossFade";
 
 export type Theme = "paper" | "board";
+
+/** Why the theme changed: the system's light/dark setting moved, or the user picked one. */
+export type ThemeCause = "system" | "pick";
 
 /** localStorage key for the user's pick. index.html reads it too, before the app loads. */
 export const THEME_KEY = "chronos.theme";
@@ -99,15 +104,18 @@ export interface ThemeController {
 /**
  * The theme rules, without React: start from the saved pick or the system setting,
  * follow the system until the user picks, then stick to (and save) the pick.
- * `onChange` is called whenever the theme to show changes.
+ * `onChange` is called whenever the theme to show changes, with what caused it.
  */
-export function createThemeController(onChange: (theme: Theme) => void, env: ThemeEnv = browserEnv()): ThemeController {
+export function createThemeController(
+  onChange: (theme: Theme, cause: ThemeCause) => void,
+  env: ThemeEnv = browserEnv(),
+): ThemeController {
   let picked = savedTheme(env) !== null;
   let current = initialTheme(env);
   const stop = watchSystemTheme((theme) => {
     if (picked || theme === current) return;
     current = theme;
-    onChange(theme);
+    onChange(theme, "system");
   }, env);
   return {
     get theme() {
@@ -119,7 +127,7 @@ export function createThemeController(onChange: (theme: Theme) => void, env: The
       saveTheme(theme, env);
       if (theme === current) return;
       current = theme;
-      onChange(theme);
+      onChange(theme, "pick");
     },
     stop,
   };
@@ -133,13 +141,20 @@ function markDocument(theme: Theme) {
 /**
  * The current theme and a setter for the user's pick. The rules live in
  * createThemeController; this only connects them to React state.
+ *
+ * A system light/dark change cross-fades the window, like the toolbar switch does.
+ * The user's own pick isn't faded here: the caller already wraps it in crossFade,
+ * and a second, nested transition would cut the first one short.
  */
 export function useTheme(): [Theme, (theme: Theme) => void] {
   const [theme, setTheme] = useState<Theme>(() => initialTheme());
   const controller = useRef<ThemeController | null>(null);
 
   useEffect(() => {
-    const c = createThemeController(setTheme);
+    const c = createThemeController((next, cause) => {
+      if (cause === "system") crossFade(() => flushSync(() => setTheme(next)));
+      else setTheme(next);
+    });
     controller.current = c;
     // Catch a system change that happened between the first render and now.
     setTheme(c.theme);
@@ -149,7 +164,9 @@ export function useTheme(): [Theme, (theme: Theme) => void] {
     };
   }, []);
 
-  useEffect(() => markDocument(theme), [theme]);
+  // A layout effect, so the page behind the app turns in the same commit as the app
+  // (and lands in the cross-fade's "after" picture) rather than a frame later.
+  useLayoutEffect(() => markDocument(theme), [theme]);
 
   const choose = useCallback((next: Theme) => {
     if (controller.current) controller.current.choose(next);

@@ -36,6 +36,33 @@ import {
 import { Presence } from "./tools/Presence";
 import { ToolDrawer, type ToolId } from "./tools/ToolDrawer";
 
+/** How long the "History up to date" note stays after a reload. */
+const RELOAD_NOTE_MS = 2600;
+
+/** What a reload found, in a few words for the status bar. */
+function reloadText(added: number, dropped: number): string {
+  if (added > 0) return `${added} new commit${added === 1 ? "" : "s"}`;
+  if (dropped > 0) return `${dropped} commit${dropped === 1 ? "" : "s"} gone`;
+  return "History up to date";
+}
+
+/** A small hand-drawn tick for the reload note; it draws itself in. */
+function TickGlyph() {
+  return (
+    <svg className="reload-tick" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+      <path
+        d="M2.2 7.6 L5.4 10.6 L11.8 3.2"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        pathLength={1}
+      />
+    </svg>
+  );
+}
+
 const TOOLS: { id: ToolId; label: string; title: string; hint: string; icon: () => ReactElement }[] = [
   { id: "ai", label: "Local AI", title: "Local AI", hint: "Local Qwen model through Ollama", icon: SparkIcon },
   { id: "reviews", label: "PR reviews", title: "PR reviews", hint: "Check GitHub pull requests for bugs", icon: ReviewIcon },
@@ -56,11 +83,15 @@ function App() {
   const [panel, setPanel] = useState<{ mode: PanelMode; id: number } | null>(null);
   const [showEditor, setShowEditor] = useState(false);
   const [diffCompare, setDiffCompare] = useState<DiffCompare | null>(null);
+  // File the plain editor opens first (a HEAD file picked in the commit ticket).
+  const [editorStart, setEditorStart] = useState<string | null>(null);
   const [showTerminal, setShowTerminal] = useState(false);
   // At most one drawer is open on the right: a tool or the commit details.
   const [tool, setTool] = useState<ToolId | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  // What the last reload found; keyed by `n` so a repeat reload stamps it again.
+  const [reloadNote, setReloadNote] = useState<{ text: string; fresh: boolean; n: number } | null>(null);
   const ids = useRef(new Map<string, string>());
 
   const scoped = useMemo(() => (graph ? scopeGraph(graph, scope) : null), [graph, scope]);
@@ -86,6 +117,13 @@ function App() {
     );
   }, []);
 
+  // The reload note tidies itself away.
+  useEffect(() => {
+    if (!reloadNote) return;
+    const timer = window.setTimeout(() => setReloadNote(null), RELOAD_NOTE_MS);
+    return () => window.clearTimeout(timer);
+  }, [reloadNote]);
+
   /** Swap in fresh history. Within the same repository, commits keep their identity so changes animate. */
   function applyGraph(next: ChronosGraph) {
     ids.current = carryIds(graph?.commits ?? [], ids.current, next.commits);
@@ -106,8 +144,18 @@ function App() {
       const { graph: next } = await exportGraph(repo);
 
       if (graph && next.repoPath === graph.repoPath) {
+        const before = new Set(graph.commits.map((c) => c.hash));
+        const after = new Set(next.commits.map((c) => c.hash));
+        const added = next.commits.filter((c) => !before.has(c.hash)).length;
+        const dropped = graph.commits.filter((c) => !after.has(c.hash)).length;
         applyGraph(next);
+        setReloadNote((prev) => ({
+          text: reloadText(added, dropped),
+          fresh: added > 0 || dropped > 0,
+          n: (prev?.n ?? 0) + 1,
+        }));
       } else {
+        setReloadNote(null);
         ids.current = new Map();
         setGraph(next);
         setSelected(null);
@@ -143,16 +191,27 @@ function App() {
     });
   }
 
-  function openSideDiff(hash: string) {
+  /**
+   * Compare a commit with the working tree side by side, optionally opening one of its
+   * files first. HEAD has nothing newer to compare, so its files open in the plain editor.
+   */
+  function openSideDiff(hash: string, path?: string) {
     const commit = graph?.commits.find((c) => c.hash === hash);
-    if (!commit || commit.hash === graph?.head) return;
+    if (!commit) return;
+    if (commit.hash === graph?.head) {
+      if (!path) return;
+      setDiffCompare(null);
+      setEditorStart(path);
+    } else {
+      setDiffCompare({
+        baseRev: commit.hash,
+        baseLabel: commit.shortHash,
+        headLabel: "working tree",
+        path,
+      });
+    }
     setSelected(hash);
     setPanel(null);
-    setDiffCompare({
-      baseRev: commit.hash,
-      baseLabel: commit.shortHash,
-      headLabel: "working tree",
-    });
     setShowEditor(true);
   }
 
@@ -207,6 +266,22 @@ function App() {
         target instanceof HTMLTextAreaElement ||
         target instanceof HTMLSelectElement ||
         (target instanceof HTMLElement && target.isContentEditable);
+
+      // Ctrl+` toggles the terminal from anywhere, its own prompt included. Ctrl+E
+      // toggles the editor, but not while typing, so it can't drop unsaved edits.
+      if (e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+        if (e.code === "Backquote" || e.key === "`") {
+          e.preventDefault();
+          toggleTerminal();
+          return;
+        }
+        if (!typing && e.key.toLowerCase() === "e") {
+          e.preventDefault();
+          toggleEditor();
+          return;
+        }
+      }
+
       if (typing) return;
 
       if (e.key === "Escape") {
@@ -245,13 +320,16 @@ function App() {
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [layout, selected, panel, tool, showEditor, showTerminal]);
+    // toggleEditor and toggleTerminal read `graph`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [graph, layout, selected, panel, tool, showEditor, showTerminal]);
 
   function toggleEditor() {
     if (!graph) {
       setError("Open a repository first.");
       return;
     }
+    setEditorStart(null);
     setShowEditor((v) => {
       if (v) {
         setDiffCompare(null);
@@ -462,6 +540,7 @@ function App() {
                 layout={layout}
                 selected={selected}
                 compare={diffCompare}
+                startPath={editorStart}
                 onSelect={pick}
                 onCompare={setDiffCompare}
                 onClose={closeEditor}
@@ -490,6 +569,7 @@ function App() {
                 setPanel({ mode: "details", id: Date.now() });
               }}
               onOpenSideDiff={() => openSideDiff(selectedNode.commit.hash)}
+              onOpenFile={(file) => openSideDiff(selectedNode.commit.hash, file)}
               onClose={() => setPanel(null)}
             />
           )}
@@ -526,17 +606,27 @@ function App() {
             type="button"
             className={`btn dock-key${showEditor ? " primary" : ""}`}
             aria-pressed={showEditor}
+            aria-keyshortcuts="Control+E"
+            title={showEditor ? "Back to the map (Ctrl+E)" : "Open the code editor (Ctrl+E)"}
             onClick={toggleEditor}
           >
-            Code editor
+            <span>Code editor</span>
+            <kbd className="dock-kbd" aria-hidden="true">
+              Ctrl E
+            </kbd>
           </button>
           <button
             type="button"
             className={`btn dock-key${showTerminal ? " primary" : ""}`}
             aria-pressed={showTerminal}
+            aria-keyshortcuts="Control+`"
+            title={showTerminal ? "Close the terminal (Ctrl+`)" : "Open the terminal (Ctrl+`)"}
             onClick={toggleTerminal}
           >
-            Terminal
+            <span>Terminal</span>
+            <kbd className="dock-kbd" aria-hidden="true">
+              Ctrl `
+            </kbd>
           </button>
         </div>
       </main>
@@ -557,10 +647,24 @@ function App() {
             <span key={`r:${graph.branches.length}`} className="status-tick">
               {graph.branches.length} branches
             </span>
+            {/* After a reload: a little note that it worked and what it found. */}
+            <Presence show={Boolean(reloadNote)} className="reload-note" exitMs={160}>
+              {reloadNote && (
+                <span key={reloadNote.n} className={`reload-note-tag${reloadNote.fresh ? " is-fresh" : ""}`}>
+                  {!reloadNote.fresh && <TickGlyph />}
+                  {reloadNote.text}
+                </span>
+              )}
+            </Presence>
           </>
         ) : (
           <span className="status-path">{loading ? "Opening…" : "No repository open"}</span>
         )}
+
+        {/* Always present, so screen readers hear each reload's result. */}
+        <span className="details-sr-only" role="status">
+          {reloadNote ? `Reloaded: ${reloadNote.text}` : ""}
+        </span>
 
         <span
           className={`status-conn${connected === false ? " status-bad" : connected ? " is-ok" : ""}`}

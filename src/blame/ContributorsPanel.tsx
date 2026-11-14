@@ -17,6 +17,7 @@ import {
   type Contributor,
   type DraftContext,
 } from "./contributors";
+import { initials } from "./initials";
 import "./ContributorsPanel.css";
 
 interface ContributorsPanelProps {
@@ -350,10 +351,16 @@ function PersonRow({ person, order, total, onEmail, onCopy }: PersonRowProps) {
 
   return (
     <li className="people-person" style={{ "--i": Math.min(order, MAX_STAGGER) } as CSSProperties}>
-      <div className="people-who">
-        <strong className="people-name">{person.name || "(no name)"}</strong>
-        {bot && <span className="mark dashed people-tag">bot</span>}
-        <span className="people-email">{person.email || "no email recorded"}</span>
+      <div className="people-id">
+        {/* Initials in this person's pen, the same pen as their share bar. */}
+        <span className="people-avatar" aria-hidden="true">
+          {initials(person.name, person.email)}
+        </span>
+        <div className="people-who">
+          <strong className="people-name">{person.name || "(no name)"}</strong>
+          {bot && <span className="mark dashed people-tag">bot</span>}
+          <span className="people-email">{person.email || "no email recorded"}</span>
+        </div>
       </div>
       <div className="people-share">
         <span className="people-bar" aria-hidden>

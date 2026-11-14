@@ -30,6 +30,8 @@ interface Props {
   onGraphChange: (graph: ChronosGraph) => void;
   onSelect: (hash: string) => void;
   onOpenSideDiff: () => void;
+  /** Open one of this commit's files in the editor (side by side with the working tree, or plain at HEAD). */
+  onOpenFile: (path: string) => void;
   onClose: () => void;
 }
 
@@ -66,6 +68,7 @@ export function CommitDetails({
   onGraphChange,
   onSelect,
   onOpenSideDiff,
+  onOpenFile,
   onClose,
 }: Props) {
   const [confirming, setConfirming] = useState(false);
@@ -398,35 +401,65 @@ export function CommitDetails({
             </h3>
             {commit.filesChanged.length === 0 && <p className="quiet">This commit changes no files.</p>}
             <ul className="files">
-              {commit.filesChanged.map((f, i) => (
-                <li key={f.path} style={{ "--i": i } as CSSProperties}>
-                  <span className={`status status-${f.status}`} title={STATUS_NAME[f.status] ?? f.status}>
-                    {f.status}
-                  </span>
-                  <div className="file-main">
-                    <div className="file-path">
-                      {f.oldPath && <span className="quiet">{f.oldPath} to </span>}
-                      {f.path}
-                    </div>
-                    {f.symbolsTouched.length > 0 && (
-                      <div className="symbols">
-                        {f.symbolsTouched.map((s) => (
-                          <span
-                            key={s.name}
-                            className={`symbol symbol-${s.changeType.toLowerCase()}`}
-                            title={`${s.kind}, ${s.changeType.toLowerCase()}, lines ${s.startLine} to ${s.endLine}`}
-                          >
-                            {s.name}
-                          </span>
-                        ))}
+              {commit.filesChanged.map((f, i) => {
+                const row = (
+                  <>
+                    <span className={`status status-${f.status}`} title={STATUS_NAME[f.status] ?? f.status}>
+                      {f.status}
+                    </span>
+                    <span className="file-main">
+                      <span className="file-path">
+                        {f.oldPath && <span className="quiet">{f.oldPath} to </span>}
+                        {f.path}
+                      </span>
+                      {f.symbolsTouched.length > 0 && (
+                        <span className="symbols">
+                          {f.symbolsTouched.map((s) => (
+                            <span
+                              key={s.name}
+                              className={`symbol symbol-${s.changeType.toLowerCase()}`}
+                              title={`${s.kind}, ${s.changeType.toLowerCase()}, lines ${s.startLine} to ${s.endLine}`}
+                            >
+                              {s.name}
+                            </span>
+                          ))}
+                        </span>
+                      )}
+                    </span>
+                    <span className="counts">
+                      <span className="add">+{f.additions}</span> <span className="del">−{f.deletions}</span>
+                    </span>
+                  </>
+                );
+                // A file this commit deleted has nothing to show at this commit.
+                return (
+                  <li key={f.path} style={{ "--i": i } as CSSProperties}>
+                    {f.status === "D" ? (
+                      <div className="file-row" title="Deleted in this commit">
+                        {row}
                       </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="file-row"
+                        disabled={busy !== null}
+                        title={
+                          isHead
+                            ? `Open ${f.path} in the code editor`
+                            : `Open ${f.path} side by side: this commit next to the working tree`
+                        }
+                        onClick={() => onOpenFile(f.path)}
+                      >
+                        {row}
+                        <span className="file-open" aria-hidden="true">
+                          ↗
+                        </span>
+                        <span className="details-sr-only">, open in the editor</span>
+                      </button>
                     )}
-                  </div>
-                  <span className="counts">
-                    <span className="add">+{f.additions}</span> <span className="del">−{f.deletions}</span>
-                  </span>
-                </li>
-              ))}
+                  </li>
+                );
+              })}
             </ul>
           </section>
         </div>

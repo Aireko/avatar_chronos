@@ -149,11 +149,45 @@
 .ai-panel details { margin: 10px 0 0; }
 .ai-panel summary {
   width: fit-content;
+  list-style: none;
   color: var(--soft);
   cursor: pointer;
 }
+.ai-panel summary::-webkit-details-marker { display: none; }
 .ai-panel summary:hover { color: var(--ink); text-decoration: underline wavy; text-underline-offset: 4px; }
 .ai-panel details[open] > summary { color: var(--ink); }
+
+/* A pen-drawn caret instead of the browser's triangle: pointing right when
+   shut, turned down when open. (An inline-block, so the wavy hover underline
+   leaves it alone.) */
+.ai-panel summary::before {
+  content: "";
+  display: inline-block;
+  width: 0.4em;
+  height: 0.4em;
+  margin: 0 0.5em 0 0.1em;
+  border: solid currentColor;
+  border-width: 0 2px 2px 0;
+  border-radius: 0 2px 1px 0;
+  vertical-align: 0.15em;
+  transform: translate(0, 0) rotate(-47deg);
+  transition: transform 0.18s ease-out;
+}
+.ai-panel details[open] > summary::before { transform: translate(0.05em, -0.1em) rotate(43deg); }
+
+/* Where the browser can animate to height: auto, the content unrolls and rolls
+   back up instead of snapping. The clip margin keeps focus rings visible. */
+@supports selector(::details-content) and (interpolate-size: allow-keywords) {
+  .ai-panel details { interpolate-size: allow-keywords; }
+  .ai-panel details::details-content {
+    block-size: 0;
+    overflow: clip;
+    overflow-clip-margin: 8px;
+    opacity: 0;
+    transition: block-size 0.22s ease-out, opacity 0.18s ease-out, content-visibility 0.22s allow-discrete;
+  }
+  .ai-panel details[open]::details-content { block-size: auto; opacity: 1; }
+}
 
 /* ---------- download ---------- */
 .ai-download {
@@ -317,6 +351,26 @@
 @keyframes ai-blink { 50% { opacity: 0; } }
 .ai-output { transition: border-color 0.2s ease; }
 
+/* ---------- under the answer: stats and the copy key ---------- */
+.ai-answer-bar {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px 10px;
+  margin-top: 6px;
+}
+.ai-answer-bar .ai-stats { flex: 1; min-width: 0; margin: 4px 0 0; }
+.ai-panel .btn.ai-copy { flex: none; margin-left: auto; animation: ai-rise 0.22s ease-out backwards; }
+
+/* "Copy answer" turns into "Copied" in place; the labels stack so the width holds. */
+.ai-swap { display: inline-grid; }
+.ai-swap > span { grid-area: 1 / 1; text-align: center; }
+.ai-swap > .is-off { visibility: hidden; }
+.ai-panel .btn.ai-copy.is-copied { border-color: var(--ok); color: var(--ok); }
+.ai-panel .btn.ai-copy.is-failed { border-color: var(--bad); border-style: dashed; color: var(--bad); }
+.ai-copied-label::before { content: "\2713" / ""; margin-right: 5px; }
+.ai-copied-label,
+.ai-copy-failed-label { animation: ai-stamp 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards; }
+
 @media (prefers-reduced-motion: reduce) {
   .ai-progress progress:indeterminate { animation: none; }
   .ai-progress progress::-webkit-progress-value { transition: none; }
@@ -329,7 +383,15 @@
   .ai-thinking,
   .ai-stats,
   .ai-output,
-  .ai-caret { animation: none; }
+  .ai-caret,
+  .ai-panel .btn.ai-copy,
+  .ai-copied-label,
+  .ai-copy-failed-label { animation: none; }
   .ai-panel .ai-facts,
-  .ai-output { transition: none; }
+  .ai-output,
+  .ai-panel summary::before { transition: none; }
+}
+/* Its own rule: a browser without ::details-content would drop the whole list. */
+@media (prefers-reduced-motion: reduce) {
+  .ai-panel details::details-content { transition: none; }
 }

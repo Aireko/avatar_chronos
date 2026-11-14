@@ -18,6 +18,7 @@ import {
 import { isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { bugCheckService, isValidPrNumber, isValidRepo, toBugCheckError } from "./bugCheckService";
+import { type ChunkOutcome, chunkTicks, ticksLabel } from "./chunkTicks";
 import type {
   BugCheckError,
   BugCheckEvent,
@@ -161,6 +162,8 @@ interface RunProgress {
   chunkFiles: string[];
   chunksDone: number;
   chunksFailed: number;
+  /** How each finished chunk ended, by index: one tick each on the progress track. */
+  settled: Record<number, ChunkOutcome>;
   findings: number;
   /** Findings the double-check filtered out so far. */
   filtered: number;
@@ -178,6 +181,7 @@ function freshProgress(repo: string, number: number): RunProgress {
     chunkFiles: [],
     chunksDone: 0,
     chunksFailed: 0,
+    settled: {},
     findings: 0,
     filtered: 0,
     filesReviewed: 0,
@@ -205,12 +209,18 @@ function applyEvent(progress: RunProgress, event: BugCheckEvent): RunProgress {
     case "findingFiltered":
       return { ...progress, filtered: progress.filtered + 1 };
     case "chunkDone":
-      return { ...progress, chunksDone: progress.chunksDone + 1, verifying: undefined };
+      return {
+        ...progress,
+        chunksDone: progress.chunksDone + 1,
+        settled: { ...progress.settled, [event.index]: "done" },
+        verifying: undefined,
+      };
     case "chunkFailed":
       return {
         ...progress,
         chunksDone: progress.chunksDone + 1,
         chunksFailed: progress.chunksFailed + 1,
+        settled: { ...progress.settled, [event.index]: "failed" },
         verifying: undefined,
       };
     default:
@@ -227,6 +237,59 @@ function progressLine(progress: RunProgress): string {
     : "";
   const filtered = progress.filtered > 0 ? `, ${progress.filtered} filtered out` : "";
   return `Chunk ${current} of ${progress.totalChunks}${step} · ${plural(progress.findings, "finding")} so far${filtered}`;
+}
+
+/**
+ * How far a run got: one tick per diff chunk (done, failed, being reviewed or
+ * waiting), or a plain bar while the chunk count is unknown or too large to tick.
+ */
+function ProgressTrack({ progress }: { progress: RunProgress }) {
+  const ticks = chunkTicks(progress.totalChunks, progress.settled, progress.chunk);
+  if (!ticks) {
+    return (
+      <progress
+        max={progress.totalChunks || 1}
+        value={progress.totalChunks ? progress.chunksDone : undefined}
+        aria-label="Bug check progress"
+      />
+    );
+  }
+  return (
+    <div
+      className="bc-ticks"
+      role="progressbar"
+      aria-label="Bug check progress"
+      aria-valuemin={0}
+      aria-valuemax={ticks.length}
+      aria-valuenow={progress.chunksDone}
+      aria-valuetext={ticksLabel(ticks.length, progress.chunksDone, progress.chunksFailed)}
+    >
+      {ticks.map((state, index) => (
+        <span key={index} className={`bc-tick is-${state}`} />
+      ))}
+    </div>
+  );
+}
+
+function prefersReducedMotion(): boolean {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+}
+
+/**
+ * Scrolls the nearest scrolling ancestor (the drawer body) so `el` sits at its
+ * top. Unlike scrollIntoView it never nudges the fixed app shell around it: it
+ * stops at that first scroll container even when it has nothing to scroll.
+ */
+function scrollToTop(el: HTMLElement) {
+  for (let parent = el.parentElement; parent; parent = parent.parentElement) {
+    const { overflowY } = getComputedStyle(parent);
+    if (overflowY !== "auto" && overflowY !== "scroll") continue;
+    if (parent.scrollHeight > parent.clientHeight) {
+      const top = parent.scrollTop + el.getBoundingClientRect().top - parent.getBoundingClientRect().top - 8;
+      parent.scrollTo({ top: Math.max(0, top), behavior: prefersReducedMotion() ? "auto" : "smooth" });
+    }
+    return;
+  }
 }
 
 /** A short label for a finding's double-check verdict, or nothing when it was not double-checked. */
@@ -382,6 +445,9 @@ export default function BugCheckPanel() {
   const reportRef = useRef<BugCheckReport | undefined>(undefined);
   reportRef.current = report;
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // "View report" brings the report into view; bumped on each successful open.
+  const reportBox = useRef<HTMLDivElement>(null);
+  const [revealReport, setRevealReport] = useState(0);
 
   const [confirming, setConfirming] = useState(false);
   const [posting, setPosting] = useState(false);
@@ -553,8 +619,10 @@ export default function BugCheckPanel() {
     setReportError(undefined);
     try {
       const stored = await bugCheckService.getReport(repo, number);
-      if (stored) showReport(stored);
-      else {
+      if (stored) {
+        showReport(stored);
+        setRevealReport((n) => n + 1);
+      } else {
         showReport(undefined);
         setReportError({ kind: "not_found", message: `No stored check for ${repo}#${number}`, hint: "Run the bug check first" });
       }
@@ -562,6 +630,15 @@ export default function BugCheckPanel() {
       setReportError(toBugCheckError(error));
     }
   }
+
+  // After "View report": scroll the report to the top of the drawer and move focus to
+  // its title, so keyboard users continue from there.
+  useEffect(() => {
+    const box = reportBox.current;
+    if (revealReport === 0 || !box) return;
+    box.querySelector<HTMLElement>(".bc-report-title")?.focus({ preventScroll: true });
+    scrollToTop(box);
+  }, [revealReport]);
 
   const otherNumber = Number(otherPr);
   const otherValid = otherPr.trim() !== "" && isValidPrNumber(otherNumber);
@@ -862,11 +939,7 @@ export default function BugCheckPanel() {
               {progress.cancelling ? "Cancelling..." : "Cancel"}
             </button>
           </div>
-          <progress
-            max={progress.totalChunks || 1}
-            value={progress.totalChunks ? progress.chunksDone : undefined}
-            aria-label="Bug check progress"
-          />
+          <ProgressTrack progress={progress} />
           <p>{progressLine(progress)}</p>
           {progress.totalChunks !== undefined && (
             <p className="bc-muted">
@@ -884,9 +957,9 @@ export default function BugCheckPanel() {
 
       {report && (
         // Keyed by the check, so opening another report eases it in afresh.
-        <div key={`${report.repo}#${report.number}@${report.startedAt}`} className="bc-block bc-report">
+        <div key={`${report.repo}#${report.number}@${report.startedAt}`} ref={reportBox} className="bc-block bc-report">
           <div className="bc-report-head">
-            <h3 className="bc-report-title">
+            <h3 className="bc-report-title" tabIndex={-1}>
               {report.repo}#{report.number}: {report.title}
             </h3>
             <button type="button" className="btn bc-btn-sm" onClick={() => showReport(undefined)}>

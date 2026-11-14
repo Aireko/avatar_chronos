@@ -1,4 +1,4 @@
-/** Line-oriented two-way diff for side-by-side panes. */
+/** Line-oriented two-way diff for side-by-side panes (and the ticket's function diff). */
 
 export type DiffRow =
   | { kind: "context"; text: string; oldLine: number; newLine: number }
@@ -15,15 +15,18 @@ function splitLines(text: string | null): string[] {
   return lines;
 }
 
-/**
- * LCS diff on line arrays. The unchanged head and tail are matched first, so the
- * table only covers the edited middle; a huge middle falls back to "all removed,
- * then all added" instead of freezing the editor.
- */
+/** Diff two texts line by line (see diffLines). */
 export function buildDiffRows(before: string | null, after: string | null): DiffRow[] {
-  const a = splitLines(before);
-  const b = splitLines(after);
+  return diffLines(splitLines(before), splitLines(after));
+}
 
+/**
+ * LCS diff on line arrays, shared by the side-by-side panes and the ticket's
+ * function diff. The unchanged head and tail are matched first, so the table only
+ * covers the edited middle; a huge middle falls back to "all removed, then all
+ * added" instead of freezing the editor.
+ */
+export function diffLines(a: readonly string[], b: readonly string[]): DiffRow[] {
   let head = 0;
   while (head < a.length && head < b.length && a[head] === b[head]) head++;
   let tail = 0;
@@ -103,4 +106,81 @@ export function stepChange(starts: readonly number[], current: number, dir: 1 | 
   if (dir === 1) return starts.find((s) => s > current) ?? starts[0];
   for (let k = starts.length - 1; k >= 0; k--) if (starts[k] < current) return starts[k];
   return starts[starts.length - 1];
+}
+
+/* ---------- matching rows to the editable pane ----------
+   The read-only pane shows every row (with blank spacers where lines were added);
+   the editable pane is a plain textarea holding only working-tree lines, so it has
+   no spacers for removed lines. These map a scroll position, counted in rows or
+   lines, from one pane to the other, so both panes show the same code. */
+
+export interface RowMap {
+  /** lineOfRow[r] = working-tree lines in rows [0, r); length rows + 1. */
+  lineOfRow: number[];
+  /** rowOfLine[l] = the row showing working-tree line l; length lines + 1 (the last is rows.length). */
+  rowOfLine: number[];
+}
+
+export function rowMap(rows: readonly DiffRow[]): RowMap {
+  const lineOfRow = [0];
+  const rowOfLine: number[] = [];
+  for (let r = 0; r < rows.length; r++) {
+    if (rows[r].kind !== "removed") rowOfLine.push(r);
+    lineOfRow.push(rowOfLine.length);
+  }
+  rowOfLine.push(rows.length);
+  return { lineOfRow, rowOfLine };
+}
+
+/**
+ * A row position (fractional; 0 is the top of the first row) to the matching line
+ * position in the editable pane. Across removed rows the line holds still, since
+ * the editable pane has nothing there. Positions outside the rows pass through.
+ */
+export function rowToLine(map: RowMap, pos: number): number {
+  const rows = map.lineOfRow.length - 1;
+  const lines = map.rowOfLine.length - 1;
+  if (!(pos > 0)) return pos || 0;
+  if (pos >= rows) return lines + (pos - rows);
+  const r = Math.floor(pos);
+  const hasLine = map.lineOfRow[r + 1] > map.lineOfRow[r];
+  return map.lineOfRow[r] + (hasLine ? pos - r : 0);
+}
+
+/** A line position in the editable pane to the matching row position (inverse of rowToLine). */
+export function lineToRow(map: RowMap, pos: number): number {
+  const rows = map.lineOfRow.length - 1;
+  const lines = map.rowOfLine.length - 1;
+  if (!(pos > 0)) return pos || 0;
+  if (pos >= lines) return rows + (pos - lines);
+  const l = Math.floor(pos);
+  return map.rowOfLine[l] + (pos - l);
+}
+
+/**
+ * What to draw behind the editable pane, in working-tree line numbers (0-based):
+ * runs of added lines, and gaps (between two lines) where lines were removed.
+ */
+export interface EditMark {
+  kind: "added" | "gap";
+  /** First added line, or the line the gap sits above. */
+  line: number;
+  /** Lines added, or lines removed at the gap. */
+  count: number;
+}
+
+export function editMarks(rows: readonly DiffRow[]): EditMark[] {
+  const marks: EditMark[] = [];
+  let line = 0;
+  for (const row of rows) {
+    if (row.kind !== "context") {
+      const kind = row.kind === "added" ? "added" : "gap";
+      const last = marks[marks.length - 1];
+      const end = last ? (last.kind === "added" ? last.line + last.count : last.line) : -1;
+      if (last && last.kind === kind && end === line) last.count++;
+      else marks.push({ kind, line, count: 1 });
+    }
+    if (row.kind !== "removed") line++;
+  }
+  return marks;
 }

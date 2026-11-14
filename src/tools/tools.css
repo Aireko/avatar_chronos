@@ -23,11 +23,17 @@
   .tool-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 }
 
-/* On the narrowest windows Reload and the theme switch fold to icons too. */
+/* On narrower windows Reload and the theme switch fold to icons too, and the scope
+   chip shortens. Otherwise, with a file or function chosen, the path field shrank to
+   a sliver (about 40px at 1150px on paper, whose switch reads "Blackboard"). */
+@media (max-width: 1349px) {
+  .toolbar .scope-chip { max-width: 160px; }
+  .tool-label-sm { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}
+
 @media (max-width: 1149px) {
   .toolbar { gap: 8px; }
   .toolbar .scope-chip { max-width: 120px; }
-  .tool-label-sm { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 }
 
 /* The graph or code editor area. The editor is absolutely positioned, so it fills
@@ -114,8 +120,9 @@
 
 /* ============ small pop-ups: the File / Function picker and the branch legend ============ */
 
-/* Scope tabs slide their ink highlight across instead of snapping. */
-.scope-tab { transition: background-color 0.18s ease, color 0.18s ease; }
+/* Scope tabs: the ink itself glides between them (.scope-ink in scope.css); each
+   tab's lettering and hover wash ease along with it. */
+.scope-tab { transition: background-color 0.18s ease, color 0.18s ease, opacity 0.18s ease; }
 /* The chosen file or function lands in the toolbar like a fresh stamp. */
 .scope-chip { animation: chip-in 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards; }
 @keyframes chip-in { from { opacity: 0; transform: translateX(-6px) scale(0.96); } }
@@ -250,9 +257,12 @@
 .status-conn:not(.is-ok):not(.status-bad) .status-dot { animation: status-wait 0.8s ease-in-out infinite alternate; }
 @keyframes status-wait { to { opacity: 0.3; } }
 
-/* The drawer's close mark gives a little twist under the pointer. */
-.tool-drawer .ticket-close { transition: transform 0.15s ease, background-color 0.15s ease; }
+/* The drawer's close mark gives a little twist under the pointer, and its cross is
+   re-inked in the red pen (under the pointer or keyboard focus) so it reads as "close". */
+.tool-drawer .ticket-close { transition: transform 0.15s ease, background-color 0.15s ease, color 0.15s ease; }
 .tool-drawer .ticket-close:hover { transform: rotate(8deg); }
+.tool-drawer .ticket-close:hover,
+.tool-drawer .ticket-close:focus-visible { color: var(--bad); }
 .tool-drawer .ticket-close:active { transform: rotate(8deg) scale(0.92); }
 
 @media (prefers-reduced-motion: reduce) {

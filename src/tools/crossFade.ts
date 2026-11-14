@@ -4,13 +4,16 @@
 // It uses the browser's View Transitions API: the old frame is captured as a
 // single image and faded into the new one by the compositor, so the app itself
 // is only re-rendered once (no per-element colour transitions). Where the API is
-// missing, or the user prefers reduced motion, the change simply applies at once.
+// missing, the user prefers reduced motion, or the window is hidden (say the system
+// theme flips while the app is minimised), the change simply applies at once.
 // The fade's timing lives in tools.css (::view-transition-old/new(root)).
 
 /** The parts of `window`/`document` this module uses, so tests can pass fakes. */
 export interface CrossFadeEnv {
   startViewTransition?: ((update: () => void) => unknown) | null;
   reducedMotion?: boolean;
+  /** Nobody can see the window, so there is nothing to fade (the browser would skip it anyway). */
+  hidden?: boolean;
 }
 
 function browserEnv(): CrossFadeEnv {
@@ -25,6 +28,7 @@ function browserEnv(): CrossFadeEnv {
   return {
     startViewTransition: typeof doc.startViewTransition === "function" ? doc.startViewTransition.bind(doc) : null,
     reducedMotion,
+    hidden: document.visibilityState === "hidden",
   };
 }
 
@@ -39,7 +43,7 @@ function quiet(value: unknown) {
  * exactly once. Returns true when a cross-fade was started.
  */
 export function crossFade(update: () => void, env: CrossFadeEnv = browserEnv()): boolean {
-  if (env.reducedMotion || typeof env.startViewTransition !== "function") {
+  if (env.reducedMotion || env.hidden || typeof env.startViewTransition !== "function") {
     update();
     return false;
   }

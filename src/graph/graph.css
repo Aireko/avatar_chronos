@@ -39,6 +39,12 @@ body { overflow: hidden; background: #fbfbf8; }
   --pen-5: #7b52c7;
   --pen-6: #1a9a9a;
   --pen-7: #9a6a3a;
+  /* the terminal is a dark slate in both themes */
+  --term-bg: #1c1c1e;
+  --term-ink: #f2efe6;
+  --term-accent: #ffd76a;
+  --term-ok: #8fdc9c;
+  --term-bad: #ff9a8f;
 }
 
 /* blackboard and chalk */
@@ -61,6 +67,11 @@ body { overflow: hidden; background: #fbfbf8; }
   --pen-5: #c7a6ff;
   --pen-6: #7ddfd6;
   --pen-7: #ffd76a;
+  --term-bg: #15201e;
+  --term-ink: #f2efe6;
+  --term-accent: #ffd76a;
+  --term-ok: #8fdc9c;
+  --term-bad: #ff9a8f;
 }
 
 /* ============ toolbar ============ */
@@ -331,13 +342,40 @@ body { overflow: hidden; background: #fbfbf8; }
   font-size: 20px;
   line-height: 1;
 }
-.zoom-btn:nth-child(2) {
+.zoom-reset {
   font-size: 12px;
   letter-spacing: 0;
 }
 /* The zoom readout ticks over to each new value. */
 .zoom-level { display: inline-block; animation: zoom-tick 0.16s ease-out; }
 @keyframes zoom-tick { from { opacity: 0.2; transform: translateY(3px); } }
+/* Fit-all and go-to-head: pen-drawn icons that tilt a little under the pointer. */
+.zoom-glyph { display: grid; place-items: center; }
+.zoom-icon {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.16s cubic-bezier(0.2, 0.9, 0.25, 1.3);
+}
+.zoom-glyph:hover:not(:disabled) .zoom-icon,
+.zoom-glyph:focus-visible .zoom-icon { transform: rotate(-8deg) scale(1.08); }
+.zoom-sep { align-self: center; width: 26px; height: 0; margin: 1px 0; border-top: 2px dashed var(--soft); }
+
+/* Where the map just flew to: a marker loop is scribbled round the commit, held, then fades
+   (LANDING_MS in CommitGraph is the whole 1.1s). */
+.landing { pointer-events: none; animation: landing-out 0.3s ease-in 0.8s forwards; }
+.landing-loop {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 3.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  animation: line-draw 0.34s ease-out backwards;
+}
+@keyframes landing-out { to { opacity: 0; } }
 
 /* pen lines */
 .tube-casing,
@@ -613,8 +651,8 @@ body { overflow: hidden; background: #fbfbf8; }
   scrollbar-color: var(--soft) transparent;
 }
 .diff-code div { padding: 0 12px; white-space: pre; }
-.d-add { background: rgba(46, 158, 91, 0.18); }
-.d-del { background: rgba(209, 69, 59, 0.18); }
+.d-add { background: color-mix(in srgb, var(--pen-3) 18%, transparent); }
+.d-del { background: color-mix(in srgb, var(--bad) 18%, transparent); }
 .d-hunk { color: var(--soft); }
 
 /* ============ scrollbars (WebView2) ============ */
@@ -635,9 +673,9 @@ body { overflow: hidden; background: #fbfbf8; }
   /* the graph's draw-in, selection, action bar, legend and zoom readout */
   .tube.draw, .tube-casing.draw, .bridge.draw, .tube-ghost.draw, .node.draw .station, .node.draw .map-label, .node.draw .flag,
   .node.draw .head-note text, .node.draw .head-note path, .node.draw .flag-underline,
-  .menu-layer.is-leaving .menu, .zoom-level { animation: none; }
+  .menu-layer.is-leaving .menu, .zoom-level, .landing, .landing-loop { animation: none; }
   .tube-ghost, .bridge-line, .halo, .map-label, .menu button,
-  .legend-pick, .legend-pick .legend-swatch { transition: none; }
+  .legend-pick, .legend-pick .legend-swatch, .zoom-icon { transition: none; }
 }
 
 /* ============ code editor + terminal (added on graph_changes) ============ */
@@ -692,8 +730,6 @@ body { overflow: hidden; background: #fbfbf8; }
 .editor-body-diff { display: flex; flex-direction: column; overflow: hidden; }
 .editor-banner { margin: 10px 12px 0; padding: 8px 12px; border: 2px solid var(--bad); border-radius: 10px; background: var(--wash); flex: none; }
 .editor-placeholder { margin: 0; padding: 40px 20px; text-align: center; color: var(--soft); }
-.editor-dirty { color: var(--warn); }
-.editor-saved { color: var(--ok); }
 .tree-status {
   flex: none; width: 14px; font-family: var(--mono); font-size: 11px; font-weight: 700; text-align: center;
 }
@@ -734,8 +770,8 @@ body { overflow: hidden; background: #fbfbf8; }
 .side-num {
   flex: none; width: 36px; text-align: right; color: var(--soft); user-select: none;
 }
-.side-line.added { background: rgba(46, 158, 91, 0.18); }
-.side-line.removed { background: rgba(209, 69, 59, 0.18); }
+.side-line.added { background: color-mix(in srgb, var(--pen-3) 18%, transparent); }
+.side-line.removed { background: color-mix(in srgb, var(--bad) 18%, transparent); }
 .side-line.empty { opacity: 0.35; }
 
 .mini-map {
@@ -782,42 +818,65 @@ body { overflow: hidden; background: #fbfbf8; }
 }
 .mini-node.selected .mini-halo { opacity: 1; transform: none; }
 .mini-head { fill: none; stroke: var(--ink); stroke-width: 4; stroke-dasharray: 7 6; stroke-linecap: round; }
+
+/* The whole history in one strip under the map: branch rows as single pen strokes, with a
+   highlighter window over the part on screen. Click to glide there, drag to pan. */
+.mini-strip {
+  position: relative; flex: none; height: 34px; margin: 0; padding: 0;
+  border-top: 2px solid var(--ink); background: var(--wash); cursor: pointer; touch-action: none; outline: none;
+}
+.mini-strip.dragging { cursor: grabbing; }
+.mini-strip:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: -5px; }
+/* The drawing and the window share this box, so the window's percentages line up with the drawing. */
+.mini-strip-track { position: absolute; inset: 5px 7px; }
+.mini-strip-svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.mini-strip-lane { stroke-width: 3; stroke-linecap: round; vector-effect: non-scaling-stroke; opacity: 0.85; }
+.mini-strip-head { stroke: var(--ink); stroke-width: 1.5; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+.mini-strip-pick { stroke: var(--ink); stroke-width: 3; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.mini-strip-window {
+  position: absolute; min-width: 8px; min-height: 8px;
+  border: 2px solid var(--ink); border-radius: 6px 9px 5px 8px / 8px 5px 9px 6px;
+  background: color-mix(in srgb, var(--highlight) 38%, transparent);
+  pointer-events: none;
+  transition: background-color 0.14s ease;
+}
+.mini-strip:hover .mini-strip-window,
+.mini-strip.dragging .mini-strip-window { background: color-mix(in srgb, var(--highlight) 60%, transparent); }
 @media (prefers-reduced-motion: reduce) {
-  .mini-ball, .mini-halo { transition: none; }
+  .mini-ball, .mini-halo, .mini-strip-window { transition: none; }
 }
 
 .term {
   position: relative; z-index: 15; flex: none; height: 210px; display: flex; flex-direction: column;
-  border-top: 2.5px solid var(--ink); background: #1c1c1e; color: #f2efe6; font-family: var(--mono);
+  border-top: 2.5px solid var(--ink); background: var(--term-bg); color: var(--term-ink); font-family: var(--mono);
 }
-.app[data-theme="board"] .term { background: #15201e; }
 .term-bar {
   display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px 0 14px;
-  border-bottom: 1px solid rgba(242, 239, 230, 0.18); font-family: var(--hand); font-size: 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--term-ink) 18%, transparent); font-family: var(--hand); font-size: 16px;
 }
 .term-title { display: flex; align-items: center; gap: 8px; }
 .term-path {
   margin-left: auto; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: 12px; color: rgba(242, 239, 230, 0.55);
+  font-size: 12px; color: color-mix(in srgb, var(--term-ink) 55%, transparent);
 }
 .term-close {
-  width: 28px; height: 28px; flex: none; border: 2px solid rgba(242, 239, 230, 0.4); border-radius: 8px;
+  width: 28px; height: 28px; flex: none; border: 2px solid color-mix(in srgb, var(--term-ink) 40%, transparent); border-radius: 8px;
   background: transparent; color: inherit; font: inherit; font-size: 18px; cursor: pointer;
 }
 .term-scroll {
   flex: 1; min-height: 0; overflow: auto; padding: 8px 14px;
-  scrollbar-width: thin; scrollbar-color: rgba(242, 239, 230, 0.35) transparent;
+  scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--term-ink) 35%, transparent) transparent;
 }
 .term-line { margin: 0 0 3px; font-size: 12.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
-.term-line.in { color: #ffd76a; }
-.term-line.out { color: #f2efe6; }
-.term-line.err { color: #ff9a8f; }
-.term-line.meta { color: rgba(242, 239, 230, 0.5); }
+.term-line.in { color: var(--term-accent); }
+.term-line.out { color: var(--term-ink); }
+.term-line.err { color: var(--term-bad); }
+.term-line.meta { color: color-mix(in srgb, var(--term-ink) 50%, transparent); }
 .term-prompt {
   display: flex; align-items: center; gap: 8px; padding: 8px 14px 10px;
-  border-top: 1px solid rgba(242, 239, 230, 0.18); font-size: 13px;
+  border-top: 1px solid color-mix(in srgb, var(--term-ink) 18%, transparent); font-size: 13px;
 }
-.term-dollar { color: #8fdc9c; font-weight: 700; }
-.term-input { flex: 1; min-width: 0; height: 26px; border: 0; background: transparent; color: #f2efe6; font: inherit; outline: none; }
-.term-input::placeholder { color: rgba(242, 239, 230, 0.35); }
+.term-dollar { color: var(--term-ok); font-weight: 700; }
+.term-input { flex: 1; min-width: 0; height: 26px; border: 0; background: transparent; color: var(--term-ink); font: inherit; outline: none; }
+.term-input::placeholder { color: color-mix(in srgb, var(--term-ink) 35%, transparent); }
 .term-input:disabled { opacity: 0.5; }

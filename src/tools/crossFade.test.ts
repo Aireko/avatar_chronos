@@ -17,6 +17,15 @@ describe("crossFade", () => {
     expect(started).toBe(0);
   });
 
+  it("skips the fade while the window is hidden", () => {
+    let runs = 0;
+    let started = 0;
+    const env = { hidden: true, startViewTransition: () => void started++ };
+    expect(crossFade(() => runs++, env)).toBe(false);
+    expect(runs).toBe(1);
+    expect(started).toBe(0);
+  });
+
   it("hands the change to the view transition", () => {
     let runs = 0;
     let pending: (() => void) | null = null;

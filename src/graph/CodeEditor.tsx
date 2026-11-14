@@ -3,13 +3,25 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent,
   type ReactNode,
   type RefObject,
   type UIEvent,
 } from "react";
 import { errorMessage, listRepoFiles, readRepoFile, writeRepoFile, type ChronosGraph } from "../backend";
-import { buildDiffRows, changeStarts, diffStats, stepChange, type DiffRow } from "./diffRows";
+import {
+  buildDiffRows,
+  changeStarts,
+  diffStats,
+  editMarks,
+  lineToRow,
+  rowMap,
+  rowToLine,
+  stepChange,
+  type DiffRow,
+  type EditMark,
+} from "./diffRows";
 import { clamp, trackDrag } from "./drag";
 import { listChangedPaths, readBlob, type DiffPath } from "./gitBlob";
 import { MiniMap } from "./MiniMap";
@@ -24,7 +36,20 @@ export interface DiffCompare {
   baseRev: string;
   baseLabel: string;
   headLabel: string;
+  /** File to open first (e.g. picked from the commit ticket). Listed even when it has not changed since. */
+  path?: string;
 }
+
+/** Tree status for a file that is the same in the commit and the working tree. */
+const SAME = "=";
+const STATUS_TITLE: Record<string, string> = {
+  A: "Added since this commit",
+  M: "Changed since this commit",
+  D: "Deleted since this commit",
+  R: "Renamed since this commit",
+  C: "Copied since this commit",
+  [SAME]: "Unchanged since this commit",
+};
 
 interface Props {
   repoPath: string;
@@ -32,6 +57,8 @@ interface Props {
   layout: GraphLayout;
   selected: string | null;
   compare: DiffCompare | null;
+  /** File the plain editor opens first, before the selected commit's first file. */
+  startPath?: string | null;
   onSelect: (hash: string | null) => void;
   onCompare: (compare: DiffCompare | null) => void;
   onClose: () => void;
@@ -124,6 +151,7 @@ export function CodeEditor({
   layout,
   selected,
   compare,
+  startPath,
   onSelect,
   onCompare,
   onClose,
@@ -147,6 +175,7 @@ export function CodeEditor({
   const search = useRef<HTMLInputElement>(null);
   const leftPane = useRef<HTMLPreElement>(null);
   const rightPane = useRef<HTMLTextAreaElement>(null);
+  const rightMarks = useRef<HTMLDivElement>(null);
   // "jump" while the change keys place both panes themselves.
   const syncing = useRef<"left" | "right" | "jump" | null>(null);
   const savedTimer = useRef<number | undefined>(undefined);
@@ -156,6 +185,9 @@ export function CodeEditor({
   const loaded = useRef<string | null>(null);
   const diffFile = useRef<string | null>(null);
   const dirtyRightRef = useRef(false);
+  // The comparison whose asked-for file (compare.path) has been opened. It opens once per
+  // comparison, so a later re-list (the selection hint changed) keeps the file being edited.
+  const pathOpened = useRef<DiffCompare | null>(null);
   const diffing = !!compare;
 
   const selectedCommit = selected ? graph.commits.find((c) => c.hash === selected) : undefined;
@@ -176,6 +208,14 @@ export function CodeEditor({
   const beforeLines = useMemo(() => rowsToSide(diffRows, "before"), [diffRows]);
   const starts = useMemo(() => changeStarts(diffRows), [diffRows]);
   const stats = useMemo(() => diffStats(diffRows), [diffRows]);
+  const map = useMemo(() => rowMap(diffRows), [diffRows]);
+  const marks = useMemo(() => editMarks(diffRows), [diffRows]);
+  // The jumped-to change, in working-tree lines, so the editable pane glows with the other side.
+  // (An edit can shorten the rows while the glow is still showing; then it just stops.)
+  const flashLines =
+    flash && flash.to < map.lineOfRow.length
+      ? { from: map.lineOfRow[flash.from], to: map.lineOfRow[flash.to], n: flash.n }
+      : null;
   const saveState = !active ? null : saving ? "saving" : dirty ? "dirty" : notice ? "saved" : null;
 
   // A new file or comparison starts the change keys from the top again.
@@ -200,6 +240,7 @@ export function CodeEditor({
         if (!diffing) {
           setActive((prev) => {
             if (prev && paths.includes(prev)) return prev;
+            if (startPath && paths.includes(startPath)) return startPath;
             if (hint && paths.includes(hint)) return hint;
             return paths[0] ?? null;
           });
@@ -221,10 +262,21 @@ export function CodeEditor({
     setLoading(true);
     setError("");
     void listChangedPaths(repoPath, compare.baseRev)
-      .then((paths) => {
+      .then((listed) => {
         if (!alive) return;
+        // A file asked for by name opens even if it is the same in both, so the
+        // commit's version can still be read next to the working tree.
+        // A file renamed since the commit is listed under its new name.
+        const wanted = listed.find((p) => p.oldPath === compare.path)?.path ?? compare.path;
+        const paths =
+          wanted && !listed.some((p) => p.path === wanted)
+            ? [...listed, { path: wanted, oldPath: null, status: SAME }]
+            : listed;
         setChanged(paths);
+        const openWanted = !!wanted && pathOpened.current !== compare;
+        pathOpened.current = compare;
         setActive((prev) => {
+          if (openWanted && wanted) return wanted;
           if (prev && paths.some((p) => p.path === prev)) return prev;
           if (hint && paths.some((p) => p.path === hint)) return hint;
           return paths[0]?.path ?? null;
@@ -404,13 +456,53 @@ export function CodeEditor({
     }
   }
 
+  /** Height of one row in the read-only pane, and of one line in the editable pane. */
+  function paneMetrics() {
+    const left = leftPane.current;
+    const right = rightPane.current;
+    if (!left || !right) return null;
+    const leftStyle = getComputedStyle(left);
+    const rightStyle = getComputedStyle(right);
+    const lineH = parseFloat(rightStyle.lineHeight) || 18.75;
+    return {
+      left,
+      right,
+      rowH: (left.firstElementChild as HTMLElement | null)?.getBoundingClientRect().height || lineH,
+      lineH,
+      leftPad: parseFloat(leftStyle.paddingTop) || 0,
+      rightPad: parseFloat(rightStyle.paddingTop) || 0,
+    };
+  }
+
+  /** The highlight layer behind the editable pane scrolls with its text. */
+  function moveMarks() {
+    const right = rightPane.current;
+    if (rightMarks.current && right) rightMarks.current.style.transform = `translateY(${-right.scrollTop}px)`;
+  }
+
+  // A fresh pane, or edits that change the marks: keep the layer where the text is.
+  useEffect(moveMarks, [marks, active, loading]);
+
+  /**
+   * Scrolling one pane scrolls the other to the same code. The read-only pane has a
+   * spacer row for every added line and the editable pane has no row for removed
+   * lines, so positions are matched row to line (see rowMap), not pixel to pixel.
+   */
   function syncScroll(from: "left" | "right", e: UIEvent<HTMLElement>) {
+    if (from === "right") moveMarks();
     if (syncing.current === "jump") return;
-    const other = from === "left" ? rightPane.current : leftPane.current;
-    if (!other || syncing.current === (from === "left" ? "right" : "left")) return;
+    const m = paneMetrics();
+    if (!m || syncing.current === (from === "left" ? "right" : "left")) return;
     syncing.current = from;
-    other.scrollTop = e.currentTarget.scrollTop;
-    other.scrollLeft = e.currentTarget.scrollLeft;
+    if (from === "left") {
+      const row = (m.left.scrollTop - m.leftPad) / m.rowH;
+      m.right.scrollTop = rowToLine(map, row) * m.lineH + m.rightPad;
+      m.right.scrollLeft = e.currentTarget.scrollLeft;
+    } else {
+      const line = (m.right.scrollTop - m.rightPad) / m.lineH;
+      m.left.scrollTop = lineToRow(map, line) * m.rowH + m.leftPad;
+      m.left.scrollLeft = e.currentTarget.scrollLeft;
+    }
     requestAnimationFrame(() => {
       syncing.current = null;
     });
@@ -433,8 +525,7 @@ export function CodeEditor({
     const right = rightPane.current;
     if (right) {
       // The editable pane holds only working-tree lines, so count the rows that have one.
-      let line = 0;
-      for (let k = 0; k < at; k++) if (diffRows[k].kind !== "removed") line++;
+      const line = map.lineOfRow[at];
       // Park the caret there too, so typing after focusing the pane edits this change.
       let offset = 0;
       for (let k = 0; k < line && offset !== -1; k++) {
@@ -445,6 +536,7 @@ export function CodeEditor({
       const lineHeight = parseFloat(getComputedStyle(right).lineHeight) || 18.75;
       right.scrollTop = Math.max(0, line * lineHeight - right.clientHeight / 3);
       right.scrollLeft = 0;
+      moveMarks();
     }
     // The scroll events from these moves arrive before the second frame; let them pass.
     requestAnimationFrame(() =>
@@ -528,7 +620,10 @@ export function CodeEditor({
           onClick={() => void openFile(node.path)}
         >
           {diffing && change ? (
-            <span className={`tree-status status-${change.status}`} title={change.status}>
+            <span
+              className={`tree-status ${change.status === SAME ? "is-same" : `status-${change.status}`}`}
+              title={STATUS_TITLE[change.status] ?? change.status}
+            >
               {change.status}
             </span>
           ) : null}
@@ -718,17 +813,20 @@ export function CodeEditor({
                   {compare.headLabel}
                   {active ? ` · ${active}` : ""} · editable
                 </div>
-                <textarea
-                  ref={rightPane}
-                  className="side-pane-code side-pane-edit"
-                  value={rightText ?? ""}
-                  spellCheck={false}
-                  wrap="off"
-                  aria-label={`${active ?? "file"} working tree`}
-                  onChange={(e) => setRightText(e.currentTarget.value)}
-                  onKeyDown={onDiffEditorKey}
-                  onScroll={(e) => syncScroll("right", e)}
-                />
+                <div className="side-edit">
+                  <EditMarks layerRef={rightMarks} marks={marks} flash={flashLines} />
+                  <textarea
+                    ref={rightPane}
+                    className="side-pane-code side-pane-edit"
+                    value={rightText ?? ""}
+                    spellCheck={false}
+                    wrap="off"
+                    aria-label={`${active ?? "file"} working tree`}
+                    onChange={(e) => setRightText(e.currentTarget.value)}
+                    onKeyDown={onDiffEditorKey}
+                    onScroll={(e) => syncScroll("right", e)}
+                  />
+                </div>
               </div>
             </div>
           ) : (
@@ -800,6 +898,42 @@ function DiffPane({
           })
         )}
       </pre>
+    </div>
+  );
+}
+
+/**
+ * Highlights drawn behind the editable pane (a textarea can't colour its own lines):
+ * a bar for each run of added lines and a dashed rule where lines were removed.
+ * Positioned in lines, so it lines up with the textarea's text as long as both use
+ * the same font and line height; syncScroll moves it with the text.
+ */
+function EditMarks({
+  layerRef,
+  marks,
+  flash,
+}: {
+  layerRef: RefObject<HTMLDivElement | null>;
+  marks: EditMark[];
+  /** Working-tree lines [from, to) glow once; an empty range glows at the gap. */
+  flash: { from: number; to: number; n: number } | null;
+}) {
+  return (
+    <div ref={layerRef} className="side-edit-marks" aria-hidden="true">
+      {marks.map((m) => (
+        <div
+          key={`${m.kind}-${m.line}`}
+          className={`side-edit-mark is-${m.kind}`}
+          style={{ "--at": m.line, "--n": m.count } as CSSProperties}
+        />
+      ))}
+      {flash ? (
+        <div
+          key={`jump-${flash.n}`}
+          className={`side-edit-mark is-jump${flash.to > flash.from ? "" : " is-gap"}`}
+          style={{ "--at": flash.from, "--n": Math.max(0, flash.to - flash.from) } as CSSProperties}
+        />
+      ) : null}
     </div>
   );
 }

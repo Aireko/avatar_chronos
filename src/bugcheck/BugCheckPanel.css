@@ -158,6 +158,39 @@
   border-radius: var(--sketch);
 }
 .bc-options[open] > summary { padding-top: 6px; }
+
+/* Every disclosure gets a pen-drawn caret instead of the browser's triangle:
+   pointing right when shut, turned down when open. */
+.bc-panel summary { width: fit-content; list-style: none; }
+.bc-panel summary::-webkit-details-marker { display: none; }
+.bc-panel summary::before {
+  content: "";
+  display: inline-block;
+  width: 0.4em;
+  height: 0.4em;
+  margin: 0 0.5em 0 0.1em;
+  border: solid currentColor;
+  border-width: 0 2px 2px 0;
+  border-radius: 0 2px 1px 0;
+  vertical-align: 0.15em;
+  transform: translate(0, 0) rotate(-47deg);
+  transition: transform 0.18s ease-out;
+}
+.bc-panel details[open] > summary::before { transform: translate(0.05em, -0.1em) rotate(43deg); }
+
+/* Where the browser can animate to height: auto, a disclosure's content unrolls
+   and rolls back up instead of snapping. The clip margin keeps focus rings visible. */
+@supports selector(::details-content) and (interpolate-size: allow-keywords) {
+  .bc-panel details { interpolate-size: allow-keywords; }
+  .bc-panel details::details-content {
+    block-size: 0;
+    overflow: clip;
+    overflow-clip-margin: 8px;
+    opacity: 0;
+    transition: block-size 0.22s ease-out, opacity 0.18s ease-out, content-visibility 0.22s allow-discrete;
+  }
+  .bc-panel details[open]::details-content { block-size: auto; opacity: 1; }
+}
 .bc-options .bc-check-label { font-size: 16px; line-height: 1.3; }
 .bc-option-grid {
   display: grid;
@@ -177,6 +210,35 @@
 .bc-progress-head { margin: 4px 0 8px; }
 .bc-progress-head .working-dot { flex: none; }
 .bc-progress-head strong { font-weight: 400; overflow-wrap: anywhere; }
+/* One tick per diff chunk, inked in as each part is checked. Shape and fill
+   carry the state as well as the pen: an outline waits, a filled stroke is done,
+   a hatched stroke failed, and the part being read breathes. */
+.bc-ticks { display: flex; gap: 4px; height: 14px; }
+.bc-tick {
+  flex: 1 1 0;
+  min-width: 3px;
+  max-width: 44px;
+  border: 2px solid var(--grid-strong);
+  border-radius: 255px 5px 225px 5px / 5px 225px 5px 255px;
+  background: transparent;
+}
+.bc-tick:nth-child(odd) { transform: rotate(-1.2deg); }
+.bc-tick:nth-child(even) { transform: translateY(1px) rotate(0.8deg); }
+.bc-tick.is-active { border-color: var(--pen-1); animation: bc-tick-breathe 0.9s ease-in-out infinite alternate; }
+.bc-tick.is-done {
+  border-color: var(--pen-1);
+  background: var(--pen-1);
+  animation: bc-tick-ink 0.22s ease-out backwards;
+}
+.bc-tick.is-failed {
+  border-color: var(--bad);
+  background: repeating-linear-gradient(-55deg, var(--bad) 0 2px, transparent 2px 5px);
+  animation: bc-tick-ink 0.22s ease-out backwards;
+}
+@keyframes bc-tick-breathe { to { background-color: color-mix(in srgb, var(--pen-1) 35%, transparent); } }
+/* Fades the fresh ink in; no transform, so each tick keeps its hand-drawn tilt. */
+@keyframes bc-tick-ink { from { opacity: 0.2; } }
+
 .bc-progress progress {
   display: block;
   width: 100%;
@@ -212,6 +274,9 @@
 }
 .bc-report-title { flex: 1; min-width: 0; margin: 0; font-size: 21px; font-weight: 400; line-height: 1.2; overflow-wrap: anywhere; }
 .bc-report-head .btn { flex: none; }
+/* "View report" moves focus here; show the pen ring only for keyboard users. */
+.bc-report-title:focus { outline: none; }
+.bc-report-title:focus-visible { outline: 2.5px dashed var(--pen-2); outline-offset: 3px; }
 
 .bc-plain li { padding: 4px 0; border-bottom: 1.5px dashed var(--grid-strong); overflow-wrap: anywhere; }
 .bc-plain li:last-child { border-bottom: none; }
@@ -230,16 +295,44 @@
 
 /* finding cards: hand-ruled boxes, ruled in the severity's pen */
 .bc-finding {
+  --sev: var(--ink);
+  position: relative;
   margin: 10px 0;
-  padding: 8px 12px 6px;
+  padding: 8px 12px 6px 24px;
   border: 2px solid var(--ink);
   border-radius: var(--sketch);
   background: var(--paper);
 }
-.bc-sev-critical { border-color: var(--bad); border-width: 3px; }
-.bc-sev-high { border-color: var(--bad); }
-.bc-sev-medium { border-color: var(--warn); }
-.bc-sev-low { border-color: var(--soft); border-style: dashed; }
+.bc-sev-critical { --sev: var(--bad); border-color: var(--bad); border-width: 3px; }
+.bc-sev-high { --sev: var(--bad); border-color: var(--bad); }
+.bc-sev-medium { --sev: var(--warn); border-color: var(--warn); }
+.bc-sev-low { --sev: var(--soft); border-color: var(--soft); border-style: dashed; }
+
+/* A marker stripe down the left edge, so severity reads while skimming. Its
+   stroke differs too: solid and wide (critical), solid (high), dashed (medium),
+   dotted (low). It is drawn in top to bottom as the card arrives. */
+.bc-finding::before {
+  content: "";
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 8px;
+  width: 5px;
+  border-radius: 3px 2px 4px 2px / 8px 14px 8px 14px;
+  background: var(--sev);
+  transform: rotate(-0.6deg);
+  transform-origin: top center;
+  animation: bc-stripe 0.24s ease-out backwards;
+  animation-delay: calc(var(--i, 0) * 35ms + 80ms);
+}
+.bc-sev-critical::before { left: 7px; width: 7px; }
+.bc-sev-medium::before { background: repeating-linear-gradient(to bottom, var(--sev) 0 10px, transparent 10px 15px); }
+.bc-sev-low::before {
+  width: 4px;
+  border-radius: 2px;
+  background: repeating-linear-gradient(to bottom, var(--sev) 0 4px, transparent 4px 8px);
+}
+@keyframes bc-stripe { from { transform: rotate(-0.6deg) scaleY(0); } }
 
 .bc-finding-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .bc-check { display: inline-flex; }
@@ -277,6 +370,25 @@
 .bc-badge-medium { border-color: var(--warn); color: var(--ink); }
 .bc-badge-low { border-color: var(--soft); border-style: dashed; color: var(--soft); }
 .bc-badge-draft { margin-left: 6px; border-style: dashed; border-color: var(--soft); color: var(--soft); vertical-align: 1px; }
+
+/* Each severity also has its own little shape in front of the word, so the
+   level never rests on colour alone: triangle, diamond, ring, dash. */
+.bc-badge-critical::before,
+.bc-badge-high::before,
+.bc-badge-medium::before,
+.bc-badge-low::before {
+  content: "";
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 5px;
+  background: currentColor;
+  vertical-align: 0;
+}
+.bc-badge-critical::before { width: 10px; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.bc-badge-high::before { clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
+.bc-badge-medium::before { width: 8px; height: 8px; border: 2px solid var(--warn); border-radius: 50%; background: transparent; }
+.bc-badge-low::before { width: 8px; height: 2px; border-radius: 2px; vertical-align: 3px; }
 
 .bc-verdict-confirmed { border-color: var(--ok); color: var(--ok); }
 .bc-verdict-refuted,
@@ -431,7 +543,16 @@
   .bc-panel .bc-empty,
   .bc-panel .bc-note,
   .bc-confirm,
-  .bc-activity li { animation: none; }
+  .bc-activity li,
+  .bc-finding::before,
+  .bc-ticks .bc-tick { animation: none; }
+  /* The part being read keeps a still half-fill instead of breathing. */
+  .bc-ticks .bc-tick.is-active { background: color-mix(in srgb, var(--pen-1) 35%, transparent); }
   .bc-prs,
-  .bc-finding-title { transition: none; }
+  .bc-finding-title,
+  .bc-panel summary::before { transition: none; }
+}
+/* Its own rule: a browser without ::details-content would drop the whole list. */
+@media (prefers-reduced-motion: reduce) {
+  .bc-panel details::details-content { transition: none; }
 }

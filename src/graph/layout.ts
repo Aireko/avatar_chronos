@@ -643,3 +643,141 @@ export function drawDelay(win: DrawWindow, col: number): number | null {
   if (col < win.from || col > win.to) return null;
   return (col - win.from) * win.step;
 }
+
+/* ---------- landing mark ---------- */
+/**
+ * A loop scribbled round a commit with a marker: a little more than one turn, opening
+ * outwards, so the pen's start and end overlap like a real hand-drawn circle.
+ */
+export function scribbleLoop(radius: number, seed: string, turns = 1.18): string {
+  const rnd = rng(`loop:${seed}`);
+  const count = Math.max(6, Math.round(12 * turns));
+  const start = -Math.PI * 0.62;
+  const pts: [number, number][] = [];
+  for (let i = 0; i <= count; i++) {
+    const angle = start + (i / count) * turns * Math.PI * 2 + rnd() * 0.12;
+    const r = radius * (0.95 + (i / count) * 0.14 + rnd() * 0.08);
+    pts.push([Math.cos(angle) * r, Math.sin(angle) * r * 0.92]);
+  }
+  const p = (q: [number, number]) => `${n1(q[0])} ${n1(q[1])}`;
+  const mid = (a: [number, number], b: [number, number]) => `${n1((a[0] + b[0]) / 2)} ${n1((a[1] + b[1]) / 2)}`;
+  let d = `M ${p(pts[0])}`;
+  for (let i = 1; i < pts.length - 1; i++) d += ` Q ${p(pts[i])} ${mid(pts[i], pts[i + 1])}`;
+  return `${d} L ${p(pts[pts.length - 1])}`;
+}
+
+/* ---------- camera ---------- */
+/** Where the map looks: content point (x, y), in unzoomed sheet pixels, seen at `zoom`. */
+export interface CameraShot {
+  zoom: number;
+  x: number;
+  y: number;
+}
+
+/** Cubic ease-out over 0..1 (clamped, since a frame's timestamp can fall just outside). */
+export function easeOut(t: number): number {
+  const c = Math.min(1, Math.max(0, t));
+  return 1 - (1 - c) ** 3;
+}
+
+/**
+ * The camera part way (`t`, 0..1) through a glide. Zoom changes geometrically, so each
+ * moment of the glide feels like the same amount of zoom whether going in or out.
+ */
+export function cameraAt(from: CameraShot, to: CameraShot, t: number): CameraShot {
+  const e = easeOut(t);
+  const zoom = from.zoom > 0 && to.zoom > 0 ? from.zoom * (to.zoom / from.zoom) ** e : to.zoom;
+  return {
+    zoom,
+    x: from.x + (to.x - from.x) * e,
+    y: from.y + (to.y - from.y) * e,
+  };
+}
+
+/** How long a glide takes: a zoom or short hop takes `base` ms, longer pans up to `max`. */
+export function glideMs(from: CameraShot, to: CameraShot, base = 200, max = 280): number {
+  const screenDistance = Math.hypot(to.x - from.x, to.y - from.y) * to.zoom;
+  return Math.round(Math.min(max, base + screenDistance * 0.05));
+}
+
+/**
+ * The zoom at which a `w`×`h` drawing fits a `viewW`×`viewH` view with `margin` px clear
+ * on every side, rounded down to a whole percent and kept within [min, max].
+ */
+export function fitZoom(
+  w: number,
+  h: number,
+  viewW: number,
+  viewH: number,
+  margin: number,
+  min: number,
+  max: number,
+): number {
+  const z = Math.min((viewW - 2 * margin) / Math.max(1, w), (viewH - 2 * margin) / Math.max(1, h));
+  if (!Number.isFinite(z)) return min;
+  return Math.min(max, Math.max(min, Math.floor(z * 100) / 100));
+}
+
+/**
+ * Where to centre one axis when fitting [from, to] into `view` px at `zoom`: the middle when it
+ * fits, otherwise as close to `current` as possible while still filling the view.
+ */
+export function fitAxis(from: number, to: number, view: number, margin: number, zoom: number, current: number): number {
+  const half = Math.max(0, view / 2 - margin) / zoom;
+  if (to - from <= half * 2) return (from + to) / 2;
+  return Math.min(to - half, Math.max(from + half, current));
+}
+
+/**
+ * The zoom factor for one Ctrl+wheel event. A mouse notch (about 100px) is a step of about
+ * 12%, like the zoom keys; a trackpad pinch sends many small deltas that add up smoothly.
+ */
+export function wheelZoomFactor(deltaY: number, deltaMode = 0): number {
+  const px = deltaMode === 1 ? deltaY * 16 : deltaMode === 2 ? deltaY * 400 : deltaY;
+  const capped = Math.max(-240, Math.min(240, px));
+  return Math.exp(-capped * 0.00115);
+}
+
+/* ---------- minimap overview ---------- */
+/** One branch line squeezed to a single stroke, for the minimap's whole-history strip. */
+export interface LaneSpan {
+  key: string;
+  color: string;
+  x1: number;
+  x2: number;
+  y: number;
+}
+
+/** The stretch of each branch line on each row, oldest to newest commit. */
+export function laneSpans(nodes: Pick<GraphNode, "lane" | "row" | "x" | "y" | "color">[]): LaneSpan[] {
+  const spans = new Map<string, LaneSpan>();
+  for (const node of nodes) {
+    const key = `${node.lane}:${node.row}`;
+    const span = spans.get(key);
+    if (!span)
+      spans.set(key, {
+        key,
+        color: node.color,
+        x1: node.x,
+        x2: node.x,
+        y: node.y,
+      });
+    else {
+      span.x1 = Math.min(span.x1, node.x);
+      span.x2 = Math.max(span.x2, node.x);
+    }
+  }
+  return [...spans.values()];
+}
+
+/** The on-screen part of a scrolled axis, as fractions (0..1) of its whole length. */
+export function visibleWindow(scroll: number, view: number, content: number): { start: number; size: number } {
+  if (content <= 0 || view >= content) return { start: 0, size: 1 };
+  const size = view / content;
+  return { start: Math.min(1 - size, Math.max(0, scroll / content)), size };
+}
+
+/** The scroll position that puts the start of the on-screen window at fraction `start`. */
+export function scrollForWindow(start: number, view: number, content: number): number {
+  return Math.min(Math.max(0, content - view), Math.max(0, start * content));
+}

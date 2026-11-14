@@ -5,6 +5,9 @@ import { aiErrorMessage, aiService, isAiError } from "./aiService";
 import type { AiError, AiStatus, GenerateResponse, GenerationStats, PullEvent } from "./types";
 import "./AiPanel.css";
 
+/** How long "Copied" stays on the copy button (as in the People panel). */
+const COPIED_MS = 1600;
+
 function asAiError(error: unknown): AiError {
   return isAiError(error) ? error : { kind: "internal", message: aiErrorMessage(error) };
 }
@@ -81,6 +84,9 @@ export default function AiPanel() {
   // The streamed answer follows its newest line unless the reader scrolled up.
   const outputRef = useRef<HTMLPreElement>(null);
   const stickToEnd = useRef(true);
+  // The copy button says "Copied" (or that it failed) for a moment, in place.
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const copyTimer = useRef<number | undefined>(undefined);
 
   const refresh = useCallback(async () => {
     setLoadingStatus(true);
@@ -108,6 +114,7 @@ export default function AiPanel() {
       // Stop any running generation or download when the panel goes away.
       genAbort.current?.abort();
       pullAbort.current?.abort();
+      window.clearTimeout(copyTimer.current);
     };
   }, [refresh]);
 
@@ -119,6 +126,18 @@ export default function AiPanel() {
   function onOutputScroll() {
     const el = outputRef.current;
     if (el) stickToEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  }
+
+  async function onCopy() {
+    let next: "copied" | "failed" = "copied";
+    try {
+      await navigator.clipboard.writeText(output);
+    } catch {
+      next = "failed";
+    }
+    setCopyState(next);
+    window.clearTimeout(copyTimer.current);
+    copyTimer.current = window.setTimeout(() => setCopyState("idle"), COPIED_MS);
   }
 
   async function onSelect() {
@@ -167,6 +186,8 @@ export default function AiPanel() {
     const controller = new AbortController();
     genAbort.current = controller;
     stickToEnd.current = true;
+    window.clearTimeout(copyTimer.current);
+    setCopyState("idle");
     setGenerating(true);
     setOutput("");
     setThinking("");
@@ -403,7 +424,29 @@ export default function AiPanel() {
             {generating && <span className="ai-caret" aria-hidden="true" />}
           </pre>
         )}
-        {result && <p className="ai-note ai-muted ai-stats">{formatStats(result.stats, result.doneReason)}</p>}
+        {!generating && (result || output) && (
+          <div className="ai-answer-bar">
+            {result && <p className="ai-note ai-muted ai-stats">{formatStats(result.stats, result.doneReason)}</p>}
+            {output && (
+              <button
+                type="button"
+                className={`btn ai-small ai-copy${copyState === "idle" ? "" : ` is-${copyState}`}`}
+                onClick={() => void onCopy()}
+              >
+                {/* All labels share one grid cell so the button keeps its width; the hidden ones are
+                    visibility: hidden, which also keeps them out of the accessible name. */}
+                <span className="ai-swap">
+                  <span className={copyState === "idle" ? undefined : "is-off"}>Copy answer</span>
+                  <span className={copyState === "copied" ? "ai-copied-label" : "is-off"}>Copied</span>
+                  <span className={copyState === "failed" ? "ai-copy-failed-label" : "is-off"}>Couldn't copy</span>
+                </span>
+              </button>
+            )}
+          </div>
+        )}
+        <span className="ai-sr-only" role="status">
+          {copyState === "copied" ? "Answer copied to the clipboard." : copyState === "failed" ? "Couldn't copy the answer." : ""}
+        </span>
         {genError?.kind === "cancelled" && <p className="ai-note ai-muted">Stopped.</p>}
         {genError && genError.kind !== "cancelled" && <ErrorBox error={genError} />}
       </form>

@@ -191,6 +191,17 @@ static int review_has_evidence(const ContextSelection *selection, const char *id
     return 0;
 }
 
+static void assert_brief_evidence_resolves(const ContextGraph *graph,
+                                             const ContextBrief *brief)
+{
+    for (size_t i = 0; i < brief->section_count; ++i)
+        for (size_t j = 0; j < brief->sections[i].item_count; ++j)
+            for (size_t k = 0; k < brief->sections[i].items[j].evidence_count; ++k)
+                assert(graph_has_evidence(graph, brief->sections[i].items[j].evidence_ids[k]));
+    for (size_t i = 0; i < brief->omitted_count; ++i)
+        assert(graph_has_evidence(graph, brief->omitted_ids[i]));
+}
+
 static size_t unresolved_edges(const ContextGraph *graph)
 {
     size_t count = 0;
@@ -259,7 +270,7 @@ static int bridge_has(const ContextBridgeSet *set, ContextBridgeKind kind, const
 static char *read_fixture_file(const char *relative, size_t *length)
 {
     char path[512];
-    (void)snprintf(path, sizeof path, "tests/fixtures/context_flow/chronos_bridge/%s", relative);
+    (void)snprintf(path, sizeof path, "tests/fixtures/context_flow/chronos_bridge/%s.txt", relative);
     FILE *file = fopen(path, "rb");
     assert(file != NULL);
     assert(fseek(file, 0, SEEK_END) == 0);
@@ -346,7 +357,7 @@ int main(void)
     ContextViewsRequest request = {.flow = &onboarding, .budget = {12, 4096}};
     ContextViews views = {0};
     assert(context_build_views(index, &request, &views) == CHRONOS_OK);
-    assert(views.graph.evidence == views.brief.evidence);
+    assert_brief_evidence_resolves(&views.graph, &views.brief);
     assert(count_items(&views.brief) <= 12);
     assert(views.brief.used_source_bytes <= 4096);
 
@@ -426,7 +437,7 @@ int main(void)
     ContextViewsRequest multi_request = {&multi_flow, {12, 4096}};
     ContextViews multi_views = {0};
     assert(context_build_views(index, &multi_request, &multi_views) == CHRONOS_OK);
-    assert(multi_views.graph.evidence == multi_views.brief.evidence);
+    assert_brief_evidence_resolves(&multi_views.graph, &multi_views.brief);
     assert(count_items(&multi_views.brief) <= 12);
     assert(multi_views.brief.used_source_bytes <= 4096);
     assert(brief_text_contains(&multi_views.brief, "Target: main in app/main.c."));

@@ -246,7 +246,8 @@ static int add_candidate(BriefBuilder *builder, SectionBuilder *section, char *t
 }
 
 static int add_source_item(BriefBuilder *builder, SectionBuilder *section,
-                           const GraphSymbol *symbol, const char *template_text)
+                           const GraphSymbol *symbol, const char *template_text,
+                           int count_source)
 {
     char *text = render_template(template_text, symbol->name, symbol->location.file_path);
     const char *id = catalog_add_source(builder->catalog, symbol,
@@ -259,7 +260,7 @@ static int add_source_item(BriefBuilder *builder, SectionBuilder *section,
     }
     ids[0] = id;
     return add_candidate(builder, section, text, ids, 1,
-                         symbol_source_cost(builder->index, symbol),
+                         count_source ? symbol_source_cost(builder->index, symbol) : 0,
                          CONTEXT_RELATION_SELECTED, 1);
 }
 
@@ -325,7 +326,7 @@ static int build_target_section(BriefBuilder *builder, const ContextFlowSet *flo
     SectionBuilder *section = &builder->sections[SECTION_TARGET];
     size_t limit = flows->seed_count < 32 ? flows->seed_count : 32;
     for (size_t i = 0; i < limit; ++i) {
-        int status = add_source_item(builder, section, flows->seeds[i], T_TARGET);
+        int status = add_source_item(builder, section, flows->seeds[i], T_TARGET, 0);
         if (status < 0) return status;
     }
     return CHRONOS_OK;
@@ -344,7 +345,7 @@ static int build_entry_section(BriefBuilder *builder, const ContextFlowSet *flow
     for (size_t i = 0; i < limit; ++i) {
         int status = add_source_item(builder, section, flows->seeds[i],
                                      mode == CONTEXT_FLOW_TASK ? T_ENTRY_TASK
-                                                               : T_ENTRY_ONBOARDING);
+                                                               : T_ENTRY_ONBOARDING, 1);
         if (status < 0) return status;
     }
     return CHRONOS_OK;
@@ -372,7 +373,7 @@ static int build_edit_section(BriefBuilder *builder, const ContextFlowSet *flows
             status = CHRONOS_OUT_OF_MEMORY;
             goto done;
         }
-        status = add_source_item(builder, section, symbol, T_EDIT);
+        status = add_source_item(builder, section, symbol, T_EDIT, 1);
         if (status < 0) goto done;
     }
     if (flows->count != 0) {
@@ -383,7 +384,7 @@ static int build_edit_section(BriefBuilder *builder, const ContextFlowSet *flows
                 status = CHRONOS_OUT_OF_MEMORY;
                 goto done;
             }
-            status = add_source_item(builder, section, target, T_EDIT);
+            status = add_source_item(builder, section, target, T_EDIT, 1);
             if (status < 0) goto done;
         }
     }
@@ -399,7 +400,7 @@ static int build_edit_section(BriefBuilder *builder, const ContextFlowSet *flows
                     status = CHRONOS_OUT_OF_MEMORY;
                     goto done;
                 }
-                status = add_source_item(builder, section, node->symbol, T_EDIT);
+                status = add_source_item(builder, section, node->symbol, T_EDIT, 1);
                 if (status < 0) goto done;
                 ++added;
                 break;
@@ -442,7 +443,7 @@ static int build_test_section(BriefBuilder *builder, const ContextFlowSet *flows
             status = CHRONOS_OUT_OF_MEMORY;
             goto done;
         }
-        status = add_source_item(builder, section, caller, T_TEST);
+        status = add_source_item(builder, section, caller, T_TEST, 1);
         if (status < 0) goto done;
     }
     if (section->count == 0) {
@@ -607,6 +608,44 @@ static int build_brief(BriefBuilder *builder, const ContextFlowSet *flows,
         .evidence_count = 0,
         .evidence_coverage = coverage
     };
+    return CHRONOS_OK;
+}
+
+static int build_brief_catalog(const ContextBrief* brief, const ContextEvidence* catalog,
+                               size_t catalog_count, ContextEvidence** out, size_t* out_count)
+{
+    IdList needed = {0};
+    for (size_t i = 0; i < brief->section_count; ++i) {
+        const ContextBriefSection* section = &brief->sections[i];
+        for (size_t j = 0; j < section->item_count; ++j) {
+            const ContextBriefItem* item = &section->items[j];
+            for (size_t k = 0; k < item->evidence_count; ++k) {
+                if (!id_list_add(&needed, item->evidence_ids[k])) {
+                    id_list_free(&needed);
+                    return CHRONOS_OUT_OF_MEMORY;
+                }
+            }
+        }
+    }
+    for (size_t i = 0; i < brief->omitted_count; ++i) {
+        if (!id_list_add(&needed, brief->omitted_ids[i])) {
+            id_list_free(&needed);
+            return CHRONOS_OUT_OF_MEMORY;
+        }
+    }
+    ContextEvidence* subset = needed.count
+        ? calloc(needed.count, sizeof *subset) : NULL;
+    if (needed.count && !subset) {
+        id_list_free(&needed);
+        return CHRONOS_OUT_OF_MEMORY;
+    }
+    size_t next = 0;
+    for (size_t i = 0; i < catalog_count; ++i) {
+        if (id_list_has(&needed, catalog[i].id)) subset[next++] = catalog[i];
+    }
+    *out = subset;
+    *out_count = next;
+    id_list_free(&needed);
     return CHRONOS_OK;
 }
 
@@ -777,8 +816,10 @@ void context_views_free(ContextViews *views)
     if (views == NULL) return;
     ContextEvidence *catalog_items = (ContextEvidence *)views->graph.evidence;
     size_t catalog_count = views->graph.evidence_count;
+    const ContextEvidence *brief_items = views->brief.evidence;
     free_graph_arrays(&views->graph);
     free_brief_arrays(&views->brief);
+    if (brief_items != (const ContextEvidence *)catalog_items) free((void *)brief_items);
     EvidenceCatalog catalog = {catalog_items, catalog_count, 0};
     catalog_free(&catalog);
     free_scope_ids(views->scope_ids, views->scope_id_count);
@@ -827,8 +868,16 @@ int context_build_views(const RepositoryIndex *index, const ContextViewsRequest 
                          &catalog, &scope_ids, &scope_id_count, &graph);
     if (status < 0) goto cleanup;
 
-    brief.evidence = catalog.items;
-    brief.evidence_count = catalog.count;
+    ContextEvidence *brief_catalog = NULL;
+    size_t brief_catalog_count = 0;
+    status = build_brief_catalog(&brief, catalog.items, catalog.count,
+                                 &brief_catalog, &brief_catalog_count);
+    if (status < 0) {
+        free(brief_catalog);
+        goto cleanup;
+    }
+    brief.evidence = brief_catalog;
+    brief.evidence_count = brief_catalog_count;
     result.graph = graph;
     result.brief = brief;
     result.scope_ids = scope_ids;

@@ -9,6 +9,7 @@ import { Terminal } from "./graph/Terminal";
 import "./graph/graph.css";
 import { ScopeBar } from "./graph/ScopeBar";
 import { PROJECT, scopeGraph, scopeKey, type Scope } from "./graph/scope";
+import ContextViewsPanel from "./context/ContextViewsPanel";
 
 type Theme = "paper" | "board";
 
@@ -24,6 +25,7 @@ function App() {
   const [showEditor, setShowEditor] = useState(false);
   const [diffCompare, setDiffCompare] = useState<DiffCompare | null>(null);
   const [showTerminal, setShowTerminal] = useState(false);
+  const [showContext, setShowContext] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const ids = useRef(new Map<string, string>());
@@ -137,11 +139,12 @@ function App() {
           setShowEditor(false);
           setDiffCompare(null);
         } else if (showTerminal) setShowTerminal(false);
+        else if (showContext) setShowContext(false);
         else setSelected(null);
         return;
       }
 
-      if (showEditor || !layout || !selected) return;
+      if (showEditor || showContext || !layout || !selected) return;
 
       const node = layout.byHash.get(selected);
       if (!node) return;
@@ -166,7 +169,7 @@ function App() {
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [layout, selected, panel, showEditor, showTerminal]);
+  }, [layout, selected, panel, showEditor, showTerminal, showContext]);
 
   function toggleEditor() {
     if (!graph) {
@@ -179,6 +182,7 @@ function App() {
         return false;
       }
       setPanel(null);
+      setShowContext(false);
       return true;
     });
   }
@@ -190,6 +194,22 @@ function App() {
       return;
     }
     setShowTerminal((v) => !v);
+    setShowContext(false);
+  }
+
+  function toggleContext() {
+    if (!graph) {
+      setError("Open a repository first.");
+      return;
+    }
+    setShowContext((visible) => {
+      if (!visible) {
+        setShowEditor(false);
+        setDiffCompare(null);
+        setShowTerminal(false);
+      }
+      return !visible;
+    });
   }
 
   return (
@@ -256,6 +276,10 @@ function App() {
               onCompare={setDiffCompare}
               onClose={closeEditor}
             />
+          ) : graph && showContext ? (
+            <div className="context-panel">
+              <ContextViewsPanel repoPath={graph.repoPath} />
+            </div>
           ) : graph && layout && scoped ? (
             layout.nodes.length === 0 ? (
               <div className="empty">
@@ -332,6 +356,14 @@ function App() {
             onClick={toggleTerminal}
           >
             Terminal
+          </button>
+          <button
+            type="button"
+            className={`btn dock-key${showContext ? " primary" : ""}`}
+            aria-pressed={showContext}
+            onClick={toggleContext}
+          >
+            Context compiler
           </button>
         </div>
       </main>

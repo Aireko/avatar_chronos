@@ -64,6 +64,8 @@ static int callee_base_name(const char *text, char *out, size_t capacity)
             ++p;
         } else if (p[0] == '.') {
             start = p + 1;
+        } else if (p[0] == ' ' || p[0] == '\t' || p[0] == '\n' || p[0] == '\r') {
+            start = p + 1;
         }
     }
     while (*start == ' ' || *start == '\t' || *start == '&' || *start == '*') ++start;
@@ -127,6 +129,13 @@ static int file_matches_qualifier(const char *path, const char *qualifier)
     return strlen(qualifier) == length && strncmp(base, qualifier, length) == 0;
 }
 
+static int header_path(const char *path)
+{
+    const char *ext = path ? strrchr(path, '.') : NULL;
+    return ext != NULL &&
+           (strcmp(ext, ".h") == 0 || strcmp(ext, ".hh") == 0 || strcmp(ext, ".hpp") == 0);
+}
+
 static const GraphSymbol *find_candidate(const RepositoryIndex *index, size_t current,
                                          const char *language, const char *name,
                                          const char *qualifier, size_t *matches_out,
@@ -142,6 +151,7 @@ static const GraphSymbol *find_candidate(const RepositoryIndex *index, size_t cu
             continue;
         const GraphSymbol *symbol = scopes[i].symbol;
         if (symbol->form != PARSER_DEFINITION || strcmp(symbol->name, name) != 0) continue;
+        if (header_path(symbol->location.file_path)) continue;
         if (language != NULL && strcmp(symbol->language, language) != 0) continue;
         if (qualifier != NULL && !file_matches_qualifier(symbol->location.file_path, qualifier))
             continue;
@@ -432,6 +442,26 @@ static ChronosCoverage bridge_coverage(const RepositoryIndex *index)
     return relevant ? CHRONOS_COMPLETE : CHRONOS_UNAVAILABLE;
 }
 
+static int wrapper_in_file(const RepositoryIndex *index, size_t caller_scope,
+                           const char *name, const int *wrappers, size_t scope_count)
+{
+    size_t count = 0;
+    const IndexScope *scopes = index_scopes(index, &count);
+    if (caller_scope >= count || scopes[caller_scope].symbol == NULL) return 0;
+    const GraphSymbol *caller = scopes[caller_scope].symbol;
+    for (size_t i = 0; i < count; ++i) {
+        if (i == caller_scope || scopes[i].kind != INDEX_SYMBOL || scopes[i].symbol == NULL)
+            continue;
+        const GraphSymbol *symbol = scopes[i].symbol;
+        if (symbol->form != PARSER_DEFINITION || strcmp(symbol->name, name) != 0)
+            continue;
+        if (strcmp(symbol->language, caller->language) != 0) continue;
+        if (strcmp(symbol->location.file_path, caller->location.file_path) != 0) continue;
+        if (i < scope_count && wrappers[i]) return 1;
+    }
+    return 0;
+}
+
 static int walk_bridge_chain(const RepositoryIndex *index, const IndexScope *scopes,
                              const IndexCallLink *links, size_t link_count,
                              size_t command_scope, EdgeList *edges)
@@ -521,11 +551,25 @@ int context_discover_bridges(const RepositoryIndex *index, ContextBridgeSet *out
         int invoke = strcmp(base, "invoke") == 0;
         if (!invoke && link->callee != INDEX_NO_SCOPE && wrappers[link->callee]) invoke = 1;
         if (!invoke && link->callee == INDEX_NO_SCOPE) {
-            size_t wrapper_scope = INDEX_NO_SCOPE;
-            const GraphSymbol *wrapper = resolve_callee(
-                index, link->caller, call->callee_text, 0, &wrapper_scope);
-            if (wrapper != NULL && wrapper_scope < scope_count && wrappers[wrapper_scope])
+            if (wrapper_in_file(index, link->caller, base, wrappers, scope_count)) {
                 invoke = 1;
+            } else {
+                size_t wrapper_matches = 0;
+                for (size_t j = 0; j < call->candidate_count; ++j) {
+                    size_t scope = index_find_symbol(index, &call->candidates[j]);
+                    if (scope != INDEX_NO_SCOPE && scope < scope_count && wrappers[scope])
+                        ++wrapper_matches;
+                }
+                if (wrapper_matches == 1) {
+                    invoke = 1;
+                } else {
+                    size_t wrapper_scope = INDEX_NO_SCOPE;
+                    const GraphSymbol *wrapper = resolve_callee(
+                        index, link->caller, call->callee_text, 0, &wrapper_scope);
+                    if (wrapper != NULL && wrapper_scope < scope_count && wrappers[wrapper_scope])
+                        invoke = 1;
+                }
+            }
         }
         if (!invoke) continue;
 

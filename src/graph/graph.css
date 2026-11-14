@@ -174,6 +174,29 @@ body { overflow: hidden; background: #fbfbf8; }
 .empty { flex: 1; display: grid; place-content: center; justify-items: center; gap: 4px; text-align: center; }
 .empty h1 { margin: 0; font-size: 40px; font-weight: 400; }
 .empty p { margin: 0; max-width: 40ch; font-size: 20px; color: var(--soft); }
+.context-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 20px;
+  text-align: left;
+  background: var(--paper);
+}
+.context-panel input,
+.context-panel select,
+.context-panel button {
+  font: inherit;
+}
+.context-panel table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.context-panel th,
+.context-panel td {
+  border-bottom: 1px solid var(--soft);
+  padding: 4px 6px;
+  text-align: left;
+}
 
 /* ============ status bar ============ */
 .statusbar {
